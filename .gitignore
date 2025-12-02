@@ -1,0 +1,6 @@
+data/
+build/
+.vscode
+*.log
+.DS_Store
+/bin
