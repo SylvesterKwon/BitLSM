@@ -10,11 +10,8 @@
 #include "rocksdb/db.h"
 #include "rocksdb/file_system.h"
 #include "rocksdb/options.h"
-#include "rocksdb/slice.h"
-#include "rocksdb/table_properties.h"
 #include "table/block_based/block_based_table_builder.h"
 #include "table/block_based/block_based_table_reader.h"
-#include "table/block_based/block_builder.h"
 
 using namespace std;
 using namespace rocksdb;
