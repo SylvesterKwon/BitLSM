@@ -4,6 +4,12 @@ WIP
 Based on RocksDB v10.9.0
 
 ## Installation
+
+### 0. Install Rocksdb Submodule
+```bash
+$ git submodule update --init --recursive
+```
+
 ### 1. RocksDB 의존성 설치
 ```bash
 $ apt-get update && apt-get install -y \
