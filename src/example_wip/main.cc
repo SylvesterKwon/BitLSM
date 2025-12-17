@@ -4,7 +4,7 @@
 #include "db/table_cache.h"
 #include "db/version_set.h"
 #include "include/block_based_table_sabi_filter.h"
-#include "include/sst_attached_bitmap_index_builder.h"
+#include "include/sabi_builder.h"
 #include "include/utils.h"
 #include "options/cf_options.h"
 #include "rocksdb/db.h"

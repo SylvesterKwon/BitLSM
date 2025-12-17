@@ -2,7 +2,7 @@
 #include <iostream>
 #include <random>
 
-#include "include/sst_attached_bitmap_index_builder.h"
+#include "include/sabi_builder.h"
 #include "include/utils.h"
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
