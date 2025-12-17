@@ -1,3 +1,6 @@
 [submodule "rocksdb"]
 	path = third_party/rocksdb
 	url = https://github.com/SylvesterKwon/rocksdb-for-lsm-bitmap-index.git
+[submodule "third_party/CRoaring"]
+	path = third_party/CRoaring
+	url = https://github.com/RoaringBitmap/CRoaring.git

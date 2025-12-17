@@ -9,6 +9,8 @@ Based on RocksDB v10.9.0
 ```bash
 $ git submodule update --init --recursive
 ```
+TODO: rocksdb 브랜치 설정 하도록 안내
+TODO: RoaringBitmap 의존성 소개
 
 ### 1. RocksDB 의존성 설치
 ```bash
@@ -19,6 +21,8 @@ libbz2-dev \
 liblz4-dev \ 
 libzstd-dev
 ```
+
+TODO: sh로 만들기 (프로젝트 개발 완료후 일괄 설치 스크립트 생성 예정)
 
 ### 2. Project build
 ```bash

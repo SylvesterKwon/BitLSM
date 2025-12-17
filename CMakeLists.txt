@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(SstAttachedBitmapIndex VERSION 0.1 LANGUAGES CXX)
+project(LSMBitmapIndex VERSION 0.1 LANGUAGES CXX)
 
 # 빌드 후 실행 파일이 생성될 위치를 'bin' 디렉터리로 지정
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -34,6 +34,12 @@ add_compile_definitions(
     ROCKSDB_LIB_IO_POSIX
 )
 
+## CRoaring
+set(CROARING_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/CRoaring)
+set(ENABLE_ROARING_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/CRoaring)
+
+
 # src 디렉터리 아래의 모든 .cpp 파일을 찾아 SOURCES 변수에 저장
 file(GLOB_RECURSE SOURCES "src/*.cpp")
 
@@ -48,6 +54,9 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     # RocksDB 헤더
     ${ROCKSDB_SOURCE_DIR} # Internal API
     ${ROCKSDB_SOURCE_DIR}/include # Public API
+
+    # CRoaring 헤더
+    ${CROARING_SOURCE_DIR}/cpp/roaring
 )
 
 target_link_directories(${PROJECT_NAME} PRIVATE /usr/local/lib)
@@ -57,6 +66,7 @@ find_package(Threads REQUIRED)
 # 라이브러리 링크
 target_link_libraries(${PROJECT_NAME} PRIVATE
     rocksdb
+    roaring
     dl
     Threads::Threads
     m
