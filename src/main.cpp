@@ -197,7 +197,7 @@ public:
   }
 };
 
-void test() { create_kvp(db, 1e7, 8); }
+void test() { create_kvp(db, 1e7, 16); }
 
 void configure_rocksdb_option() {
   options.create_if_missing = true;

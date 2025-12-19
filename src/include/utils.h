@@ -55,8 +55,9 @@ inline void create_kvp(DB* db, long long int n, int bit_props_size,
 
     // Creating Batch KVPs
     for (size_t i = 0; i < kvps.size(); i++) {
-      kvps[i] = {to_string(auto_increment++),
-                 random_bit_props(16) + '_' + random_string(value_size)};
+      kvps[i] = {to_string(auto_increment++), random_bit_props(bit_props_size) +
+                                                  '_' +
+                                                  random_string(value_size)};
     }
 
     // RocksDB Put
