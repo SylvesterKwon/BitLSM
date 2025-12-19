@@ -44,8 +44,12 @@ WIP
 ### Benchmark
 ### Utility
 
-
-/opt/rocksdb/tools/sst_dump
+## Misc.
+- SST dump
+예시:
+```
+./build/bin/sst_dump /scratch/data/random_bit_props_test/000304.sst --command=scan --show_properties
+```
 
 ## TODO
 [] tools binary로 주지말고 빌드하는 스크립트를 주도록 변경

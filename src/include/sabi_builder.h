@@ -1,7 +1,8 @@
-#include <iostream>
-
 #include "roaring.hh"
 #include "rocksdb/db.h"
+#include <charconv>
+#include <iomanip>
+#include <iostream>
 
 using namespace std;
 using namespace rocksdb;
@@ -10,16 +11,37 @@ using namespace roaring;
 // TODO: Implement index for effective block random access
 class SABIBuilder : public TablePropertiesCollector {
 private:
-  uint32_t cur_block_kv_cnt_ = 0;
+  uint32_t cur_table_kv_cnt_ = 0, cur_block_kv_cnt_ = 0;
   vector<uint32_t> block_kv_cnt_list_;
-  vector<bool> bits_; // 비트들을 임시로 모아둘 벡터
-                      // TODO: vector<bool> 보다 더 빠른 표현 찾기.
+  vector<Roaring> roaring_set;
 
 public:
   Status AddUserKey(const Slice& key, const Slice& value, EntryType type,
                     SequenceNumber seq, uint64_t file_size) override {
-    // WIP - 비트셋 여기서 빌드하면 됨
-    cur_block_kv_cnt_++;
+    // 현재 value encoding 예시:
+    // 0000001000000000_d2D2Hxv7cXGvpUJo0TYy4tmIeDPw86Ye
+
+    // future plan:
+    // - 더 효율적인 value encoding 사용 (raw bit representation 보다 더
+    // 압축적인)
+    // - adaptive binning 구현
+
+    string_view value_data = string_view(value.data());
+
+    // 1. 자른 비트셋의 길이가 기존 roaring_set부터 크면 그만큼 사이즈 맞춤
+    size_t underscore_pos = value_data.find('_');
+    assert(underscore_pos != string::npos);
+    if (roaring_set.size() < underscore_pos)
+      roaring_set.resize(underscore_pos);
+
+    // 2. 켜진 bit props는 bitset에 추가
+    for (size_t i = 0; i < underscore_pos; ++i) {
+      if (value_data[i] == '1') {
+        roaring_set[i].add(cur_table_kv_cnt_);
+      }
+    }
+
+    ++cur_block_kv_cnt_, ++cur_table_kv_cnt_;
     return Status::OK();
   }
 
@@ -32,9 +54,20 @@ public:
   }
 
   Status Finish(UserCollectedProperties* properties) override {
-    // TODO: insert bitmap
-    // foreach...
-    // properties->insert({"bitmap", ToString(max_ts_)});
+    for (size_t i = 0; i < roaring_set.size(); ++i) {
+      Roaring& r = roaring_set[i];
+      r.runOptimize();
+      string frozen_r;
+      frozen_r.resize(r.getFrozenSizeInBytes());
+      r.writeFrozen(frozen_r.data());
+
+      // 읽을때 mmap으로 읽어야함
+      // i-th bitmap: "bitmap_<i>"
+      stringstream bitmap_idx_str;
+      bitmap_idx_str << std::setw(4) << std::setfill('0') << i;
+      std::string s = bitmap_idx_str.str();
+      properties->insert({"bitmap_" + s, frozen_r});
+    }
 
     // Insert serialized block_kv_cnt_list_
     uint32_t kv_cnt_sum = 0;
@@ -45,7 +78,7 @@ public:
     string serialized_block_kv_cnt_psum_;
     serialized_block_kv_cnt_psum_.resize(block_kv_cnt_list_.size() *
                                          sizeof(uint32_t));
-    memcpy(&serialized_block_kv_cnt_psum_[0], block_kv_cnt_list_.data(),
+    memcpy(serialized_block_kv_cnt_psum_.data(), block_kv_cnt_list_.data(),
            block_kv_cnt_list_.size() * sizeof(uint32_t));
     properties->insert({"block_kv_cnt_psum", serialized_block_kv_cnt_psum_});
 
@@ -63,6 +96,7 @@ class SABIBuilderFactory : public TablePropertiesCollectorFactory {
 public:
   TablePropertiesCollector* CreateTablePropertiesCollector(
       TablePropertiesCollectorFactory::Context context) override {
+    // 필요시 context를 SABIBuilder class 로 전달하기 (level 등)
     return new SABIBuilder();
   }
 

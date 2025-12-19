@@ -1,65 +1,58 @@
-#include <string>
+#include <chrono>
+#include <iostream>
+#include <random>
 
-#include "rocksdb/table_properties.h"
+#include "include/sabi_builder.h"
+#include "include/utils.h"
+#include "rocksdb/db.h"
+#include "rocksdb/iterator.h"
+#include "rocksdb/options.h"
+#include "rocksdb/slice.h"
+#include "table/block_based/block_builder.h"
 
 using namespace std;
 using namespace rocksdb;
 
-class FastBitsetBuilder : public TablePropertiesCollector {
-   private:
-    string bitmap_;               // 완성된 비트맵을 바로 저장할 곳
-    unsigned char current_byte_;  // 현재 조립 중인 1바이트 (8비트)
-    int bit_index_;               // 현재 바이트의 몇 번째 비트인지 (0~7)
-    uint64_t count_;              // (선택) 총 갯수 세기용
+// CONSTANTS
+const string db_path = "/scratch/data/random_bit_props_test";
+const string server_address = "0.0.0.0:50051";
 
-   public:
-    // 생성자에서 초기화
-    FastBitsetBuilder() : current_byte_(0), bit_index_(0), count_(0) {}
+// GLOBAL VAR
+DB* db;
+Options options;
+Status status;
+chrono::_V2::system_clock::time_point start_time, end_time;
+chrono::milliseconds ms_duration;
 
-    Status AddUserKey(const Slice& key, const Slice& value, EntryType type,
-                      SequenceNumber seq, uint64_t file_size) override {
-        // 1. 조건 체크 (Value가 있고, 첫 글자가 '1'인가?)
-        bool is_target =
-            (type == kTypeValue && value.size() > 0 && value[0] == '1');
+void configure_rocksdb_option() {
+  options.create_if_missing = true;
+  options.table_properties_collector_factories.push_back(
+      make_shared<SABIBuilderFactory>());
+}
 
-        // 2. 비트 조립 (Bit Manipulation)
-        if (is_target) {
-            // 해당 비트 위치를 1로 만듦 (OR 연산)
-            current_byte_ |= (1 << bit_index_);
-        }
-        // (조건이 아니면 0이어야 하므로 아무것도 안 해도 됨, 기본이 0이라서)
+void test() {
+  create_kvp(db, 1e8, 16);
+  // inspect_sst("/scratch/data/random_bit_props_test/000260.sst");
+  // unique_ptr<Iterator> it(db->NewIterator(ReadOptions()));
+  // it->SeekToFirst();
+  // cout << it->key().ToString() << " - " << it->value().ToString() << "\n";
+}
 
-        bit_index_++;
-        count_++;
+int main(const int argc, char* argv[]) {
+  // configure DB
+  configure_rocksdb_option();
+  status = DB::Open(options, db_path, &db);
+  assert(status.ok());
 
-        // 3. 8비트가 꽉 차면 문자열에 저장하고 초기화
-        if (bit_index_ == 8) {
-            bitmap_.push_back(static_cast<char>(current_byte_));
-            current_byte_ = 0;
-            bit_index_ = 0;
-        }
+  test(); // run test
 
-        return Status::OK();
-    }
+  // close DB gracefully
+  WaitForCompactOptions wait_for_compact_options = WaitForCompactOptions();
+  wait_for_compact_options.close_db = true;
+  status = db->WaitForCompact(wait_for_compact_options);
+  assert(status.ok());
+  delete db;
+  cout << "DB successfully closed\n";
 
-    Status Finish(UserCollectedProperties* properties) override {
-        // 4. 남은 자투리 비트가 있으면 마지막 바이트 저장
-        if (bit_index_ > 0) {
-            bitmap_.push_back(static_cast<char>(current_byte_));
-        }
-
-        // 5. 바로 저장 (변환 과정 없음!)
-        properties->insert({"value_bitmap", bitmap_});
-
-        // 메타데이터에 총 갯수도 같이 넣어두면 나중에 읽을 때 편합니다.
-        properties->insert({"total_key_count", to_string(count_)});
-
-        return Status::OK();
-    }
-
-    const char* Name() const override { return "FastBitsetBuilder"; }
-
-    UserCollectedProperties GetReadableProperties() const override {
-        return UserCollectedProperties{};
-    }
-};
+  return 0;
+}

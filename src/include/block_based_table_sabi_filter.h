@@ -1,6 +1,8 @@
 #include <iostream>
 
+#include "roaring.hh"
 #include "rocksdb/options.h"
+#include "rocksdb/table_properties.h"
 #include "table/block_based/block.h"
 #include "table/block_based/block_based_table_reader.h"
 #include "table/block_fetcher.h"
@@ -8,6 +10,7 @@
 
 using namespace std;
 using namespace rocksdb;
+using namespace roaring;
 
 namespace sabi {
 
@@ -58,6 +61,7 @@ public:
     }
   }
 
+  // block iteration 실험
   void test() {
     BlockBasedTable::IndexReader* index_reader =
         bbt->get_rep()->index_reader.get();
@@ -67,6 +71,25 @@ public:
     iiter->SeekToFirst();
     const BlockHandle& bh = iiter->value().handle;
     test_block_iteration(bh);
+  }
+
+  // table property 접근 실험 / frozen roaring 읽기 실험
+  void test2() {
+    UserCollectedProperties x =
+        bbt->GetTableProperties()->user_collected_properties;
+
+    string bitmap = x.find("bitmap_0015")->second;
+    // posix_memalign: 32바이트 경계에 맞춰 메모리를 할당해줌
+    void* aligned_ptr = nullptr;
+    if (posix_memalign(&aligned_ptr, 32, bitmap.length()) != 0) {
+      cerr << "Failed to allocate posix_memalign\n";
+      return;
+    }
+    memcpy(aligned_ptr, bitmap.data(), bitmap.length());
+    Roaring r = Roaring::frozenView(reinterpret_cast<const char*>(aligned_ptr),
+                                    bitmap.length());
+
+    cout << "cardinality: " << r.cardinality() << "\n";
   }
 
 private:
