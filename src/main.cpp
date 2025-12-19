@@ -1,24 +1,21 @@
+#include <cstring>
 #include <iostream>
 
-#include "db/db_impl/db_impl.h"
-#include "db/table_cache.h"
-#include "db/version_set.h"
-#include "include/block_based_table_sabi_filter.h"
+// #include "include/block_based_table_sabi_filter.h"
 #include "include/sabi_builder.h"
 #include "include/utils.h"
-#include "options/cf_options.h"
 #include "rocksdb/db.h"
 #include "rocksdb/file_system.h"
 #include "rocksdb/options.h"
-#include "table/block_based/block_based_table_builder.h"
-#include "table/block_based/block_based_table_reader.h"
+#include "rocksdb/user_defined_index.h"
 
 using namespace std;
 using namespace rocksdb;
-using namespace sabi;
+// using namespace sabi;
+using namespace roaring;
 
 // CONSTANTS
-const string db_path = "/scratch/data/random_bit_props_test";
+const string db_path = "/scratch/data/user_defined_index_test";
 const string server_address = "0.0.0.0:50051";
 
 // GLOBAL VAR
@@ -26,55 +23,189 @@ DB* db;
 Options options;
 Status s;
 
-void test() {
-  DBImpl* db_impl = static_cast<DBImpl*>(db);
-  VersionSet* vs = db_impl->GetVersionSet();
-  ColumnFamilySet* cf_set = vs->GetColumnFamilySet();
-  ColumnFamilyData* cfd = cf_set->GetColumnFamily("default");
-  Version* v = cfd->current();
-  TableCache* tc = cfd->table_cache();
-  TableCache::CacheInterface cache_interface = tc->get_cache();
+class MySimpleIndexBuilder : public UserDefinedIndexBuilder {
+private:
+  uint32_t cur_table_kv_cnt_ = 0, cur_block_kv_cnt_ = 0;
+  vector<Roaring> roaring_set;
+  string final_index_blob;
 
-  // v->Ref(); // TODO: 동시성 제어를 위해 ref count 올리는 부분 나중에 실험
-  // 코드에 추가 필요 (db_impl->mutex()->Lock() 등 포함)
+public:
+  Slice AddIndexEntry(const Slice& last_key_in_current_block,
+                      const Slice* first_key_in_next_block,
+                      const BlockHandle& block_handle,
+                      string* separator_scratch) {
 
-  // FindTable 호출을 위한 파라미터들
-  const ReadOptions& read_options = ReadOptions();
-  const FileOptions& file_options = FileOptions();
-  VersionStorageInfo* storage_info = v->storage_info();
-  const InternalKeyComparator* icmp = storage_info->InternalComparator();
-  const MutableCFOptions& cf_opts = cfd->GetLatestMutableCFOptions();
-  FileMetaData* file_meta = nullptr;
-  const bool no_io = false;
+    // cout << "[AddIndexEntry] " << block_handle.offset << " "
+    //      << block_handle.size << "\n";
 
-  // test: level 6의 첫번째 SST 선택 (예시)
-  const vector<FileMetaData*>& files = storage_info->LevelFiles(6);
-  assert(!files.empty());
-  file_meta = files[0];
-
-  TableCache::TypedHandle* table_handle = nullptr;
-  s = tc->FindTable(read_options, file_options, *icmp, *file_meta,
-                    &table_handle, cf_opts,
-                    no_io); // TODO: 뒤에 optional parameter도 의미 파악 필요
-
-  if (!s.ok()) {
-    cout << "Debug: fail to find TableReader\n";
+    // TODO: 얘 아무 동작도 안하는것 같은데. 확인 중
   }
-  TableReader* table = cache_interface.Value(table_handle);
-  BlockBasedTable* bbt = static_cast<BlockBasedTable*>(table);
-  if (bbt == nullptr) {
-    cout << "BBT not found\n";
+
+  void OnKeyAdded(const Slice& key, ValueType type, const Slice& value) {
+    string_view value_data = string_view(value.data());
+
+    // 1. 자른 비트셋의 길이가 기존 roaring_set부터 크면 그만큼 사이즈 맞춤
+    size_t underscore_pos = value_data.find('_');
+    assert(underscore_pos != string::npos);
+    if (roaring_set.size() < underscore_pos)
+      roaring_set.resize(underscore_pos);
+
+    // 2. 켜진 bit props는 bitset에 추가
+    for (size_t i = 0; i < underscore_pos; ++i) {
+      if (value_data[i] == '1') {
+        roaring_set[i].add(cur_table_kv_cnt_);
+      }
+    }
+
+    ++cur_block_kv_cnt_, ++cur_table_kv_cnt_;
   }
-  BlockBasedTableSABIFilter sabi_filter(bbt);
-  sabi_filter.test2(); // user defined property 접근 테스트
-}
+
+  Status Finish(Slice* index_contents) {
+    vector<uint32_t> offsets;
+    // size in bytes
+    uint32_t total_roaring_size = 0, total_offset_table_size = 0;
+
+    offsets.push_back(0);
+    for (uint32_t i = 0; i < roaring_set.size(); ++i) {
+      Roaring& r = roaring_set[i];
+      r.runOptimize();
+      total_roaring_size += r.getFrozenSizeInBytes();
+      offsets.push_back(offsets.back() + r.getFrozenSizeInBytes());
+    }
+
+    total_offset_table_size = offsets.size() * sizeof(uint32_t);
+
+    // total index size = total_roaring_size + total_offset_table_size + footer
+    final_index_blob.resize(total_roaring_size + total_offset_table_size +
+                            1 * sizeof(uint32_t));
+
+    for (uint32_t i = 0; i < roaring_set.size(); ++i) {
+      Roaring& r = roaring_set[i];
+      r.writeFrozen(final_index_blob.data() + offsets[i]);
+    }
+
+    memcpy(final_index_blob.data() + total_roaring_size, offsets.data(),
+           offsets.size() * sizeof(uint32_t));
+    uint32_t bitmap_count = roaring_set.size();
+    memcpy(final_index_blob.data() + total_roaring_size +
+               total_offset_table_size,
+           &bitmap_count, sizeof(uint32_t));
+
+    *index_contents = Slice(final_index_blob);
+    return Status::OK();
+  }
+};
+
+class MyUserDefinedIndexIterator : public UserDefinedIndexIterator {
+public:
+  void Prepare(const ScanOptions scan_opts[], size_t num_opts) {
+    // TODO: implement this
+  };
+
+  Status SeekAndGetResult(const Slice& target, IterateResult* result) {
+    // TODO: implement this
+  };
+
+  // Advance to the next index entry. The result must be populated similar
+  // to SeekAndGetResult.
+  Status NextAndGetResult(IterateResult* result) {
+    // TODO: implement this
+  };
+
+  // Return the BlockHandle in the current index entry
+  UserDefinedIndexBuilder::BlockHandle value() {
+    // TODO: implement this
+  };
+};
+
+class MyUserDefinedIndexReader : public UserDefinedIndexReader {
+private:
+  Slice index_block;
+  vector<uint32_t> offsets;
+  vector<Roaring> roaring_set;
+  using AlignedPtr = unique_ptr<char[], void (*)(void*)>;
+  // posix_memalign으로 할당받은 메모리 누수를 막기 위해
+  vector<AlignedPtr> managed_buffers_;
+
+public:
+  MyUserDefinedIndexReader(Slice& index_block) : index_block(index_block) {
+    // 1. Footer 읽기
+    assert(index_block.size() >= sizeof(uint32_t));
+    uint32_t bitmap_count;
+    memcpy(&bitmap_count,
+           index_block.data() + index_block.size() - sizeof(uint32_t),
+           sizeof(uint32_t));
+    roaring_set.resize(bitmap_count);
+
+    // 2. offset list 읽기
+    offsets.resize(bitmap_count + 1);
+    memcpy(offsets.data(),
+           index_block.data() + index_block.size() - sizeof(uint32_t) -
+               offsets.size() * sizeof(uint32_t),
+           offsets.size() * sizeof(uint32_t));
+    for (auto& oi : offsets)
+      cout << oi << " ";
+    cout << "\n";
+
+    // 3. Roaring 읽기
+    for (uint32_t i = 0; i < bitmap_count; ++i) {
+      uint32_t offset = offsets[i], size = offsets[i + 1] - offset;
+      const char* raw_ptr = index_block.data() + offset;
+      void* aligned_ptr = nullptr;
+      // 32 bytes 정렬
+      assert(posix_memalign(&aligned_ptr, 32, size) == 0);
+      AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr),
+                                     std::free);
+      memcpy(managed_aligned_ptr.get(), raw_ptr, size);
+      roaring_set[i] = Roaring::frozenView(
+          reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
+      managed_buffers_.push_back(std::move(managed_aligned_ptr)); // 소유권 이전
+
+      // for test
+      cout << "cardinality " << i << "-" << roaring_set[i].cardinality()
+           << " / " << roaring_set[i].maximum() << "\n";
+    }
+  }
+
+  unique_ptr<UserDefinedIndexIterator>
+  NewIterator(const ReadOptions& read_options) {
+
+    return unique_ptr<MyUserDefinedIndexIterator>();
+    // TODO: implement this
+  };
+
+  // The memory usage of the index, including the size of the raw contents and
+  // any other heap data structures allocated by the reader
+  size_t ApproximateMemoryUsage() const {
+    // TODO: implement this
+    return 0;
+  };
+};
+
+class MyUserDefinedIndexFactory : public UserDefinedIndexFactory {
+public:
+  const char* Name() const override { return "MyUserDefinedIndexFactory"; }
+
+  UserDefinedIndexBuilder* NewBuilder() const override {
+    return new MySimpleIndexBuilder();
+  }
+
+  unique_ptr<UserDefinedIndexReader>
+  NewReader(Slice& index_block) const override {
+    return unique_ptr<MyUserDefinedIndexReader>(
+        new MyUserDefinedIndexReader(index_block));
+  }
+};
+
+void test() { create_kvp(db, 1e7, 8); }
 
 void configure_rocksdb_option() {
   options.create_if_missing = true;
-  // TODO: CF별 다른 bitset 생성 규칙 생성할 수 있도록 분리 필요
-  // 현재는 기본 CF에 대해서 실험중
-  options.table_properties_collector_factories.push_back(
-      make_shared<SABIBuilderFactory>());
+
+  rocksdb::BlockBasedTableOptions table_options;
+  table_options.user_defined_index_factory =
+      make_shared<MyUserDefinedIndexFactory>();
+  options.table_factory.reset(NewBlockBasedTableFactory(table_options));
 }
 
 int main(const int argc, char* argv[]) {
