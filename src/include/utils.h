@@ -68,7 +68,7 @@ inline void create_kvp(DB* db, long long int n, int bit_props_size,
 
     cout << "[BATCH " << setw(6) << cur_batch << " / " << setw(6) << total_batch
          << "] ";
-    cout << "putted: " << auto_increment << " kvps, elapsed: "
+    cout << "putted: " << auto_increment + 1 << " kvps, elapsed: "
          << chrono::duration_cast<chrono::milliseconds>(
                 chrono::high_resolution_clock::now() - start_time)
                 .count()

@@ -22,14 +22,27 @@ Status s;
 
 void test() {
   // scratch //
-  // create_kvp(db, 1e7, 16);
+  // create_kvp(db, 1e8, 16);
+  string result;
+  ReadOptions sabi_ro;
+  sabi_ro.table_index_factory = new bitmap_index::SABIFactory();
+
+  db->Get(sabi_ro, "5234", &result);
+  cout << result << "\n";
+
+  rocksdb::Iterator* it = db->NewIterator(sabi_ro);
+  for (it->Seek("123"); it->Valid(); it->Next()) {
+    // Do something with it->key() and it->value().
+    cout << it->key().ToString() << " " << it->value().ToString() << "\n";
+  }
 }
 
 void configure_rocksdb_option() {
   options.create_if_missing = true;
 
   BlockBasedTableOptions table_options;
-  table_options.user_defined_index_factory = make_shared<SABIBuilderFactory>();
+  table_options.user_defined_index_factory =
+      make_shared<bitmap_index::SABIFactory>();
   options.table_factory.reset(NewBlockBasedTableFactory(table_options));
 }
 
