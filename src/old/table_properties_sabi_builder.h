@@ -1,6 +1,5 @@
 #include "roaring.hh"
 #include "rocksdb/db.h"
-#include <charconv>
 #include <iomanip>
 #include <iostream>
 
@@ -9,7 +8,7 @@ using namespace rocksdb;
 using namespace roaring;
 
 // TODO: Implement index for effective block random access
-class SABIBuilder : public TablePropertiesCollector {
+class TablePropertiesSABIBuilder : public TablePropertiesCollector {
 private:
   uint32_t cur_table_kv_cnt_ = 0, cur_block_kv_cnt_ = 0;
   vector<uint32_t> block_kv_cnt_list_;
@@ -85,20 +84,23 @@ public:
     return Status::OK();
   }
 
-  const char* Name() const override { return "SABIBuilder"; }
+  const char* Name() const override { return "TablePropertiesSABIBuilder"; }
 
   UserCollectedProperties GetReadableProperties() const override {
     return UserCollectedProperties{}; // TODO: 디버그용 맵 구현하기
   }
 };
 
-class SABIBuilderFactory : public TablePropertiesCollectorFactory {
+class TablePropertiesSABIBuilderFactory
+    : public TablePropertiesCollectorFactory {
 public:
   TablePropertiesCollector* CreateTablePropertiesCollector(
       TablePropertiesCollectorFactory::Context context) override {
-    // 필요시 context를 SABIBuilder class 로 전달하기 (level 등)
-    return new SABIBuilder();
+    // 필요시 context를 TablePropertiesSABIBuilder class 로 전달하기 (level 등)
+    return new TablePropertiesSABIBuilder();
   }
 
-  const char* Name() const override { return "SABIBuilderFactory"; }
+  const char* Name() const override {
+    return "TablePropertiesSABIBuilderFactory";
+  }
 };
