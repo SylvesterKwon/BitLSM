@@ -27,14 +27,32 @@ void test() {
   ReadOptions sabi_ro;
   sabi_ro.table_index_factory = new bitmap_index::SABIFactory();
 
-  db->Get(sabi_ro, "5234", &result);
-  cout << result << "\n";
-
+  // WIP - 쿼리 옵션전달 및 Prepare API 사용 테스트중
   rocksdb::Iterator* it = db->NewIterator(sabi_ro);
-  for (it->Seek("123"); it->Valid(); it->Next()) {
-    // Do something with it->key() and it->value().
-    cout << it->key().ToString() << " " << it->value().ToString() << "\n";
+  const rocksdb::Comparator* bytewise_cmp = BytewiseComparator();
+  MultiScanArgs scan_opts = MultiScanArgs(bytewise_cmp);
+  // 이 옵션을 사용하지 않으면 LevelIterator::Prepare() scan option 전파가 안됨
+  scan_opts.use_async_io = true;
+  // TODO: PK upper bound 도 설정 가능하도록 구현 필요
+  unordered_map<std::string, std::string> property_bag = {
+      {"query_condition", "test test"}};
+  string start_key = "789346";
+  // 임의 upper bound (TODO: 없어도 되는지 확인 필요)
+  string end_key = "99999999999999999999";
+
+  scan_opts.insert(start_key, end_key, property_bag);
+  it->Prepare(scan_opts); // WIP - 왜 SABI Prepare 호출 안되는지?
+
+  // it->Seek(start_key); // WIP - SeekToFirst not supported 문제 확인중
+  // cout << "status: " << it->status().ToString() << "\n";
+
+  // assert(it->Valid());
+  // cout << "found!: " << it->value().ToString() << "\n";
+  for (it->SeekToFirst(); it->Valid(); it->Next()) {
+    //   // Do something with it->key() and it->value().
+    // cout << it->key().ToString() << " " << it->value().ToString() << "\n";
   }
+  delete it;
 }
 
 void configure_rocksdb_option() {

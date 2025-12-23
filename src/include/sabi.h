@@ -1,5 +1,6 @@
 #include "roaring.hh"
 #include "rocksdb/user_defined_index.h"
+#include <cstddef>
 #include <iostream>
 #include <memory>
 
@@ -15,12 +16,6 @@ class SABIBuilder;
 class SABIIterator;
 class SABIReader;
 class SABIFactory;
-
-// TODO: 임시로 비트 하나 필터링만 가능함. 추후 composite query condition
-// 지원하도록 수정 필요
-struct QueryCondition {
-  int target_bitmap_index = -1;
-};
 
 class SABIBuilder : public UserDefinedIndexBuilder {
 private:
@@ -101,21 +96,43 @@ public:
 class SABIIterator : public UserDefinedIndexIterator {
 private:
   const SABIReader* reader_;
+  const ScanOptions* scan_opts_;
+  size_t num_opts_;
 
 public:
-  SABIIterator(const SABIReader* reader) : reader_(reader) {}
+  SABIIterator(const SABIReader* reader) : reader_(reader) {
+    cout << "SABIIterator instantiated\n";
+  }
 
   void Prepare(const ScanOptions scan_opts[], size_t num_opts) {
     // TODO: implement this
+    scan_opts_ = scan_opts;
+    num_opts_ = num_opts;
+    // query condition대로 방문할 블록 핸들 벡터로 private member로 저장해야함.
+    cout << "prepare called! num_opts: " << num_opts << "\n";
   };
 
   Status SeekAndGetResult(const Slice& target, IterateResult* result) {
     // TODO: implement this
+    /*
+
+    WIP - 쿼리 조건을 어떻게 받아야와햐는지? target써도 될려나?
+
+    구현 계획:
+    1. Prepare()에서 일단 이 SST-local 한 쿼리결과 계산
+      1.1 쿼리용 비트맵 계산
+      1.2 검색 후보 블록 계산
+    2. SeekAndGetResult() 구현
+    3. NextAndGetResult() 구현
+    */
+    ///////////////////////////////
+    cout << "target: " << target.data() << "\n";
     return Status::OK();
   };
 
   Status NextAndGetResult(IterateResult* result) {
     // TODO: implement this
+    cout << "NextAndGetResult called\n";
     return Status::OK();
   };
 
@@ -175,7 +192,6 @@ public:
   // any other heap data structures allocated by the reader
   size_t ApproximateMemoryUsage() const {
     // TODO: implement this
-
     return 0;
   };
 };
