@@ -41,22 +41,31 @@ set(ENABLE_ROARING_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/CRoaring)
 
 
-# src 디렉터리 아래의 모든 .cpp 파일을 찾아 SOURCES 변수에 저장
-file(GLOB_RECURSE SOURCES "src/*.cpp")
+# MAIN_SOURCE, LIB_SOURCES 설정
+set(MAIN_SOURCE "src/main.cpp")
+file(GLOB_RECURSE LIB_SOURCES "src/include/*.cpp")
+
+# 정적 라이브러리 생성
+add_library(bitmap_index_lib STATIC ${LIB_SOURCES})
+target_include_directories(bitmap_index_lib PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+    ${ROCKSDB_SOURCE_DIR}
+    ${ROCKSDB_SOURCE_DIR}/include
+    ${CROARING_SOURCE_DIR}/cpp/roaring
+)
+target_link_libraries(bitmap_index_lib PUBLIC
+    roaring
+    rocksdb
+)
 
 # 실행 파일 타겟을 생성
-add_executable(${PROJECT_NAME} ${SOURCES})
+add_executable(${PROJECT_NAME} ${MAIN_SOURCE})
 
 # 헤더 파일 검색 경로를 추가
 target_include_directories(${PROJECT_NAME} PRIVATE
-    # 프로젝트 자체 헤더
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/include
-    
-    # RocksDB 헤더
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/include # 프로젝트 자체 헤더
     ${ROCKSDB_SOURCE_DIR} # Internal API
     ${ROCKSDB_SOURCE_DIR}/include # Public API
-
-    # CRoaring 헤더
     ${CROARING_SOURCE_DIR}/cpp/roaring
 )
 
@@ -66,6 +75,7 @@ find_package(Threads REQUIRED)
 
 # 라이브러리 링크
 target_link_libraries(${PROJECT_NAME} PRIVATE
+    bitmap_index_lib    
     rocksdb
     roaring
     dl
