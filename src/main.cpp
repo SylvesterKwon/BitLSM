@@ -23,6 +23,7 @@ Status s;
 void test() {
   // scratch //
   // create_kvp(db, 1e8, 16);
+  // return;
   string result;
   ReadOptions sabi_ro;
   sabi_ro.table_index_factory = new bitmap_index::SABIFactory();
@@ -30,16 +31,15 @@ void test() {
   rocksdb::Iterator* it = db->NewIterator(sabi_ro);
   const rocksdb::Comparator* bytewise_cmp = BytewiseComparator();
   MultiScanArgs scan_opts = MultiScanArgs(bytewise_cmp);
-  // 이 옵션을 사용하지 않으면 LevelIterator::Prepare() scan option 전파가 안됨
-  scan_opts.use_async_io = true;
-  // TODO: PK upper bound 도 설정 가능하도록 구현 필요
-  unordered_map<string, string> property_bag = {{"qc", "test test"}};
+  scan_opts.use_async_io = true; // scan option 전파를 위해 필요한 옵션
+
+  unordered_map<string, string> property_bag = {{"qc", "3"}};
   string start_key = "789346";
   // 임의 upper bound (TODO: 없어도 되는지 확인 필요)
   string end_key = "99999999999999999999";
 
   scan_opts.insert(start_key, end_key, property_bag);
-  it->Prepare(scan_opts); // WIP - 왜 SABI Prepare 호출 안되는지?
+  it->Prepare(scan_opts);
 
   // it->Seek(start_key); // WIP - SeekToFirst not supported 문제 확인중
   // cout << "status: " << it->status().ToString() << "\n";

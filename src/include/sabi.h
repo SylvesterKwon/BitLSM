@@ -15,7 +15,8 @@ class SABIFactory;
 
 class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
 private:
-  uint32_t cur_table_kv_cnt_ = 0, cur_block_kv_cnt_ = 0;
+  uint32_t cur_table_kv_cnt_ = 0;  // total number of KVPairs in current table
+  uint32_t index_entries_cnt_ = 0; // total number of index entries added
   std::vector<roaring::Roaring> roaring_set_;
   std::string final_index_blob_;
 
@@ -46,13 +47,18 @@ public:
   rocksdb::UserDefinedIndexBuilder::BlockHandle value();
 };
 
+struct SABIBlockIndexEntry {
+  std::string index_key;
+  rocksdb::UserDefinedIndexBuilder::BlockHandle block_handle;
+  uint32_t prefix_kv_cnt;
+};
+
 class SABIReader : public rocksdb::UserDefinedIndexReader {
   friend class SABIIterator;
 
 private:
-  rocksdb::Slice index_block_;
-  std::vector<uint32_t> offsets;
   std::vector<roaring::Roaring> roaring_set_;
+  std::vector<SABIBlockIndexEntry> block_indices;
   using AlignedPtr = std::unique_ptr<char[], void (*)(void*)>;
   std::vector<AlignedPtr> managed_buffers_;
 
