@@ -8,7 +8,6 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # C++ Standard
 set(CMAKE_CXX_STANDARD 20)
 
-
 # RocksDB
 set(CMAKE_BUILD_TYPE Debug) # 빌드 타입을 Debug로 설정하여 디버깅 심볼을 포함
 # set(CMAKE_BUILD_TYPE Release) # 벤치마크시에는 Release 모드로 빌드 필요
@@ -18,8 +17,7 @@ set(WITH_CORE_TOOLS ON CACHE BOOL "" FORCE)
 set(WITH_TOOLS OFF CACHE BOOL "" FORCE)
 set(WITH_GFLAGS OFF CACHE BOOL "" FORCE)
 set(ROCKSDB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-set(FAIL_ON_WARNINGS OFF CACHE BOOL "" FORCE)         # 경고 때문에 빌드 멈춤 방지
-# Compression libraries
+set(FAIL_ON_WARNINGS OFF CACHE BOOL "" FORCE)
 set(WITH_SNAPPY ON CACHE BOOL "" FORCE)
 set(WITH_LZ4 ON CACHE BOOL "" FORCE)
 set(WITH_ZSTD ON CACHE BOOL "" FORCE)
@@ -40,50 +38,70 @@ set(CROARING_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/CRoaring)
 set(ENABLE_ROARING_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/CRoaring)
 
-
 # MAIN_SOURCE, LIB_SOURCES 설정
 set(MAIN_SOURCE "src/main.cpp")
 file(GLOB_RECURSE LIB_SOURCES "src/include/*.cpp")
 
-# 정적 라이브러리 생성
+# bitmap_index_lib 정적 라이브러리 생성
 add_library(bitmap_index_lib STATIC ${LIB_SOURCES})
 target_include_directories(bitmap_index_lib PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/include
-    ${ROCKSDB_SOURCE_DIR}
-    ${ROCKSDB_SOURCE_DIR}/include
-    ${CROARING_SOURCE_DIR}/cpp/roaring
+${CMAKE_CURRENT_SOURCE_DIR}/src/include
+${ROCKSDB_SOURCE_DIR}
+${ROCKSDB_SOURCE_DIR}/include
+${CROARING_SOURCE_DIR}/cpp/roaring
 )
 target_link_libraries(bitmap_index_lib PUBLIC
-    roaring
-    rocksdb
+roaring
+rocksdb
 )
 
 # 실행 파일 타겟을 생성
 add_executable(${PROJECT_NAME} ${MAIN_SOURCE})
 
 # 헤더 파일 검색 경로를 추가
-target_include_directories(${PROJECT_NAME} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/include # 프로젝트 자체 헤더
-    ${ROCKSDB_SOURCE_DIR} # Internal API
-    ${ROCKSDB_SOURCE_DIR}/include # Public API
-    ${CROARING_SOURCE_DIR}/cpp/roaring
+set(COMMON_INCLUDE_DIRS
+${CMAKE_CURRENT_SOURCE_DIR}/src/include # 프로젝트 자체 헤더
+${ROCKSDB_SOURCE_DIR} # Internal API
+${ROCKSDB_SOURCE_DIR}/include # Public API
+${CROARING_SOURCE_DIR}/cpp/roaring
 )
-
-target_link_directories(${PROJECT_NAME} PRIVATE /usr/local/lib)
 
 find_package(Threads REQUIRED)
 
 # 라이브러리 링크
-target_link_libraries(${PROJECT_NAME} PRIVATE
-    bitmap_index_lib    
-    rocksdb
-    roaring
-    dl
-    Threads::Threads
-    m
-    z
-    bz2
-    snappy
-    lz4
-    zstd
+set(COMMON_LINK_LIBS
+bitmap_index_lib    
+rocksdb
+roaring
+dl
+Threads::Threads
+m
+z
+bz2
+snappy
+lz4
+zstd
 )
+
+target_include_directories(${PROJECT_NAME} PRIVATE ${COMMON_INCLUDE_DIRS})
+target_link_directories(${PROJECT_NAME} PRIVATE /usr/local/lib)
+target_link_libraries(${PROJECT_NAME} PRIVATE ${COMMON_LINK_LIBS})
+
+# 실험용 소스 빌드
+file(GLOB_RECURSE EXPERIMENT_SOURCES "src/experiment/*.cpp")
+foreach(EXP_SRC ${EXPERIMENT_SOURCES})
+    get_filename_component(EXP_NAME ${EXP_SRC} NAME_WE) # 파일명 추출
+    add_executable(${EXP_NAME} ${EXP_SRC}) # 실행 파일 생성
+    get_filename_component(EXP_DIR ${EXP_SRC} DIRECTORY) # 실험 파일의 디렉토리 경로
+
+    # Main.cpp과 동일한 환경 설정 (변수 재사용)
+    target_include_directories(${EXP_NAME} PRIVATE ${COMMON_INCLUDE_DIRS})
+    target_include_directories(${EXP_NAME} PRIVATE 
+        ${COMMON_INCLUDE_DIRS} # 공통 헤더
+        ${EXP_DIR}             # 실험용 헤더
+    )
+    target_link_directories(${EXP_NAME} PRIVATE /usr/local/lib)
+    target_link_libraries(${EXP_NAME} PRIVATE ${COMMON_LINK_LIBS})
+    
+    message(STATUS "Experiment executable added: ${EXP_NAME}")
+endforeach()
