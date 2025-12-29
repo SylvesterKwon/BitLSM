@@ -5,7 +5,14 @@
 using namespace std;
 using namespace rocksdb;
 
-// TODO: Generate workload
+enum TestType {
+  // TODO: 테스트 유형 정해보기. SK distribution은 어떻게 보여줄지?
+};
+
+void generate_workload() {
+  // TODO: Generate workload by test type
+}
+
 void test_eager_updates() {
   auto experiment = StandaloneSecondaryIndexExperiment::Create<EagerUpdates>(
       "/scratch/data/eager_updates");

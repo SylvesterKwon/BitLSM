@@ -1,6 +1,7 @@
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "rocksdb/status.h"
+#include "rocksdb/utilities/transaction_db.h"
 #include <iostream>
 
 class StandaloneSecondaryIndexExperiment {
@@ -8,8 +9,9 @@ private:
   std::string db_path_ = "/scratch/data/eager_updates";
 
 protected:
-  rocksdb::DB* db;
+  rocksdb::TransactionDB* txn_db;
   rocksdb::Options options;
+  rocksdb::TransactionDBOptions txn_db_options;
   std::vector<rocksdb::ColumnFamilyHandle*> cf_handles;
   rocksdb::Status s;
   StandaloneSecondaryIndexExperiment() = default;
@@ -36,7 +38,8 @@ protected:
     };
 
     std::cout << "Opening DB...\n";
-    s = rocksdb::DB::Open(options, db_path_, column_families, &cf_handles, &db);
+    s = rocksdb::TransactionDB::Open(options, txn_db_options, db_path_,
+                                     column_families, &cf_handles, &txn_db);
     if (!s.ok())
       std::cout << "state: " << s.getState() << "\n";
     assert(s.ok());
@@ -47,15 +50,19 @@ protected:
 public:
   virtual ~StandaloneSecondaryIndexExperiment() {
     std::cout << "Shutting down DB gracefully...\n";
-    for (auto cf_handle : cf_handles)
-      db->DestroyColumnFamilyHandle(cf_handle);
+
+    for (auto cf_handle : cf_handles) {
+      s = txn_db->DestroyColumnFamilyHandle(cf_handle);
+      assert(s.ok());
+    }
 
     rocksdb::WaitForCompactOptions wait_for_compact_options =
         rocksdb::WaitForCompactOptions();
     wait_for_compact_options.close_db = true;
-    s = db->WaitForCompact(wait_for_compact_options);
+    s = txn_db->WaitForCompact(wait_for_compact_options);
     assert(s.ok());
-    delete db;
+    delete txn_db;
+
     std::cout << "Successfully closed DB. Bye!\n";
   };
   enum IndexType {
@@ -71,6 +78,7 @@ public:
   virtual rocksdb::Status Insert(const rocksdb::Slice& key,
                                  const rocksdb::Slice& value) = 0;
   virtual rocksdb::Status Get(const rocksdb::Slice& key,
-                              const IndexType index_type,
                               std::string* value) = 0;
+  virtual rocksdb::Status GetBySecondaryIndex(const rocksdb::Slice& key,
+                                              std::string* value) = 0;
 };
