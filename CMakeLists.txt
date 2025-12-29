@@ -87,7 +87,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${COMMON_INCLUDE_DIRS})
 target_link_directories(${PROJECT_NAME} PRIVATE /usr/local/lib)
 target_link_libraries(${PROJECT_NAME} PRIVATE ${COMMON_LINK_LIBS})
 
-# 실험용 소스 빌드
 file(GLOB_RECURSE EXPERIMENT_SOURCES "src/experiment/*.cpp")
 foreach(EXP_SRC ${EXPERIMENT_SOURCES})
     get_filename_component(EXP_NAME ${EXP_SRC} NAME_WE) # 파일명 추출

@@ -13,7 +13,6 @@ using namespace roaring;
 
 // CONSTANTS
 const string db_path = "/scratch/data/user_defined_index_test";
-const string server_address = "0.0.0.0:50051";
 
 // GLOBAL VAR
 DB* db;
