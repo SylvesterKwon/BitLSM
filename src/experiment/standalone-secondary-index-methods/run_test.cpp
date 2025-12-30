@@ -1,4 +1,5 @@
 #include "eager_updates.h"
+#include "rocksdb/slice.h"
 #include <cstring>
 #include <iostream>
 
@@ -13,9 +14,33 @@ void generate_workload() {
   // TODO: Generate workload by test type
 }
 
+void simple_test(StandaloneSecondaryIndexExperiment* experiment) {
+  experiment->Insert(Slice("pk2"), Slice("sk1,value2"));
+  experiment->Insert(Slice("pk1"), Slice("sk1,value1"));
+
+  vector<pair<string, PinnableSlice>> results;
+  experiment->GetBySecondaryIndex(Slice("sk1"), &results);
+  cout << "test1: \n";
+  for (auto& [k, v] : results) {
+    cout << "{" << k << ", " << v.ToStringView() << "},";
+  }
+  cout << "\n";
+
+  experiment->Insert(Slice("pk3"), Slice("sk2,value3"));
+  experiment->Insert(Slice("pk4"), Slice("sk1,value4"));
+
+  experiment->GetBySecondaryIndex(Slice("sk1"), &results);
+  cout << "test2: \n";
+  for (auto& [k, v] : results) {
+    cout << "{" << k << ", " << v.ToStringView() << "},";
+  }
+  cout << "\n";
+}
+
 void test_eager_updates() {
   auto experiment = StandaloneSecondaryIndexExperiment::Create<EagerUpdates>(
       "/scratch/data/eager_updates");
+  simple_test(experiment.get());
 }
 
 int main(const int argc, char* argv[]) {

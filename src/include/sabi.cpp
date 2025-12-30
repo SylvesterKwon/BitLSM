@@ -56,6 +56,9 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   uint32_t total_roaring_size = 0,
            total_offset_table_size = 0; // size in bytes
 
+  // TODO: final_index_blob_ 에 필요한 추가 메모리 공간 미리 reserve 하도록
+  // 최적화
+
   // 1. Calculate offsets for Roaring
   uint32_t base_offset = final_index_blob_.size();
   offsets.push_back(base_offset);

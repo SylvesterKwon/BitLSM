@@ -4,6 +4,7 @@
 #include "rocksdb/utilities/transaction_db.h"
 #include <iostream>
 
+// Interface for standalone, secondary index experiment
 class StandaloneSecondaryIndexExperiment {
 private:
   std::string db_path_ = "/scratch/data/eager_updates";
@@ -79,6 +80,8 @@ public:
                                  const rocksdb::Slice& value) = 0;
   virtual rocksdb::Status Get(const rocksdb::Slice& key,
                               std::string* value) = 0;
-  virtual rocksdb::Status GetBySecondaryIndex(const rocksdb::Slice& key,
-                                              std::string* value) = 0;
+  virtual std::vector<rocksdb::Status> GetBySecondaryIndex(
+      const rocksdb::Slice& key,
+      std::vector<std::pair<std::string, rocksdb::PinnableSlice>>* results) = 0;
+  // virtual rocksdb::Status Delete(const rocksdb::Slice& key);
 };
