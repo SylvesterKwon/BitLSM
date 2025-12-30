@@ -1,4 +1,5 @@
 #include "eager_updates.h"
+#include "lazy_updates.h"
 #include "rocksdb/slice.h"
 #include <cstring>
 #include <iostream>
@@ -43,8 +44,15 @@ void test_eager_updates() {
   simple_test(experiment.get());
 }
 
+void test_lazy_updates() {
+  auto experiment = StandaloneSecondaryIndexExperiment::Create<LazyUpdates>(
+      "/scratch/data/lazy_updates");
+  simple_test(experiment.get());
+}
+
 int main(const int argc, char* argv[]) {
   // TODO: 테스트 분기 추가
-  test_eager_updates();
+  // test_eager_updates();
+  test_lazy_updates();
   return 0;
 }

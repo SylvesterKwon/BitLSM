@@ -1,3 +1,5 @@
+#pragma once
+
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "rocksdb/status.h"
@@ -13,12 +15,15 @@ protected:
   rocksdb::TransactionDB* txn_db;
   rocksdb::Options options;
   rocksdb::TransactionDBOptions txn_db_options;
+  std::vector<rocksdb::ColumnFamilyDescriptor> column_families;
   std::vector<rocksdb::ColumnFamilyHandle*> cf_handles;
   rocksdb::Status s;
   StandaloneSecondaryIndexExperiment() = default;
 
   const std::string primary_index_cf_name = rocksdb::kDefaultColumnFamilyName;
   const std::string secondary_index_cf_name = "secondary_index";
+
+  virtual void ConfigureCustomDBOptions() {};
 
   void Initialize(std::string db_path) {
     std::cout << "Initialize StandaloneSecondaryIndexExperiment\n";
@@ -28,15 +33,18 @@ protected:
     std::cout << "Destroying previous DB...\n";
     s = rocksdb::DestroyDB(db_path_, options);
 
-    // configure DB
+    // configure common DB setting
     options.create_if_missing = true;
     options.create_missing_column_families = true;
-    std::vector<rocksdb::ColumnFamilyDescriptor> column_families = {
+    column_families = {
         rocksdb::ColumnFamilyDescriptor(primary_index_cf_name,
                                         rocksdb::ColumnFamilyOptions()),
         rocksdb::ColumnFamilyDescriptor(secondary_index_cf_name,
                                         rocksdb::ColumnFamilyOptions()),
     };
+
+    // configure children class DB setting
+    ConfigureCustomDBOptions();
 
     std::cout << "Opening DB...\n";
     s = rocksdb::TransactionDB::Open(options, txn_db_options, db_path_,

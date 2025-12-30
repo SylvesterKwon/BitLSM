@@ -1,7 +1,7 @@
 #include "rocksdb/options.h"
 #include "rocksdb/slice.h"
 #include "standalone_secondary_index_experiment.h"
-#include "util/coding.h"
+#include "standalone_secondary_index_utils.h"
 #include <cstring>
 
 using namespace std;
@@ -9,24 +9,6 @@ using namespace rocksdb;
 
 class EagerUpdates : public StandaloneSecondaryIndexExperiment {
 private:
-  void DecodeIndexValue(Slice& data, vector<Slice>* result) {
-    uint32_t total_cnt;
-    GetFixed32(&data, &total_cnt);
-
-    result->resize(total_cnt);
-    for (Slice& ri : *result) {
-      GetLengthPrefixedSlice(&data, &ri);
-    }
-  }
-
-  void EncodeIndexValue(const vector<Slice>* input, string* dest) {
-    PutFixed32(dest, static_cast<uint32_t>(input->size()));
-
-    for (Slice const& i : *input) {
-      PutLengthPrefixedSlice(dest, i);
-    }
-  }
-
   void InsertSIValue(vector<Slice>* si_value, const Slice& key) {
     auto it = lower_bound(
         si_value->begin(), si_value->end(), key,
@@ -81,7 +63,7 @@ public:
                       encoded_si_value);
     }
 
-    // 2. Update PK index
+    // 3. Update PK index
     s = txn_db->Put(write_options, cf_handles[0], key, value);
 
     // 4. Commit transaction
