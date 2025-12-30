@@ -3,6 +3,7 @@
 #include "standalone_secondary_index_experiment.h"
 #include "standalone_secondary_index_utils.h"
 #include <cstring>
+#include <sstream>
 
 using namespace std;
 using namespace rocksdb;
@@ -36,35 +37,41 @@ public:
     ReadOptions read_options;
     WriteOptions write_options;
     Transaction* txn = txn_db->BeginTransaction(write_options);
-    string_view current_sk =
-        value.ToStringView().substr(0, value.ToStringView().find(','));
 
-    // 1. Find existing SK entry
-    string existing_si_value_str; // {sk_i, {pks...}}
-    s = txn_db->Get(read_options, cf_handles[1], current_sk,
-                    &existing_si_value_str);
+    // for each SI
+    string current_sk;
+    stringstream ss(value.ToString());
+    for (uint32_t idx_no = 0; idx_no < si_cnt; idx_no++) {
+      assert(getline(ss, current_sk, ','));
 
-    // 2. Update SK
-    if (s.IsNotFound()) {
-      vector<Slice> new_si_value = {key};
-      string encoded_si_value;
-      EncodeIndexValue(&new_si_value, &encoded_si_value);
-      txn_db->Put(write_options, cf_handles[1], current_sk, encoded_si_value);
-    } else {
-      vector<Slice> si_value;
-      Slice existing_si_value_slice(existing_si_value_str);
-      DecodeIndexValue(existing_si_value_slice, &si_value);
+      // 1. Find existing SK entry
+      string existing_si_value_str; // {sk_i, {pks...}}
+      s = txn->Get(read_options, cf_handles[1],
+                   internal_si_key(idx_no, current_sk), &existing_si_value_str);
 
-      InsertSIValue(&si_value, key);
+      // 2. Update SK
+      if (s.IsNotFound()) {
+        vector<Slice> new_si_value = {key};
+        string encoded_si_value;
+        EncodeIndexValue(&new_si_value, &encoded_si_value);
+        txn->Put(cf_handles[1], internal_si_key(idx_no, current_sk),
+                 encoded_si_value);
+      } else {
+        vector<Slice> si_value;
+        Slice existing_si_value_slice(existing_si_value_str);
+        DecodeIndexValue(existing_si_value_slice, &si_value);
 
-      string encoded_si_value;
-      EncodeIndexValue(&si_value, &encoded_si_value);
-      s = txn_db->Put(write_options, cf_handles[1], current_sk,
-                      encoded_si_value);
+        InsertSIValue(&si_value, key);
+
+        string encoded_si_value;
+        EncodeIndexValue(&si_value, &encoded_si_value);
+        s = txn->Put(cf_handles[1], internal_si_key(idx_no, current_sk),
+                     encoded_si_value);
+      }
+
+      // 3. Update PK index
+      s = txn->Put(cf_handles[0], key, value);
     }
-
-    // 3. Update PK index
-    s = txn_db->Put(write_options, cf_handles[0], key, value);
 
     // 4. Commit transaction
     s = txn->Commit();
@@ -79,13 +86,17 @@ public:
   };
 
   vector<Status>
-  GetBySecondaryIndex(const Slice& key,
+  GetBySecondaryIndex(const Slice& key, const uint32_t idx_no,
                       vector<pair<string, PinnableSlice>>* results) {
     ReadOptions read_options;
 
     // 1. Get PK list by SK
     string existing_si_value_str;
-    s = txn_db->Get(read_options, cf_handles[1], key, &existing_si_value_str);
+    s = txn_db->Get(read_options, cf_handles[1], internal_si_key(idx_no, key),
+                    &existing_si_value_str);
+    if (s.IsNotFound())
+      return {};
+
     vector<Slice> si_value;
     Slice existing_si_value_slice(existing_si_value_str);
     DecodeIndexValue(existing_si_value_slice, &si_value);

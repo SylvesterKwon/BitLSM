@@ -16,43 +16,44 @@ void generate_workload() {
 }
 
 void simple_test(StandaloneSecondaryIndexExperiment* experiment) {
-  experiment->Insert(Slice("pk2"), Slice("sk1,value2"));
-  experiment->Insert(Slice("pk1"), Slice("sk1,value1"));
+  experiment->Insert(Slice("pk2"), Slice("sk1_1,sk2_2,value2"));
+  experiment->Insert(Slice("pk1"), Slice("sk1_1,sk2_1,value1"));
+  experiment->Insert(Slice("pk4"), Slice("sk1_2,sk2_2,value4"));
+  experiment->Insert(Slice("pk3"), Slice("sk1_2,sk2_1,value3"));
 
   vector<pair<string, PinnableSlice>> results;
-  experiment->GetBySecondaryIndex(Slice("sk1"), &results);
+  experiment->GetBySecondaryIndex(Slice("sk1_1"), 0, &results);
   cout << "test1: \n";
   for (auto& [k, v] : results) {
     cout << "{" << k << ", " << v.ToStringView() << "},";
   }
   cout << "\n";
+  // expected output: {pk1, sk1_1,sk2_1,value1},{pk2, sk1_1,sk2_2,value2},
 
-  experiment->Insert(Slice("pk3"), Slice("sk2,value3"));
-  experiment->Insert(Slice("pk4"), Slice("sk1,value4"));
-
-  experiment->GetBySecondaryIndex(Slice("sk1"), &results);
+  experiment->GetBySecondaryIndex(Slice("sk2_2"), 1, &results);
   cout << "test2: \n";
   for (auto& [k, v] : results) {
     cout << "{" << k << ", " << v.ToStringView() << "},";
   }
   cout << "\n";
+  // expected output: {pk2, sk1_1,sk2_2,value2},{pk4, sk1_2,sk2_2,value4},
 }
 
 void test_eager_updates() {
   auto experiment = StandaloneSecondaryIndexExperiment::Create<EagerUpdates>(
-      "/scratch/data/eager_updates");
+      "/scratch/data/eager_updates", 2);
   simple_test(experiment.get());
 }
 
 void test_lazy_updates() {
   auto experiment = StandaloneSecondaryIndexExperiment::Create<LazyUpdates>(
-      "/scratch/data/lazy_updates");
+      "/scratch/data/lazy_updates", 2);
   simple_test(experiment.get());
 }
 
 int main(const int argc, char* argv[]) {
   // TODO: 테스트 분기 추가
-  // test_eager_updates();
-  test_lazy_updates();
+  test_eager_updates();
+  // test_lazy_updates();
   return 0;
 }

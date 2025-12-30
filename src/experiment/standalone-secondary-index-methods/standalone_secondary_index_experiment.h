@@ -19,15 +19,17 @@ protected:
   std::vector<rocksdb::ColumnFamilyHandle*> cf_handles;
   rocksdb::Status s;
   StandaloneSecondaryIndexExperiment() = default;
+  uint32_t si_cnt;
 
   const std::string primary_index_cf_name = rocksdb::kDefaultColumnFamilyName;
   const std::string secondary_index_cf_name = "secondary_index";
 
   virtual void ConfigureCustomDBOptions() {};
 
-  void Initialize(std::string db_path) {
+  void Initialize(std::string db_path, uint32_t si_cnt) {
     std::cout << "Initialize StandaloneSecondaryIndexExperiment\n";
     db_path_ = db_path;
+    this->si_cnt = si_cnt;
 
     // destroy previous db
     std::cout << "Destroying previous DB...\n";
@@ -44,6 +46,7 @@ protected:
     };
 
     // configure children class DB setting
+    std::cout << "Configuring custom DB options...\n";
     ConfigureCustomDBOptions();
 
     std::cout << "Opening DB...\n";
@@ -79,9 +82,10 @@ public:
     kSecondaryIndex,
   };
   template <typename T>
-  static std::unique_ptr<T> Create(const std::string& db_path_) {
+  static std::unique_ptr<T> Create(const std::string& db_path_,
+                                   uint32_t si_cnt = 1) {
     auto ptr = std::make_unique<T>();
-    ptr->Initialize(db_path_);
+    ptr->Initialize(db_path_, si_cnt);
     return ptr;
   }
   virtual rocksdb::Status Insert(const rocksdb::Slice& key,
@@ -89,7 +93,7 @@ public:
   virtual rocksdb::Status Get(const rocksdb::Slice& key,
                               std::string* value) = 0;
   virtual std::vector<rocksdb::Status> GetBySecondaryIndex(
-      const rocksdb::Slice& key,
+      const rocksdb::Slice& key, const uint32_t idx_no,
       std::vector<std::pair<std::string, rocksdb::PinnableSlice>>* results) = 0;
   // virtual rocksdb::Status Delete(const rocksdb::Slice& key);
 };
