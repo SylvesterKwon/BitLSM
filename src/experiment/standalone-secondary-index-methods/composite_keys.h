@@ -25,7 +25,8 @@ protected:
     // Set up bloom filter
     // (reference: https://github.com/facebook/rocksdb/wiki/Prefix-Seek)
     BlockBasedTableOptions table_options;
-    table_options.filter_policy.reset(NewBloomFilterPolicy(10, false));
+    table_options.filter_policy.reset(
+        NewBloomFilterPolicy(prefix_bloom_bits_per_key, false));
     table_options.whole_key_filtering = false;
     column_families[1].options.table_factory.reset(
         NewBlockBasedTableFactory(table_options));
@@ -48,7 +49,7 @@ public:
       current_sk.resize(si_prefix_length, ' ');
       current_sk += key.ToString();
       txn->Put(cf_handles[1],
-               internal_si_key(idx_no, current_sk, idx_no_prefix_size), "");
+               GetInternalSIKey(idx_no, current_sk, idx_no_prefix_size), "");
     }
 
     // 2. Update PK index
@@ -62,9 +63,8 @@ public:
     return Status::OK();
   };
 
-  vector<Status>
-  GetBySecondaryIndex(const Slice& key, const uint32_t idx_no,
-                      vector<pair<string, PinnableSlice>>* results) override {
+  Status GetBySecondaryIndex(const Slice& key, const uint32_t idx_no,
+                             vector<pair<string, string>>* results) override {
     ReadOptions si_read_options;
     si_read_options.auto_prefix_mode = true;
     si_read_options.prefix_same_as_start = true;
@@ -75,7 +75,7 @@ public:
     string resized_key = key.ToString();
     resized_key.resize(si_prefix_length, ' ');
 
-    string si_key = internal_si_key(idx_no, resized_key);
+    string si_key = GetInternalSIKey(idx_no, resized_key);
     vector<string> pk_str_list;
     uint32_t prefix_size = idx_no_prefix_size + si_prefix_length;
     cout << "find: " << si_key << "\n";
@@ -87,8 +87,9 @@ public:
     }
     delete it;
     vector<Slice> pk_slice_list(pk_str_list.size());
-    for (uint32_t i = 0; i < pk_str_list.size(); ++i)
+    for (uint32_t i = 0; i < pk_str_list.size(); ++i) {
       pk_slice_list[i] = Slice(pk_str_list[i]);
+    }
 
     // 2. Get actual KVPairs by PK
     ReadOptions read_options;
@@ -102,10 +103,9 @@ public:
     // 3. Construct result KVPairs
     for (size_t i = 0; i < result_size; ++i) {
       assert(statuses[i].ok());
-      (*results)[i].first = pk_slice_list[i].ToString();
-      (*results)[i].second = std::move(values[i]);
+      (*results)[i] = {pk_slice_list[i].ToString(), values[i].ToString()};
     }
 
-    return statuses;
+    return Status::OK();
   };
 };

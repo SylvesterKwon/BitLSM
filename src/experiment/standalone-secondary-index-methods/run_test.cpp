@@ -1,6 +1,7 @@
 #include "composite_keys.h"
 #include "eager_updates.h"
 #include "lazy_updates.h"
+#include "no_secondary_index.h"
 #include "rocksdb/slice.h"
 #include <cstring>
 #include <iostream>
@@ -22,11 +23,11 @@ void simple_test(StandaloneSecondaryIndexExperiment* experiment) {
   experiment->Insert(Slice("pk4"), Slice("sk1_2,sk2_2,value4"));
   experiment->Insert(Slice("pk3"), Slice("sk1_2,sk2_1,value3"));
 
-  vector<pair<string, PinnableSlice>> results;
+  vector<pair<string, string>> results;
   experiment->GetBySecondaryIndex(Slice("sk1_1"), 0, &results);
   cout << "test1: \n";
   for (auto& [k, v] : results) {
-    cout << "{" << k << ", " << v.ToStringView() << "},";
+    cout << "{" << k << ", " << v << "},";
   }
   cout << "\n";
   // expected output: {pk1, sk1_1,sk2_1,value1},{pk2, sk1_1,sk2_2,value2},
@@ -34,10 +35,17 @@ void simple_test(StandaloneSecondaryIndexExperiment* experiment) {
   experiment->GetBySecondaryIndex(Slice("sk2_2"), 1, &results);
   cout << "test2: \n";
   for (auto& [k, v] : results) {
-    cout << "{" << k << ", " << v.ToStringView() << "},";
+    cout << "{" << k << ", " << v << "},";
   }
   cout << "\n";
   // expected output: {pk2, sk1_1,sk2_2,value2},{pk4, sk1_2,sk2_2,value4},
+}
+
+void test_no_secondary_index() {
+  auto experiment =
+      StandaloneSecondaryIndexExperiment::Create<NoSecondaryIndex>(
+          "/scratch/data/no_secondary_index", 2);
+  simple_test(experiment.get());
 }
 
 void test_eager_updates() {
@@ -60,8 +68,9 @@ void test_composite_keys() {
 
 int main(const int argc, char* argv[]) {
   // TODO: 테스트 분기 추가
+  test_no_secondary_index();
   // test_eager_updates();
   // test_lazy_updates();
-  test_composite_keys();
+  // test_composite_keys();
   return 0;
 }

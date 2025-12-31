@@ -2,6 +2,7 @@
 
 #include "rocksdb/slice.h"
 #include "util/coding.h"
+#include <sstream>
 #include <string>
 
 inline void DecodeIndexValue(rocksdb::Slice& data,
@@ -25,11 +26,29 @@ inline void EncodeIndexValue(const std::vector<rocksdb::Slice>* src,
 }
 
 // Return index SI key
-inline std::string internal_si_key(uint32_t idx_no, const rocksdb::Slice& key,
-                                   uint32_t idx_no_prefix_size = 4) {
+inline std::string GetInternalSIKey(uint32_t idx_no, const rocksdb::Slice& key,
+                                    uint32_t idx_no_prefix_size = 4) {
   std::string res = std::to_string(idx_no);
   assert(res.size() <= idx_no_prefix_size);
   res.resize(idx_no_prefix_size, ' '); // Add padding to make it fix-sized
   res += key.ToStringView();
   return res;
 };
+
+// Get i-th token of given string and delimiter. Returns empty string if there's
+// no i-th token
+// Warning - don't use this in iteration, causes O(N^2) complexity
+// since it uses while-getline
+inline std::string GetIthToken(const std::string& str, int index,
+                               char delim = ',') {
+  std::stringstream ss(str);
+  std::string token;
+  int current = 0;
+
+  while (getline(ss, token, delim)) {
+    if (current == index)
+      return token;
+    current++;
+  }
+  return "";
+}

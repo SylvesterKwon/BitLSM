@@ -95,8 +95,8 @@ public:
   };
   virtual rocksdb::Status Insert(const rocksdb::Slice& key,
                                  const rocksdb::Slice& value) = 0;
-  virtual std::vector<rocksdb::Status> GetBySecondaryIndex(
+  virtual rocksdb::Status GetBySecondaryIndex(
       const rocksdb::Slice& key, const uint32_t idx_no,
-      std::vector<std::pair<std::string, rocksdb::PinnableSlice>>* results) = 0;
+      std::vector<std::pair<std::string, std::string>>* results) = 0;
   // virtual rocksdb::Status Delete(const rocksdb::Slice& key);
 };

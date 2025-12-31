@@ -77,7 +77,7 @@ public:
       vector<Slice> new_si_value = {key};
       string encoded_si_value;
       EncodeIndexValue(&new_si_value, &encoded_si_value);
-      s = txn->Merge(cf_handles[1], internal_si_key(idx_no, current_sk),
+      s = txn->Merge(cf_handles[1], GetInternalSIKey(idx_no, current_sk),
                      encoded_si_value);
       assert(s.ok());
     }
@@ -94,14 +94,13 @@ public:
     return Status::OK();
   };
 
-  vector<Status>
-  GetBySecondaryIndex(const Slice& key, const uint32_t idx_no,
-                      vector<pair<string, PinnableSlice>>* results) override {
+  Status GetBySecondaryIndex(const Slice& key, const uint32_t idx_no,
+                             vector<pair<string, string>>* results) override {
     ReadOptions read_options;
 
     // 1. Get PK list by SK
     string existing_si_value_str;
-    s = txn_db->Get(read_options, cf_handles[1], internal_si_key(idx_no, key),
+    s = txn_db->Get(read_options, cf_handles[1], GetInternalSIKey(idx_no, key),
                     &existing_si_value_str);
     if (s.IsNotFound())
       return {};
@@ -121,10 +120,9 @@ public:
     // 3. Construct result KVPairs
     for (size_t i = 0; i < result_size; ++i) {
       assert(statuses[i].ok());
-      (*results)[i].first = si_value[i].ToString();
-      (*results)[i].second = std::move(values[i]);
+      (*results)[i] = {si_value[i].ToString(), values[i].ToString()};
     }
 
-    return statuses;
+    return Status::OK();
   };
 };
