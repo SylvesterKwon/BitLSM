@@ -33,7 +33,7 @@ private:
   }
 
 public:
-  Status Insert(const Slice& key, const Slice& value) {
+  Status Insert(const Slice& key, const Slice& value) override {
     ReadOptions read_options;
     WriteOptions write_options;
     Transaction* txn = txn_db->BeginTransaction(write_options);
@@ -80,14 +80,10 @@ public:
 
     return Status::OK();
   };
-  Status Get(const Slice& key, string* value) {
-    ReadOptions read_options;
-    return s = txn_db->Get(read_options, cf_handles[0], key, value);
-  };
 
   vector<Status>
   GetBySecondaryIndex(const Slice& key, const uint32_t idx_no,
-                      vector<pair<string, PinnableSlice>>* results) {
+                      vector<pair<string, PinnableSlice>>* results) override {
     ReadOptions read_options;
 
     // 1. Get PK list by SK

@@ -1,11 +1,10 @@
-## SST-Attached Bitmap Index (SABI)
+## LSM-Tree bitmap index
 WIP
 
 Based on RocksDB v10.9.0
 
 ## Installation
-
-### 0. Install Rocksdb Submodule
+### 0. Install Git Submodule ([RocksDB](https://github.com/facebook/rocksdb) & [CRoaring](https://github.com/RoaringBitmap/CRoaring))
 ```bash
 $ git submodule update --init --recursive
 ```
@@ -50,6 +49,3 @@ WIP
 ```
 ./build/bin/sst_dump /scratch/data/random_bit_props_test/000304.sst --command=scan --show_properties
 ```
-
-## TODO
-[] tools binary로 주지말고 빌드하는 스크립트를 주도록 변경

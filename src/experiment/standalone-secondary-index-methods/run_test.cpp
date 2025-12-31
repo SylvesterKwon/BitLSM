@@ -1,3 +1,4 @@
+#include "composite_keys.h"
 #include "eager_updates.h"
 #include "lazy_updates.h"
 #include "rocksdb/slice.h"
@@ -51,9 +52,16 @@ void test_lazy_updates() {
   simple_test(experiment.get());
 }
 
+void test_composite_keys() {
+  auto experiment = StandaloneSecondaryIndexExperiment::Create<CompositeKeys>(
+      "/scratch/data/composite_keys", 2);
+  simple_test(experiment.get());
+}
+
 int main(const int argc, char* argv[]) {
   // TODO: 테스트 분기 추가
-  test_eager_updates();
+  // test_eager_updates();
   // test_lazy_updates();
+  test_composite_keys();
   return 0;
 }

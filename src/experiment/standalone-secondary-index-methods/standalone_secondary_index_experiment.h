@@ -4,6 +4,7 @@
 #include "rocksdb/options.h"
 #include "rocksdb/status.h"
 #include "rocksdb/utilities/transaction_db.h"
+#include <cstdint>
 #include <iostream>
 
 // Interface for standalone, secondary index experiment
@@ -88,10 +89,12 @@ public:
     ptr->Initialize(db_path_, si_cnt);
     return ptr;
   }
+  rocksdb::Status Get(const rocksdb::Slice& key, std::string* value) {
+    rocksdb::ReadOptions read_options;
+    return s = txn_db->Get(read_options, cf_handles[0], key, value);
+  };
   virtual rocksdb::Status Insert(const rocksdb::Slice& key,
                                  const rocksdb::Slice& value) = 0;
-  virtual rocksdb::Status Get(const rocksdb::Slice& key,
-                              std::string* value) = 0;
   virtual std::vector<rocksdb::Status> GetBySecondaryIndex(
       const rocksdb::Slice& key, const uint32_t idx_no,
       std::vector<std::pair<std::string, rocksdb::PinnableSlice>>* results) = 0;
