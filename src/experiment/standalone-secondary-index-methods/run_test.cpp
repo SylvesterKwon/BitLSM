@@ -23,22 +23,50 @@ void simple_test(StandaloneSecondaryIndexExperiment* experiment) {
   experiment->Insert(Slice("pk4"), Slice("sk1_2,sk2_2,value4"));
   experiment->Insert(Slice("pk3"), Slice("sk1_2,sk2_1,value3"));
 
+  cout << "[Test: Single Secondary Index]\n";
   vector<pair<string, string>> results;
-  experiment->GetBySecondaryIndex(Slice("sk1_1"), 0, &results);
-  cout << "test1: \n";
+  experiment->GetBySecondaryIndex(0, Slice("sk1_1"), &results);
+  cout << "Test 1: \n";
   for (auto& [k, v] : results) {
     cout << "{" << k << ", " << v << "},";
   }
   cout << "\n";
   // expected output: {pk1, sk1_1,sk2_1,value1},{pk2, sk1_1,sk2_2,value2},
 
-  experiment->GetBySecondaryIndex(Slice("sk2_2"), 1, &results);
-  cout << "test2: \n";
+  experiment->GetBySecondaryIndex(1, Slice("sk2_2"), &results);
+  cout << "Test 2: \n";
   for (auto& [k, v] : results) {
     cout << "{" << k << ", " << v << "},";
   }
   cout << "\n";
   // expected output: {pk2, sk1_1,sk2_2,value2},{pk4, sk1_2,sk2_2,value4},
+
+  cout << "[Test: Composite Secondary Index]\n";
+  experiment->Insert(Slice("pk5"), Slice("sk1_2,sk2_2,value5"));
+  for (auto x : experiment->GetAvailableCompositeQueryRunStrategy()) {
+    cout << "Test ";
+    if (x == StandaloneSecondaryIndexExperiment::CompositeQueryRunStrategy::
+                 kIndexMerge)
+      cout << "IndexMerge";
+    else if (x == StandaloneSecondaryIndexExperiment::
+                      CompositeQueryRunStrategy::kTableAccessByIndexPK)
+      cout << "TableAccessByIndexPK";
+    else if (x == StandaloneSecondaryIndexExperiment::
+                      CompositeQueryRunStrategy::kFullTableScan)
+      cout << "FullTableScan";
+    cout << ": \n";
+    experiment->GetBySecondaryIndices(
+        {
+            {0, Slice("sk1_2")},
+            {1, Slice("sk2_2")},
+        },
+        x, &results);
+    for (auto& [k, v] : results) {
+      cout << "{" << k << ", " << v << "},";
+    }
+    cout << "\n";
+    // expected output: {pk4, sk1_2,sk2_2,value4},{pk5, sk1_2,sk2_2,value5},
+  }
 }
 
 void test_no_secondary_index() {
@@ -68,9 +96,9 @@ void test_composite_keys() {
 
 int main(const int argc, char* argv[]) {
   // TODO: 테스트 분기 추가
-  test_no_secondary_index();
+  // test_no_secondary_index();
   // test_eager_updates();
   // test_lazy_updates();
-  // test_composite_keys();
+  test_composite_keys();
   return 0;
 }

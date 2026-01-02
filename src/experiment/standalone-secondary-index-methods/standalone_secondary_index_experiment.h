@@ -79,6 +79,7 @@ public:
 
     std::cout << "Successfully closed DB. Bye!\n";
   };
+
   enum IndexType {
     kPrimaryIndex,
     kSecondaryIndex,
@@ -99,8 +100,20 @@ public:
   virtual rocksdb::Status GetBySecondaryIndex(
       const uint32_t idx_no, const rocksdb::Slice& key,
       std::vector<std::pair<std::string, std::string>>* results) = 0;
+  enum CompositeQueryRunStrategy {
+    kIndexMerge,
+    kTableAccessByIndexPK, // will respect given query order
+    kFullTableScan,
+  };
+  virtual std::vector<CompositeQueryRunStrategy>
+  GetAvailableCompositeQueryRunStrategy() const {
+    return {};
+  };
+  // Perform composite query based on given query conditions. All conditions are
+  // logically ANDed.
   virtual rocksdb::Status GetBySecondaryIndices(
       const std::vector<std::pair<uint32_t, rocksdb::Slice>>& query,
+      CompositeQueryRunStrategy strategy,
       std::vector<std::pair<std::string, std::string>>* results) = 0;
   // virtual rocksdb::Status Delete(const rocksdb::Slice& key);
 };

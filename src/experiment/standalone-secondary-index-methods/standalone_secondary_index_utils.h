@@ -37,18 +37,25 @@ inline std::string GetInternalSIKey(uint32_t idx_no, const rocksdb::Slice& key,
 
 // Get i-th token of given string and delimiter. Returns empty string if there's
 // no i-th token
-// Warning - don't use this in iteration, causes O(N^2) complexity
-// since it uses while-getline
-inline std::string GetIthToken(const std::string& str, int index,
-                               char delim = ',') {
-  std::stringstream ss(str);
-  std::string token;
+inline std::string_view GetIthToken(std::string_view str, int index,
+                                    char delim = ',') {
+  size_t start = 0;
+  size_t end = str.find(delim);
   int current = 0;
 
-  while (getline(ss, token, delim)) {
-    if (current == index)
-      return token;
+  while (end != std::string_view::npos) {
+    if (current == index) {
+      return str.substr(start, end - start);
+    }
+    start = end + 1;
+    end = str.find(delim, start);
     current++;
   }
-  return "";
+
+  // 마지막 토큰 처리 (구분자 뒤에 남은 문자열)
+  if (current == index)
+    return str.substr(start);
+
+  // 인덱스가 범위 밖이면 빈 view 반환
+  return {};
 }

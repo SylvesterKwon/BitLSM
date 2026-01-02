@@ -35,6 +35,11 @@ protected:
   }
 
 public:
+  vector<CompositeQueryRunStrategy>
+  GetAvailableCompositeQueryRunStrategy() const override {
+    return {kIndexMerge, kTableAccessByIndexPK};
+  };
+
   Status Insert(const Slice& key, const Slice& value) override {
     ReadOptions read_options;
     WriteOptions write_options;
@@ -78,9 +83,7 @@ public:
     string si_key = GetInternalSIKey(idx_no, resized_key);
     vector<string> pk_str_list;
     uint32_t prefix_size = idx_no_prefix_size + si_prefix_length;
-    cout << "find: " << si_key << "\n";
     for (it->Seek(si_key); it->Valid(); it->Next()) {
-      cout << "Key: " << it->key().ToString() << "\n";
       assert(it->status().ok());
       pk_str_list.push_back(it->key().ToString().substr(
           prefix_size, it->key().size() - prefix_size));
@@ -106,6 +109,89 @@ public:
       (*results)[i] = {pk_slice_list[i].ToString(), values[i].ToString()};
     }
 
+    return Status::OK();
+  };
+
+  Status GetBySecondaryIndices(const vector<pair<uint32_t, Slice>>& query,
+                               CompositeQueryRunStrategy strategy,
+                               vector<pair<string, string>>* results) override {
+    if (strategy == CompositeQueryRunStrategy::kIndexMerge) {
+      return GetByIndexMerge(query, results);
+    } else if (strategy == CompositeQueryRunStrategy::kTableAccessByIndexPK) {
+      return GetByTableAccessByIndexPK(query, results);
+    } else
+      return Status::NotSupported("Not supported composited query strategy.");
+    return Status::OK();
+  };
+
+  Status GetByIndexMerge(const vector<pair<uint32_t, Slice>>& query,
+                         vector<pair<string, string>>* results) {
+    ReadOptions si_read_options;
+    ReadOptions read_options;
+    si_read_options.auto_prefix_mode = true;
+    si_read_options.prefix_same_as_start = true;
+    si_read_options.total_order_seek = false;
+    Iterator* it = txn_db->NewIterator(si_read_options, cf_handles[1]);
+
+    bool is_first_query = true;
+    vector<string> merged_result_str;
+    for (auto& [idx_no, key] : query) {
+      string resized_key = key.ToString();
+      resized_key.resize(si_prefix_length, ' ');
+      string si_key = GetInternalSIKey(idx_no, resized_key);
+      vector<string> pk_str_list, tmp;
+      uint32_t prefix_size = idx_no_prefix_size + si_prefix_length;
+      for (it->Seek(si_key); it->Valid(); it->Next()) {
+        assert(it->status().ok());
+        pk_str_list.push_back(it->key().ToString().substr(
+            prefix_size, it->key().size() - prefix_size));
+      }
+
+      if (is_first_query) {
+        merged_result_str.swap(pk_str_list);
+        is_first_query = false;
+      } else {
+        set_intersection(merged_result_str.begin(), merged_result_str.end(),
+                         pk_str_list.begin(), pk_str_list.end(),
+                         back_inserter(tmp));
+        merged_result_str.swap(tmp);
+      }
+    }
+    delete it;
+    vector<Slice> merged_result(merged_result_str.size());
+    for (uint32_t i = 0; i < merged_result_str.size(); ++i)
+      merged_result[i] = Slice(merged_result_str[i]);
+
+    // 2. Get actual KVPairs by PK
+    size_t result_size = merged_result_str.size();
+    vector<Status> statuses(result_size);
+    results->resize(result_size);
+    vector<PinnableSlice> values(result_size);
+    txn_db->MultiGet(read_options, cf_handles[0], result_size,
+                     merged_result.data(), values.data(), statuses.data());
+
+    // 3. Construct result KVPairs
+    for (size_t i = 0; i < result_size; ++i) {
+      assert(statuses[i].ok());
+      (*results)[i] = {merged_result_str[i], values[i].ToString()};
+    }
+
+    return Status::OK();
+  };
+
+  Status GetByTableAccessByIndexPK(const vector<pair<uint32_t, Slice>>& query,
+                                   vector<pair<string, string>>* results) {
+    GetBySecondaryIndex(query[0].first, query[0].second, results);
+    erase_if(*results, [&](const pair<string, string>& x) {
+      for (uint32_t q_no = 1; q_no < query.size(); ++q_no) {
+        auto& idx_no = query[q_no].first;
+        auto& key = query[q_no].second;
+        string_view target_sk = GetIthToken(x.second, idx_no, ',');
+        if (key.compare(target_sk))
+          return true;
+      }
+      return false;
+    });
     return Status::OK();
   };
 };

@@ -10,6 +10,11 @@ using namespace rocksdb;
 
 class NoSecondaryIndex : public StandaloneSecondaryIndexExperiment {
 public:
+  vector<CompositeQueryRunStrategy>
+  GetAvailableCompositeQueryRunStrategy() const override {
+    return {kFullTableScan};
+  };
+
   Status Insert(const Slice& key, const Slice& value) override {
     WriteOptions write_options;
     Transaction* txn = txn_db->BeginTransaction(write_options);
@@ -35,10 +40,39 @@ public:
 
     vector<string> pk_str_list;
     for (it->SeekToFirst(); it->Valid(); it->Next()) {
-      string target_sk = GetIthToken(it->value().ToString(), idx_no, ',');
+      string_view target_sk =
+          GetIthToken(it->value().ToStringView(), idx_no, ',');
       if (key.compare(target_sk))
         continue;
       results->push_back({it->key().ToString(), it->value().ToString()});
+    }
+    delete it;
+
+    return Status::OK();
+  };
+
+  Status GetBySecondaryIndices(const vector<pair<uint32_t, Slice>>& query,
+                               CompositeQueryRunStrategy strategy,
+                               vector<pair<string, string>>* results) override {
+    // 1. Get PK list by SK (full table scan)
+    ReadOptions read_options;
+    read_options.pin_data = true;
+    Iterator* it = txn_db->NewIterator(read_options, cf_handles[0]);
+    results->clear();
+
+    vector<string> pk_str_list;
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+      bool valid = true;
+      for (auto& [idx_no, key] : query) {
+        string_view target_sk =
+            GetIthToken(it->value().ToStringView(), idx_no, ',');
+        if (key.compare(target_sk)) {
+          valid = false;
+          break;
+        }
+      }
+      if (valid)
+        results->push_back({it->key().ToString(), it->value().ToString()});
     }
     delete it;
 
