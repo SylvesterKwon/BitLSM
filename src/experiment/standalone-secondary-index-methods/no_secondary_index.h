@@ -25,7 +25,7 @@ public:
     return Status::OK();
   };
 
-  Status GetBySecondaryIndex(const Slice& key, const uint32_t idx_no,
+  Status GetBySecondaryIndex(const uint32_t idx_no, const Slice& key,
                              vector<pair<string, string>>* results) override {
     // 1. Get PK list by SK (full table scan)
     ReadOptions read_options;

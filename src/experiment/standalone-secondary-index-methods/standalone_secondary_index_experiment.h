@@ -6,6 +6,7 @@
 #include "rocksdb/utilities/transaction_db.h"
 #include <cstdint>
 #include <iostream>
+#include <vector>
 
 // Interface for standalone, secondary index experiment
 class StandaloneSecondaryIndexExperiment {
@@ -96,7 +97,10 @@ public:
   virtual rocksdb::Status Insert(const rocksdb::Slice& key,
                                  const rocksdb::Slice& value) = 0;
   virtual rocksdb::Status GetBySecondaryIndex(
-      const rocksdb::Slice& key, const uint32_t idx_no,
+      const uint32_t idx_no, const rocksdb::Slice& key,
+      std::vector<std::pair<std::string, std::string>>* results) = 0;
+  virtual rocksdb::Status GetBySecondaryIndices(
+      const std::vector<std::pair<uint32_t, rocksdb::Slice>>& query,
       std::vector<std::pair<std::string, std::string>>* results) = 0;
   // virtual rocksdb::Status Delete(const rocksdb::Slice& key);
 };
