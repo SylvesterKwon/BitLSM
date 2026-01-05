@@ -4,7 +4,7 @@
 #include <random>
 
 // FNV Hash
-inline uint64_t FNVHash64(uint64_t val, uint32_t seed = 42) {
+inline uint64_t FNVHash64(uint64_t val, uint64_t seed = 42) {
   constexpr uint64_t FNV_OFFSET_BASIS_64 = 0xcbf29ce484222325ULL;
   constexpr uint64_t FNV_PRIME_64 = 1099511628211ULL;
 
@@ -51,7 +51,7 @@ private:
 
 public:
   ZipfianGenerator(uint64_t cardinality, double theta = 0.99,
-                   uint32_t seed = 42)
+                   uint64_t seed = 42)
       : cardinality(cardinality), theta(theta), dist(0.0, 1.0) {
     gen.seed(seed);
 
@@ -79,11 +79,11 @@ class ScrambledZipfianGenerator : public DistributionGenerator {
 private:
   std::unique_ptr<ZipfianGenerator> zipf_gen;
   uint64_t cardinality;
-  uint32_t seed;
+  uint64_t seed;
 
 public:
   ScrambledZipfianGenerator(uint64_t cardinality, double theta = 0.99,
-                            uint32_t seed = 42)
+                            uint64_t seed = 42)
       : cardinality(cardinality), seed(seed) {
     zipf_gen = std::make_unique<ZipfianGenerator>(cardinality, theta, seed);
   }
