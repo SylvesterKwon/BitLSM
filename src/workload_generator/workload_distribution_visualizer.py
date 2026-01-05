@@ -4,15 +4,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
-def workload_distribution_visualizer(theta=0.99):
+def workload_distribution_visualizer(scv_filename, theta=0.99):
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    scv_filename = "distribution_test.csv"
     csv_file_path = os.path.join(script_dir, scv_filename)
     print(f"Reading {csv_file_path}...")
     df = pd.read_csv(csv_file_path)
-    
-    # 데이터 집계: 어떤 ID가 몇 번 나왔는지 카운트
-    # generated_id 별 빈도수 계산
+
     counts = df['generated_id'].value_counts()
     
     # -------------------------------------------------------
@@ -73,4 +70,5 @@ def workload_distribution_visualizer(theta=0.99):
     
 
 if __name__ == "__main__":
-    workload_distribution_visualizer(0.7)
+    # TODO: parameterize filename and theta
+    workload_distribution_visualizer("distribution_test.csv", 0.7)

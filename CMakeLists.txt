@@ -38,6 +38,21 @@ set(CROARING_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/CRoaring)
 set(ENABLE_ROARING_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/CRoaring)
 
+# WORKLOAD GENERATOR UTIL
+file(GLOB_RECURSE WORKLOAD_GENERATOR_SOURCES "src/workload_generator/*.cpp")
+add_library(workload_generator_lib STATIC ${WORKLOAD_GENERATOR_SOURCES})
+
+# 라이브러리가 사용할 헤더 경로 지정
+target_include_directories(workload_generator_lib PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/workload_generator
+    ${COMMON_INCLUDE_DIRS}
+)
+
+target_link_libraries(workload_generator_lib PUBLIC
+    # Threads::Threads 
+    # m
+)
+
 # MAIN_SOURCE, LIB_SOURCES 설정
 set(MAIN_SOURCE "src/main.cpp")
 file(GLOB_RECURSE LIB_SOURCES "src/include/*.cpp")
@@ -71,6 +86,7 @@ find_package(Threads REQUIRED)
 # 라이브러리 링크
 set(COMMON_LINK_LIBS
 bitmap_index_lib    
+workload_generator_lib
 rocksdb
 roaring
 dl
@@ -87,6 +103,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${COMMON_INCLUDE_DIRS})
 target_link_directories(${PROJECT_NAME} PRIVATE /usr/local/lib)
 target_link_libraries(${PROJECT_NAME} PRIVATE ${COMMON_LINK_LIBS})
 
+# EXPERIMENTS
 file(GLOB_RECURSE EXPERIMENT_SOURCES "src/experiment/*.cpp")
 foreach(EXP_SRC ${EXPERIMENT_SOURCES})
     get_filename_component(EXP_NAME ${EXP_SRC} NAME_WE) # 파일명 추출
