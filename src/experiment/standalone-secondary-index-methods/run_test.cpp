@@ -9,14 +9,6 @@
 using namespace std;
 using namespace rocksdb;
 
-enum TestType {
-  // TODO: 테스트 유형 정해보기. SK distribution은 어떻게 보여줄지?
-};
-
-void generate_workload() {
-  // TODO: Generate workload by test type
-}
-
 void simple_test(StandaloneSecondaryIndexExperiment* experiment) {
   experiment->Insert(Slice("pk2"), Slice("sk1_1,sk2_2,value2"));
   experiment->Insert(Slice("pk1"), Slice("sk1_1,sk2_1,value1"));
