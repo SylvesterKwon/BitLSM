@@ -38,6 +38,16 @@ set(CROARING_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/CRoaring)
 set(ENABLE_ROARING_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/CRoaring)
 
+## CXXOPTS
+add_compile_definitions(CXXOPTS_NO_RTTI) # CXXOPTS compile options
+include(FetchContent)
+FetchContent_Declare(
+  cxxopts
+  GIT_REPOSITORY https://github.com/jarro2783/cxxopts.git
+  GIT_TAG        v3.3.1
+)
+FetchContent_MakeAvailable(cxxopts)
+
 # WORKLOAD GENERATOR UTIL
 file(GLOB_RECURSE WORKLOAD_GENERATOR_SOURCES "src/workload_generator/*.cpp")
 add_library(workload_generator_lib STATIC ${WORKLOAD_GENERATOR_SOURCES})
@@ -57,17 +67,18 @@ target_link_libraries(workload_generator_lib PUBLIC
 set(MAIN_SOURCE "src/main.cpp")
 file(GLOB_RECURSE LIB_SOURCES "src/include/*.cpp")
 
-# bitmap_index_lib 정적 라이브러리 생성
-add_library(bitmap_index_lib STATIC ${LIB_SOURCES})
-target_include_directories(bitmap_index_lib PRIVATE
+# project_base_lib 정적 라이브러리 생성
+add_library(project_base_lib STATIC ${LIB_SOURCES})
+target_include_directories(project_base_lib PRIVATE
 ${CMAKE_CURRENT_SOURCE_DIR}/src/include
 ${ROCKSDB_SOURCE_DIR}
 ${ROCKSDB_SOURCE_DIR}/include
 ${CROARING_SOURCE_DIR}/cpp/roaring
 )
-target_link_libraries(bitmap_index_lib PUBLIC
+target_link_libraries(project_base_lib PUBLIC
 roaring
 rocksdb
+cxxopts::cxxopts
 )
 
 # 실행 파일 타겟을 생성
@@ -85,7 +96,7 @@ find_package(Threads REQUIRED)
 
 # 라이브러리 링크
 set(COMMON_LINK_LIBS
-bitmap_index_lib    
+project_base_lib    
 workload_generator_lib
 rocksdb
 roaring
