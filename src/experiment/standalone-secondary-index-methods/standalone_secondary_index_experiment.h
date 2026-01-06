@@ -34,17 +34,22 @@ protected:
     this->si_cnt = si_cnt;
 
     // destroy previous db
-    std::cout << "Destroying previous DB...\n";
-    s = rocksdb::DestroyDB(db_path_, options);
+    // std::cout << "Destroying previous DB...\n";
+    // s = rocksdb::DestroyDB(db_path_, options);
 
     // configure common DB setting
     options.create_if_missing = true;
     options.create_missing_column_families = true;
+
+    // Tuning Rocksdb for heavy workload
+    options.max_write_buffer_number = 6;          // default 2
+    options.min_write_buffer_number_to_merge = 2; // default 1
+    options.max_background_jobs = 8;              // default 2
+
+    rocksdb::ColumnFamilyOptions cf_options(options);
     column_families = {
-        rocksdb::ColumnFamilyDescriptor(primary_index_cf_name,
-                                        rocksdb::ColumnFamilyOptions()),
-        rocksdb::ColumnFamilyDescriptor(secondary_index_cf_name,
-                                        rocksdb::ColumnFamilyOptions()),
+        rocksdb::ColumnFamilyDescriptor(primary_index_cf_name, cf_options),
+        rocksdb::ColumnFamilyDescriptor(secondary_index_cf_name, cf_options),
     };
 
     // configure children class DB setting
@@ -102,7 +107,7 @@ public:
       std::vector<std::pair<std::string, std::string>>* results) = 0;
   enum CompositeQueryRunStrategy {
     kIndexMerge,
-    kTableAccessByIndexPK, // will respect given query order
+    kPostFiltering, // will respect given query order
     kFullTableScan,
   };
   virtual std::vector<CompositeQueryRunStrategy>

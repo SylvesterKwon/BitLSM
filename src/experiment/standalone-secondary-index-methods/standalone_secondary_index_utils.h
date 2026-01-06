@@ -1,9 +1,46 @@
 #pragma once
-
 #include "rocksdb/slice.h"
 #include "util/coding.h"
-#include <sstream>
+#include <queue>
 #include <string>
+
+// PK-list slice reader
+class IndexStreamReader {
+public:
+  IndexStreamReader(const rocksdb::Slice* slice) : cnt_(0), valid_(false) {
+    if (slice && slice->size() >= 4) {
+      data_ = *slice;
+      if (!rocksdb::GetFixed32(&data_, &cnt_)) {
+        cnt_ = 0;
+      }
+      Next();
+    }
+  }
+  bool Valid() const { return valid_; }
+  rocksdb::Slice Current() const { return current_; }
+  void Next() {
+    if (cnt_ > 0) {
+      // GetLengthPrefixedSlice는 data_ 포인터를 다음 아이템 위치로
+      // 이동시킵니다.
+      if (rocksdb::GetLengthPrefixedSlice(&data_, &current_)) {
+        cnt_--;
+        valid_ = true;
+      } else {
+        valid_ = false;
+      }
+    } else {
+      valid_ = false;
+    }
+  }
+  rocksdb::Slice RestRawData() const { return data_; }
+  uint32_t RemainingCount() const { return (valid_ ? 1 : 0) + cnt_; }
+
+private:
+  rocksdb::Slice data_;    // Left datastream
+  rocksdb::Slice current_; // Current item
+  uint32_t cnt_;           // # of left item in data_
+  bool valid_;
+};
 
 inline void DecodeIndexValue(rocksdb::Slice& data,
                              std::vector<rocksdb::Slice>* result) {
@@ -23,6 +60,107 @@ inline void EncodeIndexValue(const std::vector<rocksdb::Slice>* src,
   for (rocksdb::Slice const& i : *src) {
     PutLengthPrefixedSlice(dest, i);
   }
+}
+
+// Merge multiple index value
+inline void MergeIndexValue(const std::vector<rocksdb::Slice>& operand_list,
+                            std::string* dest) {
+  uint32_t size_sum = 0;
+  for (const auto& oi : operand_list)
+    size_sum += oi.size();
+  dest->reserve(size_sum);
+
+  std::vector<IndexStreamReader> iter_list;
+  iter_list.reserve(operand_list.size());
+  for (const auto& operand : operand_list) {
+    iter_list.emplace_back(&operand);
+  }
+
+  // PQ node definition
+  struct HeapNode {
+    rocksdb::Slice val; // Slice value
+    uint32_t idx;       // Index of iterator list
+    bool operator>(const HeapNode& other) const {
+      return val.compare(other.val) > 0;
+    }
+  };
+
+  std::priority_queue<HeapNode, std::vector<HeapNode>, std::greater<HeapNode>>
+      pq;
+
+  // Push first value from each iterator
+  for (uint32_t i = 0; i < iter_list.size(); ++i) {
+    if (iter_list[i].Valid())
+      pq.push({iter_list[i].Current(), i});
+  }
+
+  rocksdb::PutFixed32(dest, 0); // This will be replaced as actual cnt
+  uint32_t cnt = 0;
+
+  rocksdb::Slice last_val; // to remove duplicates
+  bool is_first = true;
+
+  // K-Way Merge Loop
+  while (!pq.empty()) {
+    HeapNode top = pq.top();
+    pq.pop();
+
+    if (is_first || top.val.compare(last_val) != 0) {
+      rocksdb::PutLengthPrefixedSlice(dest, top.val);
+      last_val = top.val;
+      cnt++;
+      is_first = false;
+    }
+
+    auto& it = iter_list[top.idx];
+    it.Next();
+    if (it.Valid()) {
+      pq.push({it.Current(), top.idx});
+    }
+  }
+
+  rocksdb::EncodeFixed32(reinterpret_cast<char*>(dest->data()), cnt);
+}
+
+// Merge two index value
+inline void MergeIndexValue(const rocksdb::Slice* a, const rocksdb::Slice* b,
+                            std::string* dest) {
+  dest->reserve(a->size() + b->size());
+  IndexStreamReader iterA(a), iterB(b);
+  rocksdb::PutFixed32(dest, 0);
+  uint32_t cnt = 0;
+
+  while (iterA.Valid() && iterB.Valid()) {
+    int cmp = iterA.Current().compare(iterB.Current());
+    if (cmp < 0) {
+      rocksdb::PutLengthPrefixedSlice(dest, iterA.Current());
+      iterA.Next();
+    } else if (cmp > 0) {
+      rocksdb::PutLengthPrefixedSlice(dest, iterB.Current());
+      iterB.Next();
+    } else {
+      rocksdb::PutLengthPrefixedSlice(dest, iterA.Current());
+      iterA.Next(), iterB.Next();
+    }
+    ++cnt;
+  }
+  if (iterA.Valid()) {
+    // Put current value
+    rocksdb::PutLengthPrefixedSlice(dest, iterA.Current());
+    cnt++;
+    // Put remaining raw value
+    cnt += iterA.RemainingCount() - 1;
+    rocksdb::Slice rest = iterA.RestRawData();
+    dest->append(rest.data(), rest.size());
+  } else if (iterB.Valid()) {
+    rocksdb::PutLengthPrefixedSlice(dest, iterB.Current());
+    cnt++;
+    cnt += iterB.RemainingCount() - 1;
+    rocksdb::Slice rest = iterB.RestRawData();
+    dest->append(rest.data(), rest.size());
+  }
+
+  rocksdb::EncodeFixed32(reinterpret_cast<char*>(dest->data()), cnt);
 }
 
 // Return index SI key

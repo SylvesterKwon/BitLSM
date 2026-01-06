@@ -37,7 +37,7 @@ protected:
 public:
   vector<CompositeQueryRunStrategy>
   GetAvailableCompositeQueryRunStrategy() const override {
-    return {kIndexMerge, kTableAccessByIndexPK};
+    return {kIndexMerge, kPostFiltering};
   };
 
   Status Insert(const Slice& key, const Slice& value) override {
@@ -117,7 +117,7 @@ public:
                                vector<pair<string, string>>* results) override {
     if (strategy == CompositeQueryRunStrategy::kIndexMerge) {
       return GetByIndexMerge(query, results);
-    } else if (strategy == CompositeQueryRunStrategy::kTableAccessByIndexPK) {
+    } else if (strategy == CompositeQueryRunStrategy::kPostFiltering) {
       return GetByTableAccessByIndexPK(query, results);
     } else
       return Status::NotSupported("Not supported composited query strategy.");

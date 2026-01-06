@@ -41,7 +41,7 @@ void simple_test(StandaloneSecondaryIndexExperiment* experiment) {
                  kIndexMerge)
       cout << "IndexMerge";
     else if (x == StandaloneSecondaryIndexExperiment::
-                      CompositeQueryRunStrategy::kTableAccessByIndexPK)
+                      CompositeQueryRunStrategy::kPostFiltering)
       cout << "TableAccessByIndexPK";
     else if (x == StandaloneSecondaryIndexExperiment::
                       CompositeQueryRunStrategy::kFullTableScan)

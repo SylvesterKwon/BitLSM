@@ -10,64 +10,55 @@
 using namespace std;
 using namespace rocksdb;
 
-class LazyUpdatesSIMergeOperator : public AssociativeMergeOperator {
+class SIValueMergeOperator : public MergeOperator {
 public:
-  virtual bool Merge(const Slice& key, const Slice* existing_value,
-                     const Slice& value, std::string* new_value,
-                     Logger* logger) const override {
-    if (existing_value) {
-      vector<Slice> v1;
-      Slice tmp_slice = (*existing_value); // to remove const
-      DecodeIndexValue(tmp_slice, &v1);
-      vector<Slice> v2;
-      Slice new_value_slice(value);
-      DecodeIndexValue(new_value_slice, &v2);
+  const char* Name() const override { return "SIValueMergeOperator"; }
 
-      // performs merge sort like merging
-      std::vector<Slice> new_si_value;
-      new_si_value.reserve(v1.size() + v2.size());
-      size_t i = 0, j = 0;
-      while (i < v1.size() && j < v2.size()) {
-        int cmp = v1[i].compare(v2[j]);
-        if (cmp < 0) {
-          new_si_value.push_back(v1[i++]);
-        } else if (cmp > 0) {
-          new_si_value.push_back(v2[j++]);
-        } else { // remove duplicated values
-          // it is guaranteed that one vector has no duplicated value
-          new_si_value.push_back(v1[i]);
-          i++, j++;
-        }
-      }
-      while (i < v1.size())
-        new_si_value.push_back(v1[i++]);
-      while (j < v2.size())
-        new_si_value.push_back(v2[j++]);
-
-      EncodeIndexValue(&new_si_value, new_value);
-    } else {
-      new_value->assign(value.data(), value.size());
-    }
+  bool FullMergeV2(const MergeOperationInput& merge_in,
+                   MergeOperationOutput* merge_out) const override {
+    vector<Slice> all_operand_list = merge_in.operand_list;
+    if (merge_in.existing_value)
+      all_operand_list.push_back(*merge_in.existing_value);
+    MergeIndexValue(all_operand_list, &merge_out->new_value);
 
     return true;
   }
 
-  virtual const char* Name() const override {
-    return "LazyUpdatesSIMergeOperator";
+  // For performance when merging in memtable
+  bool PartialMergeMulti(const Slice& key, const deque<Slice>& operand_list,
+                         string* new_value, Logger* logger) const override {
+    vector<Slice> all_operand_list(operand_list.begin(), operand_list.end());
+    MergeIndexValue(all_operand_list, new_value);
+    return true;
   }
+};
+
+// Deprecated: performance issue
+class LazyUpdatesSIMergeOperator : public AssociativeMergeOperator {
+public:
+  bool Merge(const Slice& key, const Slice* existing_value, const Slice& value,
+             string* new_value, Logger* logger) const override {
+    if (existing_value) {
+      MergeIndexValue(existing_value, &value, new_value);
+    } else {
+      new_value->assign(value.data(), value.size());
+    }
+    return true;
+  }
+
+  const char* Name() const override { return "LazyUpdatesSIMergeOperator"; }
 };
 
 class LazyUpdates : public StandaloneSecondaryIndexExperiment {
 protected:
   void ConfigureCustomDBOptions() override {
-    column_families[1].options.merge_operator.reset(
-        new LazyUpdatesSIMergeOperator());
+    column_families[1].options.merge_operator.reset(new SIValueMergeOperator());
   }
 
 public:
   vector<CompositeQueryRunStrategy>
   GetAvailableCompositeQueryRunStrategy() const override {
-    return {kIndexMerge, kTableAccessByIndexPK};
+    return {kIndexMerge, kPostFiltering};
   };
 
   Status Insert(const Slice& key, const Slice& value) override {
@@ -137,7 +128,7 @@ public:
                                vector<pair<string, string>>* results) override {
     if (strategy == CompositeQueryRunStrategy::kIndexMerge) {
       return GetByIndexMerge(query, results);
-    } else if (strategy == CompositeQueryRunStrategy::kTableAccessByIndexPK) {
+    } else if (strategy == CompositeQueryRunStrategy::kPostFiltering) {
       return GetByTableAccessByIndexPK(query, results);
     } else
       return Status::NotSupported("Not supported composited query strategy.");

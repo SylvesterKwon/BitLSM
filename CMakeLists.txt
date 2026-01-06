@@ -7,10 +7,14 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # C++ Standard
 set(CMAKE_CXX_STANDARD 20)
-
-# RocksDB
 set(CMAKE_BUILD_TYPE Debug) # 빌드 타입을 Debug로 설정하여 디버깅 심볼을 포함
 # set(CMAKE_BUILD_TYPE Release) # 벤치마크시에는 Release 모드로 빌드 필요
+
+# 성능 측정시 아래 라인 활성화
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fno-omit-frame-pointer")
+set(CMAKE_BUILD_TYPE RelWithDebInfo)
+
+# RocksDB
 set(WITH_TESTS OFF CACHE BOOL "" FORCE)
 set(WITH_BENCHMARK_TOOLS OFF CACHE BOOL "" FORCE)
 set(WITH_CORE_TOOLS ON CACHE BOOL "" FORCE)
@@ -34,6 +38,7 @@ add_compile_definitions(
 )
 
 ## CRoaring
+# TODO: CRoaring도 CMake FetchContent로 변경 고려
 set(CROARING_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/CRoaring)
 set(ENABLE_ROARING_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/CRoaring)
@@ -47,21 +52,6 @@ FetchContent_Declare(
   GIT_TAG        v3.3.1
 )
 FetchContent_MakeAvailable(cxxopts)
-
-# WORKLOAD GENERATOR UTIL
-file(GLOB_RECURSE WORKLOAD_GENERATOR_SOURCES "src/workload_generator/*.cpp")
-add_library(workload_generator_lib STATIC ${WORKLOAD_GENERATOR_SOURCES})
-
-# 라이브러리가 사용할 헤더 경로 지정
-target_include_directories(workload_generator_lib PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/workload_generator
-    ${COMMON_INCLUDE_DIRS}
-)
-
-target_link_libraries(workload_generator_lib PUBLIC
-    # Threads::Threads 
-    # m
-)
 
 # MAIN_SOURCE, LIB_SOURCES 설정
 set(MAIN_SOURCE "src/main.cpp")
@@ -113,6 +103,22 @@ zstd
 target_include_directories(${PROJECT_NAME} PRIVATE ${COMMON_INCLUDE_DIRS})
 target_link_directories(${PROJECT_NAME} PRIVATE /usr/local/lib)
 target_link_libraries(${PROJECT_NAME} PRIVATE ${COMMON_LINK_LIBS})
+
+# WORKLOAD GENERATOR UTIL
+file(GLOB_RECURSE WORKLOAD_GENERATOR_SOURCES "src/workload_generator/*.cpp")
+add_library(workload_generator_lib STATIC ${WORKLOAD_GENERATOR_SOURCES})
+
+# 라이브러리가 사용할 헤더 경로 지정
+target_include_directories(workload_generator_lib PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/workload_generator
+    ${COMMON_INCLUDE_DIRS}
+)
+
+target_link_libraries(workload_generator_lib PUBLIC
+    # Threads::Threads 
+    # m
+)
+
 
 # EXPERIMENTS
 file(GLOB_RECURSE EXPERIMENT_SOURCES "src/experiment/*.cpp")

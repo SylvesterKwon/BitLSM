@@ -177,7 +177,7 @@ SABIReader::SABIReader(Slice& index_block) {
     const char* raw_ptr = index_block.data() + offset;
     void* aligned_ptr = nullptr;
     // 32 bytes 정렬
-    assert(posix_memalign(&aligned_ptr, 32, size) == 0);
+    posix_memalign(&aligned_ptr, 32, size);
     AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr), std::free);
     memcpy(managed_aligned_ptr.get(), raw_ptr, size);
     roaring_set_[i] = Roaring::frozenView(
