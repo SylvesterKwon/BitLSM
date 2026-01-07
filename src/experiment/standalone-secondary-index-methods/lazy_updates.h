@@ -5,6 +5,7 @@
 #include "standalone_secondary_index_utils.h"
 #include <algorithm>
 #include <cstring>
+#include <iostream>
 #include <sstream>
 
 using namespace std;
@@ -33,22 +34,6 @@ public:
   }
 };
 
-// Deprecated: performance issue
-class LazyUpdatesSIMergeOperator : public AssociativeMergeOperator {
-public:
-  bool Merge(const Slice& key, const Slice* existing_value, const Slice& value,
-             string* new_value, Logger* logger) const override {
-    if (existing_value) {
-      MergeIndexValue(existing_value, &value, new_value);
-    } else {
-      new_value->assign(value.data(), value.size());
-    }
-    return true;
-  }
-
-  const char* Name() const override { return "LazyUpdatesSIMergeOperator"; }
-};
-
 class LazyUpdates : public StandaloneSecondaryIndexExperiment {
 protected:
   void ConfigureCustomDBOptions() override {
@@ -70,7 +55,7 @@ public:
     string current_sk;
     stringstream ss(value.ToString());
     for (uint32_t idx_no = 0; idx_no < si_cnt; ++idx_no) {
-      assert(getline(ss, current_sk, ','));
+      getline(ss, current_sk, ',');
       vector<Slice> new_si_value = {key};
       string encoded_si_value;
       EncodeIndexValue(&new_si_value, &encoded_si_value);
@@ -157,6 +142,7 @@ public:
       vector<string> si_value_str(si_value.size()), tmp;
       for (uint32_t i = 0; i < si_value.size(); ++i)
         si_value_str[i] = si_value[i].ToString();
+
       if (is_first_query) {
         merged_result_str.swap(si_value_str);
         is_first_query = false;
@@ -166,6 +152,8 @@ public:
                          back_inserter(tmp));
         merged_result_str.swap(tmp);
       }
+      if (merged_result_str.size() == 0)
+        return {};
     }
     vector<Slice> merged_result(merged_result_str.size());
     for (uint32_t i = 0; i < merged_result_str.size(); ++i)

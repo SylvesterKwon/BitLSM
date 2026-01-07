@@ -47,8 +47,8 @@ public:
     // for each SI
     string current_sk;
     stringstream ss(value.ToString());
-    for (uint32_t idx_no = 0; idx_no < si_cnt; idx_no++) {
-      assert(getline(ss, current_sk, ','));
+    for (uint32_t idx_no = 0; idx_no < si_cnt; ++idx_no) {
+      getline(ss, current_sk, ',');
 
       // 1. Find existing SK entry
       string existing_si_value_str; // {sk_i, {pks...}}

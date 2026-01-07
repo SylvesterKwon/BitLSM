@@ -1,6 +1,7 @@
 #pragma once
 #include "rocksdb/slice.h"
 #include "util/coding.h"
+#include <iostream>
 #include <queue>
 #include <string>
 

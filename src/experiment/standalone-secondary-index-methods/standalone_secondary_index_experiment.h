@@ -10,9 +10,6 @@
 
 // Interface for standalone, secondary index experiment
 class StandaloneSecondaryIndexExperiment {
-private:
-  std::string db_path_ = "/scratch/data/eager_updates";
-
 protected:
   rocksdb::TransactionDB* txn_db;
   rocksdb::Options options;
@@ -30,7 +27,6 @@ protected:
 
   void Initialize(std::string db_path, uint32_t si_cnt) {
     std::cout << "Initialize StandaloneSecondaryIndexExperiment\n";
-    db_path_ = db_path;
     this->si_cnt = si_cnt;
 
     // destroy previous db
@@ -46,10 +42,15 @@ protected:
     options.min_write_buffer_number_to_merge = 2; // default 1
     options.max_background_jobs = 8;              // default 2
 
-    rocksdb::ColumnFamilyOptions cf_options(options);
+    rocksdb::ColumnFamilyOptions primary_cf_opts(options);
+    primary_cf_opts.cf_paths = {{db_path + "/data", 0}};
+    rocksdb::ColumnFamilyOptions secondary_cf_opts(options);
+    secondary_cf_opts.cf_paths = {{db_path + "/si", 0}};
+
     column_families = {
-        rocksdb::ColumnFamilyDescriptor(primary_index_cf_name, cf_options),
-        rocksdb::ColumnFamilyDescriptor(secondary_index_cf_name, cf_options),
+        rocksdb::ColumnFamilyDescriptor(primary_index_cf_name, primary_cf_opts),
+        rocksdb::ColumnFamilyDescriptor(secondary_index_cf_name,
+                                        secondary_cf_opts),
     };
 
     // configure children class DB setting
@@ -57,7 +58,7 @@ protected:
     ConfigureCustomDBOptions();
 
     std::cout << "Opening DB...\n";
-    s = rocksdb::TransactionDB::Open(options, txn_db_options, db_path_,
+    s = rocksdb::TransactionDB::Open(options, txn_db_options, db_path,
                                      column_families, &cf_handles, &txn_db);
     if (!s.ok())
       std::cout << "state: " << s.getState() << "\n";
@@ -91,7 +92,7 @@ public:
   };
   template <typename T>
   static std::unique_ptr<T> Create(const std::string& db_path_,
-                                   uint32_t si_cnt = 1) {
+                                   uint32_t si_cnt) {
     auto ptr = std::make_unique<T>();
     ptr->Initialize(db_path_, si_cnt);
     return ptr;

@@ -2,55 +2,111 @@
 
 # 1. 실행 파일 및 경로 설정
 BIN_PATH="$HOME/workspace/lsm-bitmap-index/build/bin/test"
-DATA_DIR="/scratch/data/standalone-si-test"
-RESULT_DIR="$HOME/workspace/lsm-bitmap-index/experiment_results"
+NO_SI_DATA_DIR="/scratch/data/no-si"
+LU_DATA_DIR="/scratch/data/lu"
+CK_DATA_DIR="/scratch/data/ck"
 
-# 2. 실험 파라미터 설정
-# BASELINES=("PF_EU" "PF_LU" "PF_CK" "IM_EU" "IM_LU" "IM_CK" "NO_SI")
-BASELINES=("PF_LU")
-R=0
-WRITE_N=10000000  # 1e7
-READ_N=100000 # 1e4
+NO_SI_RESULT_DIR="$HOME/workspace/lsm-bitmap-index/experiment_results/no-si"
+LU_RESULT_DIR="$HOME/workspace/lsm-bitmap-index/experiment_results/lu"
+CK_RESULT_DIR="$HOME/workspace/lsm-bitmap-index/experiment_results/ck"
+
+# 공통 실험 파라미터 설정
+WRITE_N=100000000  # 1e8
+READ_N=10000 # 1e4
 PAYLOAD_SIZE=256
 
-# 3. 결과 저장 폴더가 없으면 생성
-mkdir -p "$RESULT_DIR"
+mkdir -p "$NO_SI_RESULT_DIR"
+mkdir -p "$LU_RESULT_DIR"
+mkdir -p "$CK_RESULT_DIR"
 
-# 4. 루프 시작
-for B in "${BASELINES[@]}"; do
-    echo "==================================================================="
-    echo "[Start] Algo: $B | Write N: $WRITE_N | Read N: $READ_N | Ratio: $R"
-    echo "==================================================================="
-    rm -rf "$DATA_DIR"
+################################# NO_SI ######################################
+# echo "[NO_SI] MAKING $WRITE_N DATA... ----------------------------------------------"
+# rm -rf "$NO_SI_DATA_DIR"
+# $BIN_PATH \
+#     -b "NO_SI" \
+#     -n "$WRITE_N" \
+#     -r "0" \
+#     -d "$NO_SI_DATA_DIR" \
+#     -o "$NO_SI_RESULT_DIR" \
+#     -p "$PAYLOAD_SIZE" \
+#     -l "no-si-write"
 
-    echo "MAKING $N DATA..."
-    $BIN_PATH \
-        -b "$B" \
-        -n "$WRITE_N" \
-        -r "0" \
-        -d "$DATA_DIR" \
-        -o "$RESULT_DIR" \
-        -p "$PAYLOAD_SIZE"
+echo "[NO_SI] READING 10 DATA... (NO SI)------------------------------"
+$BIN_PATH \
+    -b "NO_SI" \
+    -n "100" \
+    -r "1" \
+    -d "$NO_SI_DATA_DIR" \
+    -o "$NO_SI_RESULT_DIR" \
+    -p "$PAYLOAD_SIZE" \
+    -l "no-si-read"
+
+################################# LU ######################################
+# echo "[LU] MAKING $WRITE_N DATA... ----------------------------------------------"
+# rm -rf "$LU_DATA_DIR"
+# $BIN_PATH \
+#     -b "PF_LU" \
+#     -n "$WRITE_N" \
+#     -r "0" \
+#     -d "$LU_DATA_DIR" \
+#     -o "$LU_RESULT_DIR" \
+#     -p "$PAYLOAD_SIZE" \
+#     -l "lu-write"
 
 
-    echo "READING $READ_N DATA..."
-    $BIN_PATH \
-        -b "$B" \
-        -n "$READ_N" \
-        -r "1" \
-        -d "$DATA_DIR" \
-        -o "$RESULT_DIR" \
-        -p "$PAYLOAD_SIZE"
-    
-    # 실행 결과 확인
-    if [ $? -eq 0 ]; then
-        echo "[Done] Experiment finished successfully."
-    else
-        echo "[Error] Experiment failed!"
-        exit 1
-    fi
+echo "[LU] READING $READ_N DATA... (Post Filtering)------------------------------"
+$BIN_PATH \
+    -b "PF_LU" \
+    -n "$READ_N" \
+    -r "1" \
+    -d "$LU_DATA_DIR" \
+    -o "$LU_RESULT_DIR" \
+    -p "$PAYLOAD_SIZE" \
+    -l "lu-pf-read"
 
-    sleep 2
-done
+
+echo "[LU] READING $READ_N DATA... (Index Merging)-------------------------------"
+$BIN_PATH \
+    -b "IM_LU" \
+    -n "$READ_N" \
+    -r "1" \
+    -d "$LU_DATA_DIR" \
+    -o "$LU_RESULT_DIR" \
+    -p "$PAYLOAD_SIZE" \
+    -l "lu-im-read"
+
+################################# CK ######################################
+# echo "[CK] MAKING $WRITE_N DATA... ----------------------------------------------"
+# rm -rf "$CK_DATA_DIR"
+# $BIN_PATH \
+#     -b "PF_CK" \
+#     -n "$WRITE_N" \
+#     -r "0" \
+#     -d "$CK_DATA_DIR" \
+#     -o "$CK_RESULT_DIR" \
+#     -p "$PAYLOAD_SIZE" \
+#     -l "ck-write"
+
+echo "[CK] READING $READ_N DATA... (Post Filtering)------------------------------"
+$BIN_PATH \
+    -b "PF_CK" \
+    -n "$READ_N" \
+    -r "1" \
+    -d "$CK_DATA_DIR" \
+    -o "$CK_RESULT_DIR" \
+    -p "$PAYLOAD_SIZE" \
+    -l "ck-pf-read"
+
+
+echo "[CK] READING $READ_N DATA... (Index Merging)-------------------------------"
+$BIN_PATH \
+    -b "IM_CK" \
+    -n "$READ_N" \
+    -r "1" \
+    -d "$CK_DATA_DIR" \
+    -o "$CK_RESULT_DIR" \
+    -p "$PAYLOAD_SIZE" \
+    -l "ck-im-read"
+
 
 echo "All experiments completed!"

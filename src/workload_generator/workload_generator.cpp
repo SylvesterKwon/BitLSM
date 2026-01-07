@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "auto_increment_generator.h"
 #include "rocksdb/slice.h"
 #include "uniform_generator.h"
 #include "zipfian_generator.h"
@@ -75,6 +76,7 @@ private:
       value_buffer += to_string(generators[g]->Next());
       value_buffer += ",";
     }
+    // cout << "SET: " << pk << ", " << value_buffer << "\n";
     // 2-2. Generate Payload
     uint32_t start_idx = pool_start_dist(rng);
     value_buffer.append(payload_pool, start_idx, payload_size);
@@ -84,11 +86,6 @@ private:
   }
 
 public:
-  enum WorkloadType {
-    WriteOnly,
-    WriteAndRead,
-    // TODO: what else?
-  };
   WorkloadGenerator(IDatabase& db, const vector<IndexSpec>& index_specs,
                     const uint32_t payload_size, const uint32_t seed = 42)
       : db(db), index_specs(index_specs), payload_size(payload_size), rng(seed),
@@ -114,18 +111,24 @@ public:
     for (uint32_t i = 0; i < index_specs.size(); ++i) {
       cout << "\t\t" << (i ? "SI" : "PK") << " (" << i << "): ";
       cout << index_specs[i].cardinality << ", ";
-      cout << ToString(index_specs[i].dist) << "\n\n";
+      cout << ToString(index_specs[i].dist) << "\n";
     }
+    cout << "\n";
     for (const auto& spec : index_specs) {
-      if (spec.dist == DistType::SCRAMBLED_ZIPFIAN) {
+      if (spec.dist == DistType::AUTO_INCREMENT) {
+        generators.push_back(make_unique<AutoIncrementGenerator>());
+      } else if (spec.dist == DistType::UNIFORM) {
+        generators.push_back(
+            make_unique<UniformGenerator>(spec.cardinality, dist(rng)));
+      } else if (spec.dist == DistType::SCRAMBLED_ZIPFIAN) {
         generators.push_back(make_unique<ScrambledZipfianGenerator>(
             spec.cardinality, spec.theta, dist(rng)));
       } else if (spec.dist == DistType::ZIPFIAN) {
         generators.push_back(make_unique<ZipfianGenerator>(
             spec.cardinality, spec.theta, dist(rng)));
       } else {
-        generators.push_back(
-            make_unique<UniformGenerator>(spec.cardinality, dist(rng)));
+        cerr << "[ERROR] UNKNOWN DISTRIBUTION TYPE.\n";
+        return;
       }
     }
   }
@@ -157,7 +160,7 @@ public:
     for (uint64_t i = 0; i < num_operations; ++i) {
       if (num_operations > 100 && i % (num_operations / 100) == 0) {
         double progress = (double)i / num_operations * 100.0;
-        cout << "Progress: " << (int)progress << "%\n";
+        cout << "Progress: " << (int)progress << "%" << endl;
       }
       bool is_read = std_uniform_dist(rng) < read_ratio;
       vector<pair<uint32_t, rocksdb::Slice>> query;
@@ -190,10 +193,14 @@ public:
             cerr << "Warning: Failed to choose index no.\n";
         }
         sort(selected_indices.begin(), selected_indices.end());
+        vector<string> query_key_holder;
+        query_key_holder.reserve(selected_indices.size());
         for (auto& selected_index : selected_indices) {
-          query.push_back(
-              {selected_index,
-               rocksdb::Slice(to_string(generators[selected_index]->Next()))});
+          query_key_holder.push_back(
+              to_string(generators[selected_index]->Next()));
+
+          query.push_back({selected_index - 1, // SI no. = (Idx no. - 1)
+                           rocksdb::Slice(query_key_holder.back())});
         }
         Get(query, result);
       } else {

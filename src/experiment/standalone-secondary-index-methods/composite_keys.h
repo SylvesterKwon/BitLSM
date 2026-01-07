@@ -48,8 +48,8 @@ public:
     // 1. Update SK
     string current_sk;
     stringstream ss(value.ToString());
-    for (uint32_t idx_no = 0; idx_no < si_cnt; idx_no++) {
-      assert(getline(ss, current_sk, ','));
+    for (uint32_t idx_no = 0; idx_no < si_cnt; ++idx_no) {
+      getline(ss, current_sk, ',');
       assert(current_sk.size() <= si_prefix_length);
       current_sk.resize(si_prefix_length, ' ');
       current_sk += key.ToString();
