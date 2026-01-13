@@ -11,7 +11,8 @@ $ git submodule update --init --recursive
 TODO: rocksdb 브랜치 설정 하도록 안내
 TODO: RoaringBitmap 의존성 소개
 
-### 1. RocksDB 의존성 설치
+### 1. 의존성 설치
+### 1-1. RocsDB dependency
 ```bash
 $ apt-get update && apt-get install -y \
 libsnappy-dev \ 
@@ -20,6 +21,24 @@ libbz2-dev \
 liblz4-dev \ 
 libzstd-dev
 ```
+
+### 1-2. Facebook Folly
+Reference: https://github.com/facebook/folly?tab=readme-ov-file#build
+```bash
+# 1. Clone the repo
+git clone https://github.com/facebook/folly
+cd folly
+# 2. Install dependencies
+sudo ./build/fbcode_builder/getdeps.py install-system-deps --recursive
+# 3. Build, using system dependencies if available
+sudo python3 ./build/fbcode_builder/getdeps.py --allow-system-packages --scratch-path /opt/lsm-bitmap-index build
+```
+
+- OpenSSL 관련 에러가 난다면
+    ```bash
+    sudo apt-get install libssl-dev
+    ```
+
 
 TODO: sh로 만들기 (프로젝트 개발 완료후 일괄 설치 스크립트 생성 예정)
 

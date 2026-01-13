@@ -43,6 +43,12 @@ set(CROARING_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/CRoaring)
 set(ENABLE_ROARING_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/CRoaring)
 
+# Folly
+set(DEPS_ROOT "/opt/lsm-bitmap-index/installed")
+list(APPEND CMAKE_PREFIX_PATH 
+    "${DEPS_ROOT}/folly"
+)
+
 ## CXXOPTS
 add_compile_definitions(CXXOPTS_NO_RTTI) # CXXOPTS compile options
 include(FetchContent)
@@ -57,6 +63,11 @@ FetchContent_MakeAvailable(cxxopts)
 set(MAIN_SOURCE "src/main.cpp")
 file(GLOB_RECURSE LIB_SOURCES "src/include/*.cpp")
 
+# 패키지 검색
+find_package(folly CONFIG REQUIRED)
+find_package(gflags REQUIRED) # for folly
+find_package(Threads REQUIRED)
+
 # project_base_lib 정적 라이브러리 생성
 add_library(project_base_lib STATIC ${LIB_SOURCES})
 target_include_directories(project_base_lib PRIVATE
@@ -68,6 +79,7 @@ ${CROARING_SOURCE_DIR}/cpp/roaring
 target_link_libraries(project_base_lib PUBLIC
 roaring
 rocksdb
+Folly::folly
 cxxopts::cxxopts
 )
 
@@ -82,14 +94,13 @@ ${ROCKSDB_SOURCE_DIR}/include # Public API
 ${CROARING_SOURCE_DIR}/cpp/roaring
 )
 
-find_package(Threads REQUIRED)
-
 # 라이브러리 링크
 set(COMMON_LINK_LIBS
 project_base_lib    
 workload_generator_lib
-rocksdb
 roaring
+rocksdb
+Folly::folly
 dl
 Threads::Threads
 m
