@@ -7,12 +7,9 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # C++ Standard
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_BUILD_TYPE Debug) # 빌드 타입을 Debug로 설정하여 디버깅 심볼을 포함
-# set(CMAKE_BUILD_TYPE Release) # 벤치마크시에는 Release 모드로 빌드 필요
 
-# 성능 측정시 아래 라인 활성화
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fno-omit-frame-pointer")
-set(CMAKE_BUILD_TYPE RelWithDebInfo)
+# 성능 측정시 아래 라인 활성화 (RelWithDebInfo 와 함께 사용)
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fno-omit-frame-pointer")
 
 # RocksDB
 set(WITH_TESTS OFF CACHE BOOL "" FORCE)
@@ -45,9 +42,10 @@ add_subdirectory(third_party/CRoaring)
 
 # Folly
 set(DEPS_ROOT "/opt/lsm-bitmap-index/installed")
+set(FOLLY_DIR "${DEPS_ROOT}/folly")
 file(GLOB FMT_DIR "${DEPS_ROOT}/fmt-*")
 list(APPEND CMAKE_PREFIX_PATH 
-    "${DEPS_ROOT}/folly"
+    "${FOLLY_DIR}"
     "${FMT_DIR}"
 )
 
@@ -67,6 +65,7 @@ file(GLOB_RECURSE LIB_SOURCES "src/include/*.cpp")
 
 # 패키지 검색
 find_package(folly CONFIG REQUIRED)
+find_package(gflags REQUIRED) # for folly
 find_package(Threads REQUIRED)
 
 # project_base_lib 정적 라이브러리 생성
