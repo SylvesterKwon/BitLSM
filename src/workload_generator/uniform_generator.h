@@ -8,6 +8,7 @@ class UniformGenerator : public DistributionGenerator {
   std::uniform_int_distribution<uint64_t> dist;
 
 public:
+  // TODO: remove unused parameter cardinality
   UniformGenerator(uint64_t cardinality, uint64_t seed = 42)
       : gen(seed), dist(0, cardinality - 1) {}
 

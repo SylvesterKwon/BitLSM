@@ -45,8 +45,10 @@ add_subdirectory(third_party/CRoaring)
 
 # Folly
 set(DEPS_ROOT "/opt/lsm-bitmap-index/installed")
+file(GLOB FMT_DIR "${DEPS_ROOT}/fmt-*")
 list(APPEND CMAKE_PREFIX_PATH 
     "${DEPS_ROOT}/folly"
+    "${FMT_DIR}"
 )
 
 ## CXXOPTS
@@ -65,7 +67,6 @@ file(GLOB_RECURSE LIB_SOURCES "src/include/*.cpp")
 
 # 패키지 검색
 find_package(folly CONFIG REQUIRED)
-find_package(gflags REQUIRED) # for folly
 find_package(Threads REQUIRED)
 
 # project_base_lib 정적 라이브러리 생성
