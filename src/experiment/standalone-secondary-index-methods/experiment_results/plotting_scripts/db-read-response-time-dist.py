@@ -5,11 +5,11 @@ import os
 
 # 1. 파일 경로 및 이름 설정
 file_paths = [
-    '~/workspace/lsm-bitmap-index/experiment_results/no-si/no-si-read.csv',
-    '~/workspace/lsm-bitmap-index/experiment_results/ck/ck-pf-read.csv',
-    '~/workspace/lsm-bitmap-index/experiment_results/ck/ck-im-read.csv',
-    '~/workspace/lsm-bitmap-index/experiment_results/lu/lu-pf-read.csv',
-    '~/workspace/lsm-bitmap-index/experiment_results/lu/lu-im-read.csv',
+    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/no-si/no-si-read.csv',
+    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/ck/ck-pf-read.csv',
+    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/ck/ck-im-read.csv',
+    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/lu/lu-pf-read.csv',
+    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/lu/lu-im-read.csv',
 ]
 
 names = [ 'NO-SI', 'CK-PF', 'CK-IM', 'LU-PF', 'LU-IM' ]
@@ -48,7 +48,7 @@ for i, path in enumerate(file_paths):
 
 combined_df = pd.concat(all_data)
 
-plt.figure(figsize=(3, 3))
+plt.figure(figsize=(6, 3))
 
 # --- [핵심] Box Plot 그리기 ---
 # showfliers=False: 이상치(점)가 너무 많아 그래프가 납작해지면 이 옵션을 False로 끄거나 True로 켭니다.
@@ -75,7 +75,7 @@ plt.grid(True, axis='y', linestyle='--', alpha=0.6)
 plt.tight_layout()
 
 # 저장
-output_dir = os.path.expanduser('~/workspace/lsm-bitmap-index/experiment_results/')
+output_dir = os.path.expanduser('~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results')
 if not os.path.exists(output_dir):
     os.makedirs(output_dir, exist_ok=True)
 
@@ -84,3 +84,23 @@ plt.savefig(output_path, dpi=300, bbox_inches='tight')
 print(f"Saved graph to {output_path}")
 
 plt.show()
+
+# 통계량 출력
+print("\n" + "="*80)
+print(f"{'Method':>10} | {'Mean':>12} | {'Median':>12} | {'P99':>12} | {'P99.9':>12}")
+print(f"{'':>10} | {'(ms)':>12} | {'(ms)':>12} | {'(ms)':>12} | {'(ms)':>12}")
+print("="*80)
+
+for method_name in names:
+    # 해당 Method의 데이터만 필터링
+    subset = combined_df[combined_df['Method'] == method_name]['response_time_ms']
+    
+    if not subset.empty:
+        mean_val = subset.mean()
+        median_val = subset.median()       # 중앙값
+        p99_val = subset.quantile(0.99)    # 99th percentile
+        p999_val = subset.quantile(0.999)  # 99.9th percentile
+        
+        print(f"{method_name:>10} | {mean_val:12.4f} | {median_val:12.4f} | {p99_val:12.4f} | {p999_val:12.4f}")
+
+print("="*80 + "\n")
