@@ -21,17 +21,8 @@ Slice SABIBuilder::AddIndexEntry(const Slice& last_key_in_current_block,
                                  const Slice* first_key_in_next_block,
                                  const BlockHandle& block_handle,
                                  string* separator_scratch) {
-  // TODO: offset size index key 내용은 지우기. 기존 인덱스 블록과 중복이라 필요
-  // 없을듯?
-
-  // 1. Add index key
-  PutLengthPrefixedSlice(&final_index_blob_, last_key_in_current_block);
-  // 2. Add block handle (offset + size)
-  PutFixed64(&final_index_blob_, block_handle.offset);
-  PutFixed64(&final_index_blob_, block_handle.size);
-  // 3. Add table KVPairs prefix count
+  // Add table KVPairs prefix count
   PutFixed32(&final_index_blob_, data_entries_cnt_);
-
   ++index_entries_cnt_;
   return last_key_in_current_block;
 }
