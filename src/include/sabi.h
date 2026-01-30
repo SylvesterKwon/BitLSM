@@ -49,9 +49,15 @@ private:
       binning_policy;
 
   // Index blob
-  std::string final_index_blob_;
+  std::string index_blob_;
 
+  // Helper methods
   void SetBinningPolicy();
+  void SetCategoricalPropertyBinningPolicy(
+      uint32_t i, std::vector<std::map<std::string_view, uint32_t>>& buf_map);
+  void SetContinuousPropertyBinningPolicy(
+      uint32_t i, std::vector<std::map<std::string_view, uint32_t>>& buf_map);
+  void CalculateBitmapIndex();
 
 public:
   SABIBuilder(SABIOptions options)
