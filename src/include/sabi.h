@@ -42,8 +42,11 @@ private:
   // Binned bitmap index policy
   uint32_t total_bitmap_index_num_ = 0;     // total number of bitmap indexes
   std::vector<uint32_t> bitmap_index_nums_; // # of bitmaps for each SK
-  // TODO: 두번째 인자는
-  std::vector<std::variant<std::vector<double>, std::string>> binning_policy;
+  // continuous binning policy: vector<double>
+  // categorical binning policy: vector<pair<string,uint32_t>>
+  std::vector<std::variant<std::vector<double>,
+                           std::vector<std::pair<std::string, uint32_t>>>>
+      binning_policy;
 
   // Index blob
   std::string final_index_blob_;

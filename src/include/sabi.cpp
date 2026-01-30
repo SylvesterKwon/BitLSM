@@ -21,6 +21,9 @@ Slice SABIBuilder::AddIndexEntry(const Slice& last_key_in_current_block,
                                  const Slice* first_key_in_next_block,
                                  const BlockHandle& block_handle,
                                  string* separator_scratch) {
+  // TODO: offset size index key 내용은 지우기. 기존 인덱스 블록과 중복이라 필요
+  // 없을듯?
+
   // 1. Add index key
   PutLengthPrefixedSlice(&final_index_blob_, last_key_in_current_block);
   // 2. Add block handle (offset + size)
@@ -110,7 +113,27 @@ void SABIBuilder::SetBinningPolicy() {
   for (uint32_t i = 0; i < options_.sk_num; ++i) {
     if (options_.sk_types[i] == SKType::CATEGORICAL) {
       // Categorical property Binning
-      // TODO
+      priority_queue<pair<uint32_t, uint32_t>, vector<pair<uint32_t, uint32_t>>,
+                     greater<pair<uint32_t, uint32_t>>>
+          min_bin_pq;
+      vector<pair<string_view, uint32_t>> sorted_items; // sorted by cnt
+      for (const auto& [val, cnt] : buf_map[i]) {
+        sorted_items.push_back({val, cnt});
+      }
+      std::sort(
+          sorted_items.begin(), sorted_items.end(),
+          [](const auto& a, const auto& b) { return a.second > b.second; });
+      vector<pair<string, uint32_t>> binning;
+      binning.reserve(sorted_items.size());
+      for (uint32_t j = 0; j < bitmap_index_nums_[i]; ++j)
+        min_bin_pq.push({0, j});
+      for (auto& [val, cnt] : sorted_items) {
+        auto [cur_bin_cnt, bin_idx] = min_bin_pq.top();
+        min_bin_pq.pop();
+        binning.push_back({string(val), bin_idx});
+        min_bin_pq.push({cur_bin_cnt + cnt, bin_idx});
+      }
+      binning_policy[i] = std::move(binning);
     } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
       // Continuous property Binning
       folly::TDigest digest(
