@@ -10,7 +10,7 @@ using namespace roaring;
 // TODO: Implement index for effective block random access
 class TablePropertiesSABIBuilder : public TablePropertiesCollector {
 private:
-  uint32_t cur_table_kv_cnt_ = 0, cur_block_kv_cnt_ = 0;
+  uint32_t data_entries_cnt_ = 0, cur_block_kv_cnt_ = 0;
   vector<uint32_t> block_kv_cnt_list_;
   vector<Roaring> roaring_set;
 
@@ -36,11 +36,11 @@ public:
     // 2. 켜진 bit props는 bitset에 추가
     for (size_t i = 0; i < underscore_pos; ++i) {
       if (value_data[i] == '1') {
-        roaring_set[i].add(cur_table_kv_cnt_);
+        roaring_set[i].add(data_entries_cnt_);
       }
     }
 
-    ++cur_block_kv_cnt_, ++cur_table_kv_cnt_;
+    ++cur_block_kv_cnt_, ++data_entries_cnt_;
     return Status::OK();
   }
 

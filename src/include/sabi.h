@@ -4,10 +4,21 @@
 #include "rocksdb/options.h"
 #include "rocksdb/user_defined_index.h"
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <variant>
 
 namespace bitmap_index {
 
+enum SKType {
+  CATEGORICAL,
+  CONTINUOUS,
+};
+struct SABIOptions {
+  uint32_t sk_num;              // # of secondary keys
+  std::vector<SKType> sk_types; // sk type vector
+  double rho; // proportion parameter that determines bitmap budget
+};
 class SABIBuilder;
 class SABIIterator;
 class SABIReader;
@@ -15,12 +26,34 @@ class SABIFactory;
 
 class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
 private:
-  uint32_t cur_table_kv_cnt_ = 0;  // total number of KVPairs in current table
+  SABIOptions options_;
+
+  // Buffer
+  std::vector<std::vector<std::string>> sk_buf_;
+
+  // Statistics
+  uint32_t total_data_entries_size_uncomp_ = 0; // total size of KVPs (bytes)
+  uint32_t data_entries_cnt_ = 0;  // total number of KVPs in current table
   uint32_t index_entries_cnt_ = 0; // total number of index entries added
-  std::vector<roaring::Roaring> roaring_set_;
+
+  // Bitmap
+  std::vector<roaring::Roaring> bitmap_index_;
+
+  // Binned bitmap index policy
+  uint32_t total_bitmap_index_num_ = 0;     // total number of bitmap indexes
+  std::vector<uint32_t> bitmap_index_nums_; // # of bitmaps for each SK
+  // TODO: 두번째 인자는
+  std::vector<std::variant<std::vector<double>, std::string>> binning_policy;
+
+  // Index blob
   std::string final_index_blob_;
 
+  void SetBinningPolicy();
+
 public:
+  SABIBuilder(SABIOptions options)
+      : options_(options), sk_buf_(options.sk_num),
+        bitmap_index_nums_(options.sk_num) {};
   rocksdb::Slice AddIndexEntry(const rocksdb::Slice& last_key_in_current_block,
                                const rocksdb::Slice* first_key_in_next_block,
                                const BlockHandle& block_handle,
@@ -57,7 +90,7 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   friend class SABIIterator;
 
 private:
-  std::vector<roaring::Roaring> roaring_set_;
+  std::vector<roaring::Roaring> bitmap_index_;
   std::vector<SABIBlockIndexEntry> block_indices;
   using AlignedPtr = std::unique_ptr<char[], void (*)(void*)>;
   std::vector<AlignedPtr> managed_buffers_;
@@ -70,7 +103,11 @@ public:
 };
 
 class SABIFactory : public rocksdb::UserDefinedIndexFactory {
+private:
+  SABIOptions options_;
+
 public:
+  SABIFactory(SABIOptions options) : options_(options) {};
   const char* Name() const override;
   rocksdb::UserDefinedIndexBuilder* NewBuilder() const override;
   std::unique_ptr<rocksdb::UserDefinedIndexReader>
