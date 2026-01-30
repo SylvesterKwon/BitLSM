@@ -99,116 +99,158 @@ void SABIBuilder::SetBinningPolicy() {
                  (bitmap_index_nums_[idx] * (bitmap_index_nums_[idx] + 1)),
              idx});
   }
+  bitmap_index_.resize(total_bitmap_index_num_);
 
   // 3. Set binning boundaries for each SK
+
   for (uint32_t i = 0; i < options_.sk_num; ++i) {
     if (options_.sk_types[i] == SKType::CATEGORICAL) {
-      // Categorical property Binning
-      priority_queue<pair<uint32_t, uint32_t>, vector<pair<uint32_t, uint32_t>>,
-                     greater<pair<uint32_t, uint32_t>>>
-          min_bin_pq;
-      vector<pair<string_view, uint32_t>> sorted_items; // sorted by cnt
-      for (const auto& [val, cnt] : buf_map[i]) {
-        sorted_items.push_back({val, cnt});
-      }
-      std::sort(
-          sorted_items.begin(), sorted_items.end(),
-          [](const auto& a, const auto& b) { return a.second > b.second; });
-      vector<pair<string, uint32_t>> binning;
-      binning.reserve(sorted_items.size());
-      for (uint32_t j = 0; j < bitmap_index_nums_[i]; ++j)
-        min_bin_pq.push({0, j});
-      for (auto& [val, cnt] : sorted_items) {
-        auto [cur_bin_cnt, bin_idx] = min_bin_pq.top();
-        min_bin_pq.pop();
-        binning.push_back({string(val), bin_idx});
-        min_bin_pq.push({cur_bin_cnt + cnt, bin_idx});
-      }
-      binning_policy[i] = std::move(binning);
+      // 3-A. Categorical property Binning
+      SetCategoricalPropertyBinningPolicy(i, buf_map);
     } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
-      // Continuous property Binning
-      folly::TDigest digest(
-          1000); // TODO: Make this configurable / driven with some fomular
-      vector<double> v(sk_buf_[i].size());
-      transform(sk_buf_[i].begin(), sk_buf_[i].end(), v.begin(),
-                [](const std::string& s) {
-                  double res = 0.0;
-                  auto result = from_chars(s.data(), s.data() + s.size(), res);
-                  if (result.ec != std::errc()) {
-                    cerr << "Error while transform sk_buf_ to double vector\n";
-                    assert(false);
-                  }
-                  return res;
-                });
-      digest = digest.merge(folly::Range<const double*>(v.data(), v.size()));
-      // N+1 boundary points
-      vector<double> boundaries(bitmap_index_nums_[i] + 1);
-      for (uint32_t j = 0; j <= bitmap_index_nums_[i]; ++j) {
-        double quantile = (double)j / (double)bitmap_index_nums_[i];
-        boundaries[j] = digest.estimateQuantile(quantile);
-      }
-      binning_policy[i] = std::move(boundaries);
+      // 3-B. Continuous property Binning
+      SetContinuousPropertyBinningPolicy(i, buf_map);
     } else {
       assert(false);
     }
   }
 }
 
-Status SABIBuilder::Finish(Slice* index_contents) {
-  // 1. Determine Binning Policy
-  SetBinningPolicy();
-  // WIP - 비닝 경계 정보 어떻게 저장할지...
-  /*
-  초안: 정책리스트 offset vector 사용해서 개별적으로 읽을 수 있도록 하기
-  경계 1 ...
-  경계 2 ...
-  ...
-  경계 k ...
-  offset 1 2 ... k
-  */
+void SABIBuilder::SetCategoricalPropertyBinningPolicy(
+    uint32_t i, vector<map<string_view, uint32_t>>& buf_map) {
+  priority_queue<pair<uint32_t, uint32_t>, vector<pair<uint32_t, uint32_t>>,
+                 greater<pair<uint32_t, uint32_t>>>
+      min_bin_pq;
+  vector<pair<string_view, uint32_t>> sorted_items; // sorted by cnt
+  for (const auto& [val, cnt] : buf_map[i]) {
+    sorted_items.push_back({val, cnt});
+  }
+  std::sort(sorted_items.begin(), sorted_items.end(),
+            [](const auto& a, const auto& b) { return a.second > b.second; });
+  vector<pair<string, uint32_t>> binning;
+  binning.reserve(sorted_items.size());
+  for (uint32_t j = 0; j < bitmap_index_nums_[i]; ++j)
+    min_bin_pq.push({0, j});
+  for (auto& [val, cnt] : sorted_items) {
+    auto [cur_bin_cnt, bin_idx] = min_bin_pq.top();
+    min_bin_pq.pop();
+    binning.push_back({string(val), bin_idx});
+    min_bin_pq.push({cur_bin_cnt + cnt, bin_idx});
+  }
+  sort(binning.begin(), binning.end());
+  binning_policy[i] = std::move(binning);
+}
 
-  // 2. Calculate bitmap index by buffered SK data & binning policy
+void SABIBuilder::SetContinuousPropertyBinningPolicy(
+    uint32_t i, std::vector<std::map<std::string_view, uint32_t>>& buf_map) {
+  folly::TDigest digest(
+      1000); // TODO: Make this configurable / driven with some fomular
+  vector<double> v(sk_buf_[i].size());
+  transform(sk_buf_[i].begin(), sk_buf_[i].end(), v.begin(),
+            [](const std::string& s) {
+              double res = 0.0;
+              auto result = from_chars(s.data(), s.data() + s.size(), res);
+              if (result.ec != std::errc()) {
+                cerr << "Error while transform sk_buf_ to double vector\n";
+                assert(false);
+              }
+              return res;
+            });
+  digest = digest.merge(folly::Range<const double*>(v.data(), v.size()));
+  // N+1 boundary points
+  vector<double> boundaries(bitmap_index_nums_[i] + 1);
+  for (uint32_t j = 0; j <= bitmap_index_nums_[i]; ++j) {
+    double quantile = (double)j / (double)bitmap_index_nums_[i];
+    boundaries[j] = digest.estimateQuantile(quantile);
+  }
+  binning_policy[i] = std::move(boundaries);
+}
+
+void SABIBuilder::CalculateBitmapIndex() {
+  uint32_t bin_idx_offset = 0;
   for (uint32_t i = 0; i < options_.sk_num; ++i) {
     if (options_.sk_types[i] == SKType::CATEGORICAL) {
+      vector<pair<string, uint32_t>>& binning =
+          std::get<vector<pair<string, uint32_t>>>(binning_policy[i]);
+      for (uint32_t j = 0; j < sk_buf_[i].size(); ++j) {
+        const string& key = sk_buf_[i][j];
+
+        auto it = std::lower_bound(
+            binning.begin(), binning.end(), key,
+            [](const pair<string, uint32_t>& element, const string& val) {
+              return element.first < val;
+            });
+        if (it != binning.end() && it->first == key) {
+          uint32_t bin_idx = bin_idx_offset + (it->second);
+          bitmap_index_[bin_idx].add(j);
+        } else {
+          assert(false);
+        }
+      }
     } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
+      vector<double>& binning = std::get<vector<double>>(binning_policy[i]);
+      for (uint32_t j = 0; j < sk_buf_[i].size(); ++j) {
+        const string& key = sk_buf_[i][j];
+        double key_value = 0.0;
+        auto res =
+            std::from_chars(key.data(), key.data() + key.size(), key_value);
+        if (res.ec != std::errc())
+          assert(false && "Invalid double string in buffer");
+
+        auto it = std::upper_bound(binning.begin(), binning.end(), key_value);
+        uint32_t idx = std::distance(binning.begin(), it);
+        uint32_t local_bin_idx =
+            (idx == 0) ? 0 : static_cast<uint32_t>(idx - 1);
+        if (local_bin_idx >= bitmap_index_nums_[i])
+          local_bin_idx = bitmap_index_nums_[i] - 1;
+
+        uint32_t bin_idx = bin_idx_offset + local_bin_idx;
+        bitmap_index_[bin_idx].add(j);
+      }
     } else {
       assert(false);
     }
+    bin_idx_offset += bitmap_index_nums_[i];
   }
+}
+
+Status SABIBuilder::Finish(Slice* index_contents) {
+  // 1. Determine Binning Policy
+  SetBinningPolicy();
+
+  // 2. Calculate bitmap index by buffered SK data & binning policy
+  CalculateBitmapIndex();
 
   // 3. Make final index blob
-
+  // 3-1. Add bitmap indexes
   vector<uint32_t> offsets;
-  uint32_t total_roaring_size = 0,
-           total_offset_table_size = 0; // size in bytes
-
-  // TODO: final_index_blob_ 에 필요한 추가 메모리 공간 미리 reserve 하도록
-  // 최적화
-
-  // 1. Calculate offsets for Roaring
-  uint32_t base_offset = final_index_blob_.size();
-  offsets.push_back(base_offset);
+  offsets.push_back(final_index_blob_.size());
   for (uint32_t i = 0; i < bitmap_index_.size(); ++i) {
     Roaring& r = bitmap_index_[i];
     r.runOptimize();
-    total_roaring_size += r.getFrozenSizeInBytes();
+    r.writeFrozen(final_index_blob_.data());
     offsets.push_back(offsets.back() + r.getFrozenSizeInBytes());
   }
-  total_offset_table_size = offsets.size() * sizeof(uint32_t);
+  //  total_offset_table_size = offsets.size() * sizeof(uint32_t);
 
-  // total index size = base_offset + total_roaring_size +
-  // total_offset_table_size + footer
-  final_index_blob_.resize(base_offset + total_roaring_size);
-
-  // 2. Write Roarings
-  for (uint32_t i = 0; i < bitmap_index_.size(); ++i) {
-    Roaring& r = bitmap_index_[i];
-    r.writeFrozen(final_index_blob_.data() + offsets[i]);
-  }
-
-  // 3. Write Roaring offsets
+  // 3-2. Add bitmap index offset
+  uint32_t bitmap_index_offset_offset = final_index_blob_.size();
   for (uint32_t& oi : offsets)
     PutFixed32(&final_index_blob_, oi);
+
+  // 3-3. Add bitmap binning policies
+  /*
+초안: 정책리스트 offset vector 사용해서 개별적으로 읽을 수 있도록 하기
+경계 1 ...
+경계 2 ...
+...
+경계 k ...
+offset 1 2 ... k
+TODO: 각 속성별 비트맵 인덱스의 offset 리스트도 인코딩해야될듯, 지금
+*/
+  // 3-4. Add footer
+
+  final_index_blob_.resize(base_offset + total_roaring_size);
 
   // 4. Write Footer
   PutFixed32(&final_index_blob_, index_entries_cnt_);
