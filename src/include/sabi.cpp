@@ -22,7 +22,7 @@ Slice SABIBuilder::AddIndexEntry(const Slice& last_key_in_current_block,
                                  const BlockHandle& block_handle,
                                  string* separator_scratch) {
   // Add table KVPairs prefix count
-  PutFixed32(&final_index_blob_, data_entries_cnt_);
+  PutFixed32(&index_blob_, data_entries_cnt_);
   ++index_entries_cnt_;
   return last_key_in_current_block;
 }
@@ -223,41 +223,64 @@ Status SABIBuilder::Finish(Slice* index_contents) {
 
   // 3. Make final index blob
   // 3-1. Add bitmap indexes
-  vector<uint32_t> offsets;
-  offsets.push_back(final_index_blob_.size());
+  vector<uint32_t> bitmap_index_offsets;
+  bitmap_index_offsets.push_back(index_blob_.size());
   for (uint32_t i = 0; i < bitmap_index_.size(); ++i) {
     Roaring& r = bitmap_index_[i];
     r.runOptimize();
-    r.writeFrozen(final_index_blob_.data());
-    offsets.push_back(offsets.back() + r.getFrozenSizeInBytes());
+    bitmap_index_offsets.push_back(bitmap_index_offsets.back() +
+                                   r.getFrozenSizeInBytes());
+  }
+  index_blob_.resize(bitmap_index_offsets.back());
+  for (uint32_t i = 0; i < bitmap_index_.size(); ++i) {
+    Roaring& r = bitmap_index_[i];
+    r.writeFrozen(index_blob_.data() + bitmap_index_offsets[i]);
   }
   //  total_offset_table_size = offsets.size() * sizeof(uint32_t);
 
   // 3-2. Add bitmap index offset
-  uint32_t bitmap_index_offset_offset = final_index_blob_.size();
-  for (uint32_t& oi : offsets)
-    PutFixed32(&final_index_blob_, oi);
+  uint32_t bitmap_index_offset_offset = index_blob_.size();
+  PutFixed32(&index_blob_, bitmap_index_offsets.size());
+  for (uint32_t& oi : bitmap_index_offsets)
+    PutFixed32(&index_blob_, oi);
 
   // 3-3. Add bitmap binning policies
-  /*
-초안: 정책리스트 offset vector 사용해서 개별적으로 읽을 수 있도록 하기
-경계 1 ...
-경계 2 ...
-...
-경계 k ...
-offset 1 2 ... k
-TODO: 각 속성별 비트맵 인덱스의 offset 리스트도 인코딩해야될듯, 지금
-*/
-  // 3-4. Add footer
+  vector<uint32_t> binning_policy_offset;
+  binning_policy_offset.push_back(index_blob_.size());
+  for (uint32_t i = 0; i < options_.sk_num; ++i) {
+    PutFixed32(&index_blob_,
+               static_cast<uint32_t>(options_.sk_types[i])); // Mark SKType
+    if (options_.sk_types[i] == SKType::CATEGORICAL) {
+      vector<pair<string, uint32_t>>& binning =
+          std::get<vector<pair<string, uint32_t>>>(binning_policy[i]);
+      PutFixed32(&index_blob_, binning.size());
+      for (auto& bi : binning) {
+        PutLengthPrefixedSlice(&index_blob_, bi.first);
+        PutFixed32(&index_blob_, bi.second);
+      }
+    } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
+      vector<double>& binning = std::get<vector<double>>(binning_policy[i]);
+      PutFixed32(&index_blob_, binning.size());
+      for (auto& bi : binning)
+        PutFixed64(&index_blob_, bi);
+    } else {
+      assert(false);
+    }
+    binning_policy_offset.push_back(index_blob_.size());
+  }
 
-  final_index_blob_.resize(base_offset + total_roaring_size);
+  // 3-4. Add bitmap binning policy offset
+  uint32_t binning_policy_offset_offset = index_blob_.size();
+  PutFixed32(&index_blob_, binning_policy_offset.size());
+  for (uint32_t& oi : binning_policy_offset)
+    PutFixed32(&index_blob_, oi);
 
-  // 4. Write Footer
-  PutFixed32(&final_index_blob_, index_entries_cnt_);
-  uint32_t bitmap_cnt = bitmap_index_.size();
-  PutFixed32(&final_index_blob_, bitmap_cnt);
+  // 3-5. Add footer
+  PutFixed32(&index_blob_, index_entries_cnt_);
+  PutFixed32(&index_blob_, bitmap_index_offset_offset);
+  PutFixed32(&index_blob_, binning_policy_offset_offset);
 
-  *index_contents = Slice(final_index_blob_);
+  *index_contents = Slice(index_blob_);
   return Status::OK();
 }
 

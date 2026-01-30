@@ -49,7 +49,7 @@ private:
       binning_policy;
 
   // Index blob
-  std::string final_index_blob_;
+  std::string index_blob_;
 
   // Helper methods
   void SetBinningPolicy();
