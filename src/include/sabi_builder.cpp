@@ -290,6 +290,7 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   // Dump(); // for test only.
   return Status::OK();
 }
+
 void SABIBuilder::Dump() {
   cout << "==== dump ====\n";
   cout << "total_data_entries_size_uncomp_: " << total_data_entries_size_uncomp_

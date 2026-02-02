@@ -109,6 +109,7 @@ public:
   std::unique_ptr<rocksdb::UserDefinedIndexIterator>
   NewIterator(const rocksdb::ReadOptions& read_options);
   size_t ApproximateMemoryUsage() const;
+  void Dump();
 };
 
 class SABIFactory : public rocksdb::UserDefinedIndexFactory {

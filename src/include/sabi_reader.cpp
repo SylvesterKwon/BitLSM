@@ -163,6 +163,8 @@ SABIReader::SABIReader(Slice& index_block, SABIOptions options)
     data_entries_cnt_psum_[i] =
         DecodeFixed32(index_block.data() + i * sizeof(uint32_t));
   }
+
+  Dump(); // for test only.
 }
 
 unique_ptr<UserDefinedIndexIterator>
@@ -176,5 +178,14 @@ size_t SABIReader::ApproximateMemoryUsage() const {
   // TODO: implement this
   return 0;
 };
+
+void SABIReader::Dump() {
+  cout << "==== dump ====\n";
+  cout << "bitmap count: " << bitmap_index_.bitmaps.size() << "\n";
+  cout << "bitmap_nums: \n";
+  for (uint32_t i = 0; i < bitmap_index_.bitmap_nums.size(); ++i)
+    cout << "\t" << bitmap_index_.bitmap_nums[i] << ", ";
+  cout << "\n";
+}
 
 } // namespace bitmap_index
