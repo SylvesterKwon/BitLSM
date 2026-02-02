@@ -1,5 +1,6 @@
 #include "util/coding.h"
 #include "util/coding_lean.h"
+#include <cstdint>
 #include <folly/Range.h>
 #include <folly/stats/TDigest.h>
 #include <iostream>
@@ -73,7 +74,8 @@ UserDefinedIndexBuilder::BlockHandle SABIIterator::value() {
 // SABIReader Implementation
 // ========================================================================
 
-SABIReader::SABIReader(Slice& index_block) {
+SABIReader::SABIReader(Slice& index_block, SABIOptions options)
+    : options_(options) {
   // 1. Read footer
   uint32_t index_entries_cnt_ = DecodeFixed32(
       index_block.data() + index_block.size() - 3 * sizeof(uint32_t));
@@ -81,63 +83,87 @@ SABIReader::SABIReader(Slice& index_block) {
       index_block.data() + index_block.size() - 2 * sizeof(uint32_t));
   uint32_t binning_policy_offset_offset = DecodeFixed32(
       index_block.data() + index_block.size() - 1 * sizeof(uint32_t));
-  uint32_t bitmap_cnt = bitmap_index_offset_offset - 1;
 
-  bitmap_index_.bitmaps.resize(bitmap_cnt);
   data_entries_cnt_psum_.resize(index_entries_cnt_);
 
-  // 2. Read binning policies
+  // 2. Read binning policy
+  uint32_t binning_policy_offset_cnt =
+      DecodeFixed32(index_block.data() + binning_policy_offset_offset);
+  uint32_t binning_policy_cnt = binning_policy_offset_cnt - 1;
+  bitmap_index_.binning_policy.resize(binning_policy_cnt);
+  bitmap_index_.bitmap_nums.resize(binning_policy_cnt);
+  assert(options_.sk_num == binning_policy_cnt);
+
+  for (uint32_t i = 0; i < binning_policy_cnt; ++i) {
+    uint32_t cur_binning_policy_offset =
+        DecodeFixed32(index_block.data() + binning_policy_offset_offset +
+                      (i + 1) * sizeof(uint32_t));
+    uint32_t cur_binning_policy_size =
+        DecodeFixed32(index_block.data() + cur_binning_policy_offset);
+    bitmap_index_.bitmap_nums[i] = cur_binning_policy_size;
+
+    if (options_.sk_types[i] == SKType::CATEGORICAL) {
+      // read {length prefixed string + uint32t (bin number)}
+      const char* ptr =
+          index_block.data() + cur_binning_policy_offset + sizeof(uint32_t);
+      vector<pair<string, uint32_t>> cur_binning_policy(
+          cur_binning_policy_size);
+      for (uint32_t j = 0; j < cur_binning_policy_size; ++j) {
+        uint32_t key_len = 0;
+        // requires at least 5 bytes
+        const char* key_start = GetVarint32Ptr(ptr, ptr + 5, &key_len);
+        string key(key_start, key_len);
+        ptr = key_start + key_len;
+        cur_binning_policy[j] = {key, DecodeFixed32(ptr)};
+        ptr += sizeof(uint32_t);
+      }
+      bitmap_index_.binning_policy[i] = std::move(cur_binning_policy);
+    } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
+      vector<double> cur_binning_policy(cur_binning_policy_size);
+      for (uint32_t j = 0; j < cur_binning_policy_size; ++j) {
+        uint64_t val_int =
+            DecodeFixed64(index_block.data() + cur_binning_policy_offset +
+                          sizeof(uint32_t) + j * sizeof(double));
+        memcpy(&cur_binning_policy[j], &val_int, sizeof(double));
+      }
+      bitmap_index_.binning_policy[i] = std::move(cur_binning_policy);
+    } else {
+      assert(false);
+    }
+  }
+
   // 3. Read bitmap index offset
-  // 4. Read bitmap index
-  // 5. Read index block prefix sum
+  uint32_t bitmap_offset_cnt =
+      DecodeFixed32(index_block.data() + bitmap_index_offset_offset);
+  uint32_t bitmaps_cnt = bitmap_offset_cnt - 1;
+  bitmap_index_.bitmaps.resize(bitmaps_cnt);
+  vector<uint32_t> bitmap_offsets(bitmap_offset_cnt);
+  for (uint32_t i = 0; i < bitmap_offset_cnt; ++i) {
+    bitmap_offsets[i] =
+        DecodeFixed32(index_block.data() + bitmap_index_offset_offset +
+                      (i + 1) * sizeof(uint32_t));
+  }
+  for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
+    uint32_t size = bitmap_offsets[i + 1] - bitmap_offsets[i];
+    const char* raw_ptr = index_block.data() + bitmap_offsets[i];
+
+    // 32 bytes alignment
+    void* aligned_ptr = nullptr;
+    posix_memalign(&aligned_ptr, 32, size);
+    AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr), std::free);
+    memcpy(managed_aligned_ptr.get(), raw_ptr, size);
+    bitmap_index_.bitmaps[i] = Roaring::frozenView(
+        reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
+    managed_buffers_.push_back(
+        std::move(managed_aligned_ptr)); // move pointer ownership
+  }
+
+  // 4. Read index block prefix sum
+  for (uint32_t i = 0; i < index_entries_cnt_; ++i) {
+    data_entries_cnt_psum_[i] =
+        DecodeFixed32(index_block.data() + i * sizeof(uint32_t));
+  }
 }
-
-// SABIReader::SABIReader(Slice& index_block) {
-//   cout << "SABI READER INIT\n";
-//   // 1. Read footer
-//   uint32_t index_entries_cnt = DecodeFixed32(
-//       index_block.data() + index_block.size() - 2 * sizeof(uint32_t));
-//   uint32_t bitmap_cnt = DecodeFixed32(index_block.data() + index_block.size()
-//   -
-//                                       1 * sizeof(uint32_t));
-//   bitmap_index_.resize(bitmap_cnt);
-//   block_indices.resize(index_entries_cnt);
-
-//   // 2. Read Roaring offset vector
-//   uint32_t offset_cnt = bitmap_cnt + 1;
-//   vector<uint32_t> offsets(offset_cnt);
-//   const char* offset_table_offset = index_block.data() + index_block.size() -
-//                                     (2 + offset_cnt) * sizeof(uint32_t);
-//   for (uint32_t i = 0; i < offset_cnt; ++i) {
-//     offsets[i] = DecodeFixed32(offset_table_offset + i * sizeof(uint32_t));
-//   }
-
-//   // 3. Read Roaring
-//   for (uint32_t i = 0; i < bitmap_cnt; ++i) {
-//     uint32_t offset = offsets[i], size = offsets[i + 1] - offset;
-//     const char* raw_ptr = index_block.data() + offset;
-//     void* aligned_ptr = nullptr;
-//     // 32 bytes 정렬
-//     posix_memalign(&aligned_ptr, 32, size);
-//     AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr),
-//     std::free); memcpy(managed_aligned_ptr.get(), raw_ptr, size);
-//     bitmap_index_[i] = Roaring::frozenView(
-//         reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
-//     managed_buffers_.push_back(std::move(managed_aligned_ptr)); // 소유권
-//     이전
-//   }
-
-//   // 4. Read block index
-//   for (uint32_t i = 0; i < index_entries_cnt; ++i) {
-//     SABIBlockIndexEntry& entry = block_indices[i];
-//     Slice key;
-//     GetLengthPrefixedSlice(&index_block, &key);
-//     GetFixed64(&index_block, &entry.block_handle.offset);
-//     GetFixed64(&index_block, &entry.block_handle.size);
-//     GetFixed32(&index_block, &entry.prefix_kv_cnt);
-//     entry.index_key = key.ToString();
-//   }
-// }
 
 unique_ptr<UserDefinedIndexIterator>
 SABIReader::NewIterator(const ReadOptions& read_options) {

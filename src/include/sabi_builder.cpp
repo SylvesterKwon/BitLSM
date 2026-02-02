@@ -15,6 +15,12 @@ namespace bitmap_index {
 // ========================================================================
 // SABIBuilder Implementation
 // ========================================================================
+SABIBuilder::SABIBuilder(SABIOptions options)
+    : options_(options), sk_buf_(options.sk_num) {
+  bitmap_index_.bitmap_nums.resize(options.sk_num, 0);
+  bitmap_index_.binning_policy.resize(options.sk_num);
+};
+
 Slice SABIBuilder::AddIndexEntry(const Slice& last_key_in_current_block,
                                  const Slice* first_key_in_next_block,
                                  const BlockHandle& block_handle,
@@ -44,9 +50,9 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
 void SABIBuilder::SetBinningPolicy() {
   // 1. Set target total bitmap index number
   // (Total Bitmap Size)
-  // = (total_bitmap_index_cnt) * (N/8)
+  // = (total_bitmaps_cnt) * (N/8)
   // = (total_data_entries_size) * ρ
-  uint32_t target_total_bitmap_index_cnt =
+  uint32_t target_total_bitmaps_cnt =
       (double)(total_data_entries_size_uncomp_ * 8) * options_.rho /
       index_entries_cnt_;
 
@@ -54,7 +60,7 @@ void SABIBuilder::SetBinningPolicy() {
   vector<map<string_view, uint32_t>> buf_map(
       options_.sk_num); // map for counting each sk's value
   uint32_t cardinality_ub =
-      target_total_bitmap_index_cnt; // theoretically max bins for one SK
+      target_total_bitmaps_cnt; // theoretically max bins for one SK
   for (uint32_t i = 0; i < options_.sk_num; ++i) {
     for (uint32_t j = 0; j < data_entries_cnt_; ++j) {
       buf_map[i][sk_buf_[i][j]]++;
@@ -70,37 +76,35 @@ void SABIBuilder::SetBinningPolicy() {
   // TODO(TASK-85): 읽기 쿼리 집계해서 계산하도록 수정 (현재는 동등하게
   // 들어온다고 가정하고 개발)
   vector<double> query_weight_vector(sk_buf_.size(), 1.0);
-  int32_t remaining_budget = target_total_bitmap_index_cnt;
+  int32_t remaining_budget = target_total_bitmaps_cnt;
   priority_queue<pair<double, uint32_t>> pq; // {diminishing returns, SK idx}
-  uint32_t total_bitmap_index_num = 0;
+  uint32_t total_bitmaps_num = 0;
 
-  for (uint32_t i = 0; i < bitmap_index_.bitmap_index_nums.size(); ++i) {
+  for (uint32_t i = 0; i < bitmap_index_.bitmap_nums.size(); ++i) {
     // Allocate at least 1 bin (prevent divide by zero)
-    bitmap_index_.bitmap_index_nums[i] = 1;
+    bitmap_index_.bitmap_nums[i] = 1;
     remaining_budget--;
-    total_bitmap_index_num++;
+    total_bitmaps_num++;
     // Delta cost = - N / b_i * (b_i + 1)
-    pq.push(
-        {query_weight_vector[i] / (bitmap_index_.bitmap_index_nums[i] *
-                                   (bitmap_index_.bitmap_index_nums[i] + 1)),
-         i});
+    pq.push({query_weight_vector[i] / (bitmap_index_.bitmap_nums[i] *
+                                       (bitmap_index_.bitmap_nums[i] + 1)),
+             i});
   }
 
   while (remaining_budget > 0 && pq.size() > 0) {
     auto [_, idx] = pq.top();
     pq.pop();
-    if (buf_map[idx].size() <= bitmap_index_.bitmap_index_nums[idx]) {
+    if (buf_map[idx].size() <= bitmap_index_.bitmap_nums[idx]) {
       continue;
     }
-    bitmap_index_.bitmap_index_nums[idx]++;
+    bitmap_index_.bitmap_nums[idx]++;
     remaining_budget--;
-    total_bitmap_index_num++;
-    pq.push({query_weight_vector[idx] /
-                 (bitmap_index_.bitmap_index_nums[idx] *
-                  (bitmap_index_.bitmap_index_nums[idx] + 1)),
+    total_bitmaps_num++;
+    pq.push({query_weight_vector[idx] / (bitmap_index_.bitmap_nums[idx] *
+                                         (bitmap_index_.bitmap_nums[idx] + 1)),
              idx});
   }
-  bitmap_index_.bitmaps.resize(total_bitmap_index_num);
+  bitmap_index_.bitmaps.resize(total_bitmaps_num);
 
   // 3. Set binning boundaries for each SK
 
@@ -130,7 +134,7 @@ void SABIBuilder::SetCategoricalPropertyBinningPolicy(
             [](const auto& a, const auto& b) { return a.second > b.second; });
   vector<pair<string, uint32_t>> binning;
   binning.reserve(sorted_items.size());
-  for (uint32_t j = 0; j < bitmap_index_.bitmap_index_nums[i]; ++j)
+  for (uint32_t j = 0; j < bitmap_index_.bitmap_nums[i]; ++j)
     min_bin_pq.push({0, j});
   for (auto& [val, cnt] : sorted_items) {
     auto [cur_bin_cnt, bin_idx] = min_bin_pq.top();
@@ -159,9 +163,9 @@ void SABIBuilder::SetContinuousPropertyBinningPolicy(
             });
   digest = digest.merge(folly::Range<const double*>(v.data(), v.size()));
   // N+1 boundary points
-  vector<double> boundaries(bitmap_index_.bitmap_index_nums[i] + 1);
-  for (uint32_t j = 0; j <= bitmap_index_.bitmap_index_nums[i]; ++j) {
-    double quantile = (double)j / (double)bitmap_index_.bitmap_index_nums[i];
+  vector<double> boundaries(bitmap_index_.bitmap_nums[i] + 1);
+  for (uint32_t j = 0; j <= bitmap_index_.bitmap_nums[i]; ++j) {
+    double quantile = (double)j / (double)bitmap_index_.bitmap_nums[i];
     boundaries[j] = digest.estimateQuantile(quantile);
   }
   bitmap_index_.binning_policy[i] = std::move(boundaries);
@@ -204,8 +208,8 @@ void SABIBuilder::CalculateBitmapIndex() {
         uint32_t idx = std::distance(binning.begin(), it);
         uint32_t local_bin_idx =
             (idx == 0) ? 0 : static_cast<uint32_t>(idx - 1);
-        if (local_bin_idx >= bitmap_index_.bitmap_index_nums[i])
-          local_bin_idx = bitmap_index_.bitmap_index_nums[i] - 1;
+        if (local_bin_idx >= bitmap_index_.bitmap_nums[i])
+          local_bin_idx = bitmap_index_.bitmap_nums[i] - 1;
 
         uint32_t bin_idx = bin_idx_offset + local_bin_idx;
         bitmap_index_.bitmaps[bin_idx].add(j);
@@ -213,7 +217,7 @@ void SABIBuilder::CalculateBitmapIndex() {
     } else {
       assert(false);
     }
-    bin_idx_offset += bitmap_index_.bitmap_index_nums[i];
+    bin_idx_offset += bitmap_index_.bitmap_nums[i];
   }
 }
 
@@ -226,33 +230,30 @@ Status SABIBuilder::Finish(Slice* index_contents) {
 
   // 3. Make final index blob
   // 3-1. Add bitmap indexes
-  vector<uint32_t> bitmap_index_offsets;
-  bitmap_index_offsets.push_back(index_blob_.size());
+  vector<uint32_t> bitmap_offsets;
+  bitmap_offsets.push_back(index_blob_.size());
   for (uint32_t i = 0; i < bitmap_index_.bitmaps.size(); ++i) {
     Roaring& r = bitmap_index_.bitmaps[i];
     r.runOptimize();
-    bitmap_index_offsets.push_back(bitmap_index_offsets.back() +
-                                   r.getFrozenSizeInBytes());
+    bitmap_offsets.push_back(bitmap_offsets.back() + r.getFrozenSizeInBytes());
   }
-  index_blob_.resize(bitmap_index_offsets.back());
+  index_blob_.resize(bitmap_offsets.back());
   for (uint32_t i = 0; i < bitmap_index_.bitmaps.size(); ++i) {
     Roaring& r = bitmap_index_.bitmaps[i];
-    r.writeFrozen(index_blob_.data() + bitmap_index_offsets[i]);
+    r.writeFrozen(index_blob_.data() + bitmap_offsets[i]);
   }
   //  total_offset_table_size = offsets.size() * sizeof(uint32_t);
 
   // 3-2. Add bitmap index offset
-  uint32_t bitmap_index_offset_offset = index_blob_.size();
-  PutFixed32(&index_blob_, bitmap_index_offsets.size());
-  for (uint32_t& oi : bitmap_index_offsets)
+  uint32_t bitmaps_offset_offset = index_blob_.size();
+  PutFixed32(&index_blob_, bitmap_offsets.size());
+  for (uint32_t& oi : bitmap_offsets)
     PutFixed32(&index_blob_, oi);
 
   // 3-3. Add bitmap binning policies
   vector<uint32_t> binning_policy_offset;
   binning_policy_offset.push_back(index_blob_.size());
   for (uint32_t i = 0; i < options_.sk_num; ++i) {
-    PutFixed32(&index_blob_,
-               static_cast<uint32_t>(options_.sk_types[i])); // Mark SKType
     if (options_.sk_types[i] == SKType::CATEGORICAL) {
       vector<pair<string, uint32_t>>& binning =
           std::get<vector<pair<string, uint32_t>>>(
@@ -282,10 +283,24 @@ Status SABIBuilder::Finish(Slice* index_contents) {
 
   // 3-5. Add footer
   PutFixed32(&index_blob_, index_entries_cnt_);
-  PutFixed32(&index_blob_, bitmap_index_offset_offset);
+  PutFixed32(&index_blob_, bitmaps_offset_offset);
   PutFixed32(&index_blob_, binning_policy_offset_offset);
 
   *index_contents = Slice(index_blob_);
+  // Dump(); // for test only.
   return Status::OK();
 }
+void SABIBuilder::Dump() {
+  cout << "==== dump ====\n";
+  cout << "total_data_entries_size_uncomp_: " << total_data_entries_size_uncomp_
+       << "\n";
+  cout << "data_entries_cnt_: " << data_entries_cnt_ << "\n";
+  cout << "index_entries_cnt_: " << index_entries_cnt_ << "\n";
+  cout << "bitmap count: " << bitmap_index_.bitmaps.size() << "\n";
+  cout << "bitmap_nums: \n";
+  for (uint32_t i = 0; i < bitmap_index_.bitmap_nums.size(); ++i)
+    cout << "\t" << bitmap_index_.bitmap_nums[i] << ", ";
+  cout << "\n";
+}
+
 } // namespace bitmap_index

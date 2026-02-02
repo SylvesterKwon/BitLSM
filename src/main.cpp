@@ -58,6 +58,15 @@ void test() {
 
 void configure_rocksdb_option() {
   options.create_if_missing = true;
+  // 임시 SABI 옵션
+  sabi_option.rho = 0.1;
+  sabi_option.sk_num = 16;
+  for (uint32_t i = 0; i < sabi_option.sk_num; ++i) {
+    if (i % 2 == 0)
+      sabi_option.sk_types.push_back(SKType::CATEGORICAL);
+    else
+      sabi_option.sk_types.push_back(SKType::CONTINUOUS);
+  }
 
   BlockBasedTableOptions table_options;
   table_options.user_defined_index_factory =

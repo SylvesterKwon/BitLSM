@@ -21,7 +21,7 @@ UserDefinedIndexBuilder* SABIFactory::NewBuilder() const {
 
 unique_ptr<UserDefinedIndexReader>
 SABIFactory::NewReader(Slice& index_block_) const {
-  return unique_ptr<SABIReader>(new SABIReader(index_block_));
+  return unique_ptr<SABIReader>(new SABIReader(index_block_, options_));
 }
 
 } // namespace bitmap_index
