@@ -19,12 +19,25 @@ struct SABIOptions {
   std::vector<SKType> sk_types; // sk type vector
   double rho; // proportion parameter that determines bitmap budget
 };
+struct BitmapIndex {
+  // Bitmap
+  std::vector<roaring::Roaring> bitmaps;
+
+  // Binned bitmap index policy
+  std::vector<uint32_t> bitmap_nums; // # of bitmaps for each SK
+  // continuous binning policy: vector<double>
+  // categorical binning policy: vector<pair<string,uint32_t>>
+  std::vector<std::variant<std::vector<double>,
+                           std::vector<std::pair<std::string, uint32_t>>>>
+      binning_policy;
+};
 class SABIBuilder;
 class SABIIterator;
 class SABIReader;
 class SABIFactory;
 
 class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
+
 private:
   SABIOptions options_;
 
@@ -32,21 +45,12 @@ private:
   std::vector<std::vector<std::string>> sk_buf_;
 
   // Statistics
-  uint32_t total_data_entries_size_uncomp_ = 0; // total size of KVPs (bytes)
+  uint64_t total_data_entries_size_uncomp_ = 0; // total size of KVPs (bytes)
   uint32_t data_entries_cnt_ = 0;  // total number of KVPs in current table
   uint32_t index_entries_cnt_ = 0; // total number of index entries added
 
-  // Bitmap
-  std::vector<roaring::Roaring> bitmap_index_;
-
-  // Binned bitmap index policy
-  uint32_t total_bitmap_index_num_ = 0;     // total number of bitmap indexes
-  std::vector<uint32_t> bitmap_index_nums_; // # of bitmaps for each SK
-  // continuous binning policy: vector<double>
-  // categorical binning policy: vector<pair<string,uint32_t>>
-  std::vector<std::variant<std::vector<double>,
-                           std::vector<std::pair<std::string, uint32_t>>>>
-      binning_policy;
+  // Bitmap Index
+  BitmapIndex bitmap_index_;
 
   // Index blob
   std::string index_blob_;
@@ -60,9 +64,7 @@ private:
   void CalculateBitmapIndex();
 
 public:
-  SABIBuilder(SABIOptions options)
-      : options_(options), sk_buf_(options.sk_num),
-        bitmap_index_nums_(options.sk_num) {};
+  SABIBuilder(SABIOptions options);
   rocksdb::Slice AddIndexEntry(const rocksdb::Slice& last_key_in_current_block,
                                const rocksdb::Slice* first_key_in_next_block,
                                const BlockHandle& block_handle,
@@ -70,6 +72,7 @@ public:
   void OnKeyAdded(const rocksdb::Slice& key, ValueType type,
                   const rocksdb::Slice& value);
   rocksdb::Status Finish(rocksdb::Slice* index_contents);
+  void Dump();
 };
 
 class SABIIterator : public rocksdb::UserDefinedIndexIterator {
@@ -89,26 +92,24 @@ public:
   rocksdb::UserDefinedIndexBuilder::BlockHandle value();
 };
 
-struct SABIBlockIndexEntry {
-  std::string index_key;
-  rocksdb::UserDefinedIndexBuilder::BlockHandle block_handle;
-  uint32_t prefix_kv_cnt;
-};
-
 class SABIReader : public rocksdb::UserDefinedIndexReader {
   friend class SABIIterator;
 
 private:
-  std::vector<roaring::Roaring> bitmap_index_;
-  std::vector<SABIBlockIndexEntry> block_indices;
+  SABIOptions options_;
+  std::vector<uint32_t> data_entries_cnt_psum_;
   using AlignedPtr = std::unique_ptr<char[], void (*)(void*)>;
   std::vector<AlignedPtr> managed_buffers_;
 
+  // Bitmap Index
+  BitmapIndex bitmap_index_;
+
 public:
-  SABIReader(rocksdb::Slice& index_block);
+  SABIReader(rocksdb::Slice& index_block, SABIOptions options_);
   std::unique_ptr<rocksdb::UserDefinedIndexIterator>
   NewIterator(const rocksdb::ReadOptions& read_options);
   size_t ApproximateMemoryUsage() const;
+  void Dump();
 };
 
 class SABIFactory : public rocksdb::UserDefinedIndexFactory {

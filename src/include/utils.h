@@ -1,3 +1,5 @@
+#include "util/coding.h"
+#include <cstdint>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -25,39 +27,42 @@ inline string random_string(size_t length) {
   return res;
 }
 
-// Creates random bit property
-// TODO: 다중 속성 지원하도록 추가하기 (현재는 하나의 속성에 대한 비트맵만
-// 시뮬레이션중)
-inline string random_bit_props(size_t bit_props_size) {
-  string res(bit_props_size, '0');
-  res[rand() % bit_props_size] = '1';
-  return res;
-}
-
 // Creates initial key-value pairs
-inline void create_kvp(DB* db, long long int n, int bit_props_size,
-                       int value_size = 32) {
+inline void create_kvp(DB* db, uint64_t n, uint32_t sk_num,
+                       uint32_t payload_size = 32) {
   chrono::_V2::system_clock::time_point start_time, end_time;
   chrono::milliseconds ms_duration;
 
   cout << "creating " << n << " kvps...\n";
-  const long long int batch_size = 1e6;
-  long long int total_batch = (n + batch_size - 1) / batch_size;
-  long long int auto_increment = 0;
+  const uint64_t batch_size = 1e6;
+  uint64_t total_batch = (n + batch_size - 1) / batch_size;
+  uint64_t auto_increment = 0;
   vector<pair<string, string>> kvps(batch_size);
   WriteOptions wo = WriteOptions();
 
   start_time = chrono::high_resolution_clock::now();
 
-  for (long long int cur_batch = 0; cur_batch < total_batch; ++cur_batch) {
+  for (uint64_t cur_batch = 0; cur_batch < total_batch; ++cur_batch) {
     if (n - auto_increment < batch_size)
       kvps.resize(n - auto_increment);
 
     // Creating Batch KVPs
-    for (size_t i = 0; i < kvps.size(); i++) {
-      kvps[i] = {to_string(auto_increment++), random_bit_props(bit_props_size) +
-                                                  '_' +
-                                                  random_string(value_size)};
+    for (uint32_t i = 0; i < kvps.size(); i++) {
+      for (uint32_t j = 0; j < sk_num; ++j) {
+        string sk_val;
+        // 임시로 연속형, 범주형 SK를 교차로 나오도록 하였음
+        // TODO: Workload generator와 연결되도록 수정필요
+        if (j % 2 == 0) {
+          sk_val = to_string(rand() % 100); // Categorical
+        } else {
+          sk_val = to_string((double)rand() / RAND_MAX * 100.0); // Continuous
+        }
+        PutLengthPrefixedSlice(&kvps[i].second, Slice(sk_val));
+      }
+      PutLengthPrefixedSlice(&kvps[i].second,
+                             Slice(random_string(payload_size)));
+      auto_increment++;
+      kvps[i].first = to_string(auto_increment);
     }
 
     // RocksDB Put
@@ -82,7 +87,7 @@ inline void create_kvp(DB* db, long long int n, int bit_props_size,
        << "ms elpased)\n";
 }
 
-// SST 관찰 코드
+// SST 관찰 코드 (unused)
 inline void inspect_sst(const string& sst_file_path) {
   Options options;
   SstFileReader reader(options);
