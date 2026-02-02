@@ -34,7 +34,7 @@ void SABIIterator::Prepare(const ScanOptions scan_opts[], size_t num_opts) {
   // TODO(TASK-44): 임시, 단일 항목 필터링 테스트용 코드. 추후에 대상 bitmap
   // 계산로직 작성 필요
   uint32_t using_idx = stoul(qc);
-  const Roaring& r = reader_->bitmap_index_[using_idx];
+  const Roaring& r = reader_->bitmap_index_.bitmaps[using_idx];
   // WIP - 쿼리 대상 비트맵 포인터를 private member로 밀어넣기, Seek
   // / next시 roaring 이터레이터 위치 조정하도록 해야함. 포인터 소유권은
   // SABIIterator가 가지도록 구현해야함
@@ -74,49 +74,70 @@ UserDefinedIndexBuilder::BlockHandle SABIIterator::value() {
 // ========================================================================
 
 SABIReader::SABIReader(Slice& index_block) {
-  cout << "SABI READER INIT\n";
   // 1. Read footer
-  uint32_t index_entries_cnt = DecodeFixed32(
+  uint32_t index_entries_cnt_ = DecodeFixed32(
+      index_block.data() + index_block.size() - 3 * sizeof(uint32_t));
+  uint32_t bitmap_index_offset_offset = DecodeFixed32(
       index_block.data() + index_block.size() - 2 * sizeof(uint32_t));
-  uint32_t bitmap_cnt = DecodeFixed32(index_block.data() + index_block.size() -
-                                      1 * sizeof(uint32_t));
-  bitmap_index_.resize(bitmap_cnt);
-  block_indices.resize(index_entries_cnt);
+  uint32_t binning_policy_offset_offset = DecodeFixed32(
+      index_block.data() + index_block.size() - 1 * sizeof(uint32_t));
+  uint32_t bitmap_cnt = bitmap_index_offset_offset - 1;
 
-  // 2. Read Roaring offset vector
-  uint32_t offset_cnt = bitmap_cnt + 1;
-  vector<uint32_t> offsets(offset_cnt);
-  const char* offset_table_offset = index_block.data() + index_block.size() -
-                                    (2 + offset_cnt) * sizeof(uint32_t);
-  for (uint32_t i = 0; i < offset_cnt; ++i) {
-    offsets[i] = DecodeFixed32(offset_table_offset + i * sizeof(uint32_t));
-  }
+  bitmap_index_.bitmaps.resize(bitmap_cnt);
+  data_entries_cnt_psum_.resize(index_entries_cnt_);
 
-  // 3. Read Roaring
-  for (uint32_t i = 0; i < bitmap_cnt; ++i) {
-    uint32_t offset = offsets[i], size = offsets[i + 1] - offset;
-    const char* raw_ptr = index_block.data() + offset;
-    void* aligned_ptr = nullptr;
-    // 32 bytes 정렬
-    posix_memalign(&aligned_ptr, 32, size);
-    AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr), std::free);
-    memcpy(managed_aligned_ptr.get(), raw_ptr, size);
-    bitmap_index_[i] = Roaring::frozenView(
-        reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
-    managed_buffers_.push_back(std::move(managed_aligned_ptr)); // 소유권 이전
-  }
-
-  // 4. Read block index
-  for (uint32_t i = 0; i < index_entries_cnt; ++i) {
-    SABIBlockIndexEntry& entry = block_indices[i];
-    Slice key;
-    GetLengthPrefixedSlice(&index_block, &key);
-    GetFixed64(&index_block, &entry.block_handle.offset);
-    GetFixed64(&index_block, &entry.block_handle.size);
-    GetFixed32(&index_block, &entry.prefix_kv_cnt);
-    entry.index_key = key.ToString();
-  }
+  // 2. Read binning policies
+  // 3. Read bitmap index offset
+  // 4. Read bitmap index
+  // 5. Read index block prefix sum
 }
+
+// SABIReader::SABIReader(Slice& index_block) {
+//   cout << "SABI READER INIT\n";
+//   // 1. Read footer
+//   uint32_t index_entries_cnt = DecodeFixed32(
+//       index_block.data() + index_block.size() - 2 * sizeof(uint32_t));
+//   uint32_t bitmap_cnt = DecodeFixed32(index_block.data() + index_block.size()
+//   -
+//                                       1 * sizeof(uint32_t));
+//   bitmap_index_.resize(bitmap_cnt);
+//   block_indices.resize(index_entries_cnt);
+
+//   // 2. Read Roaring offset vector
+//   uint32_t offset_cnt = bitmap_cnt + 1;
+//   vector<uint32_t> offsets(offset_cnt);
+//   const char* offset_table_offset = index_block.data() + index_block.size() -
+//                                     (2 + offset_cnt) * sizeof(uint32_t);
+//   for (uint32_t i = 0; i < offset_cnt; ++i) {
+//     offsets[i] = DecodeFixed32(offset_table_offset + i * sizeof(uint32_t));
+//   }
+
+//   // 3. Read Roaring
+//   for (uint32_t i = 0; i < bitmap_cnt; ++i) {
+//     uint32_t offset = offsets[i], size = offsets[i + 1] - offset;
+//     const char* raw_ptr = index_block.data() + offset;
+//     void* aligned_ptr = nullptr;
+//     // 32 bytes 정렬
+//     posix_memalign(&aligned_ptr, 32, size);
+//     AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr),
+//     std::free); memcpy(managed_aligned_ptr.get(), raw_ptr, size);
+//     bitmap_index_[i] = Roaring::frozenView(
+//         reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
+//     managed_buffers_.push_back(std::move(managed_aligned_ptr)); // 소유권
+//     이전
+//   }
+
+//   // 4. Read block index
+//   for (uint32_t i = 0; i < index_entries_cnt; ++i) {
+//     SABIBlockIndexEntry& entry = block_indices[i];
+//     Slice key;
+//     GetLengthPrefixedSlice(&index_block, &key);
+//     GetFixed64(&index_block, &entry.block_handle.offset);
+//     GetFixed64(&index_block, &entry.block_handle.size);
+//     GetFixed32(&index_block, &entry.prefix_kv_cnt);
+//     entry.index_key = key.ToString();
+//   }
+// }
 
 unique_ptr<UserDefinedIndexIterator>
 SABIReader::NewIterator(const ReadOptions& read_options) {
