@@ -23,8 +23,10 @@ SABIOptions sabi_option;
 
 void test() {
   // scratch //
-  // create_kvp(db, 1e8, 16);
-  // return;
+  create_kvp(db, 1e7, 16);
+  return;
+
+  // read test (수정필요)
   string result;
   ReadOptions sabi_ro;
   sabi_ro.table_index_factory = new bitmap_index::SABIFactory(sabi_option);
@@ -34,24 +36,24 @@ void test() {
   MultiScanArgs scan_opts = MultiScanArgs(bytewise_cmp);
   scan_opts.use_async_io = true; // scan option 전파를 위해 필요한 옵션
 
-  unordered_map<string, string> property_bag = {{"qc", "3"}};
-  string start_key = "789346";
+  // unordered_map<string, string> property_bag = {{"qc", "3"}};
+  // string start_key = "789346";
   // 임의 upper bound (TODO: 없어도 되는지 확인 필요)
-  string end_key = "99999999999999999999";
+  // string end_key = "99999999999999999999";
 
-  scan_opts.insert(start_key, end_key, property_bag);
-  it->Prepare(scan_opts);
+  // scan_opts.insert(start_key, end_key, property_bag);
+  // it->Prepare(scan_opts);
 
   // it->Seek(start_key); // WIP - SeekToFirst not supported 문제 확인중
   // cout << "status: " << it->status().ToString() << "\n";
 
   // assert(it->Valid());
   // cout << "found!: " << it->value().ToString() << "\n";
-  for (it->SeekToFirst(); it->Valid(); it->Next()) {
-    //   // Do something with it->key() and it->value().
-    // cout << it->key().ToString() << " " << it->value().ToString() << "\n";
-  }
-  delete it;
+  // for (it->SeekToFirst(); it->Valid(); it->Next()) {
+  //   // Do something with it->key() and it->value().
+  // cout << it->key().ToString() << " " << it->value().ToString() << "\n";
+  // }
+  // delete it;
 }
 
 void configure_rocksdb_option() {
