@@ -164,7 +164,7 @@ SABIReader::SABIReader(Slice& index_block, SABIOptions options)
         DecodeFixed32(index_block.data() + i * sizeof(uint32_t));
   }
 
-  Dump(); // for test only.
+  // Dump(); // for test only.
 }
 
 unique_ptr<UserDefinedIndexIterator>
