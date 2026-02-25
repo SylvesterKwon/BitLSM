@@ -1,11 +1,14 @@
 #include <cstring>
 #include <iostream>
 
+#include "db/db_impl/db_impl.h"
 #include "include/utils.h"
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "rocksdb/table.h"
 #include "sabi.h"
+#include "sabi_iterator.h"
+#include "table/block_based/block_based_table_reader.h"
 
 using namespace std;
 using namespace rocksdb;
@@ -23,37 +26,53 @@ SABIOptions sabi_option;
 
 void test() {
   // scratch //
-  create_kvp(db, 1e7, 16);
-  return;
+  // create_kvp(db, 1e7, 16);
+  // return;
+  // FlushOptions flush_opts;
+  // db->Flush(flush_opts);
+  // return;
 
-  // read test (수정필요)
-  string result;
-  ReadOptions sabi_ro;
-  sabi_ro.table_index_factory = new bitmap_index::SABIFactory(sabi_option);
+  // read test
+  DBImpl* db_impl = static_cast<DBImpl*>(db);
+  VersionSet* vs = db_impl->GetVersionSet();
+  ColumnFamilySet* cf_set = vs->GetColumnFamilySet();
+  ColumnFamilyData* cfd = cf_set->GetColumnFamily("default");
+  Version* v = cfd->current();
+  TableCache* tc = cfd->table_cache();
+  TableCache::CacheInterface cache_interface = tc->get_cache();
 
-  rocksdb::Iterator* it = db->NewIterator(sabi_ro);
-  const rocksdb::Comparator* bytewise_cmp = BytewiseComparator();
-  MultiScanArgs scan_opts = MultiScanArgs(bytewise_cmp);
-  scan_opts.use_async_io = true; // scan option 전파를 위해 필요한 옵션
+  // FindTable 호출을 위한 파라미터들
+  const ReadOptions& read_options = ReadOptions();
+  const FileOptions& file_options = FileOptions();
+  VersionStorageInfo* storage_info = v->storage_info();
+  const InternalKeyComparator* icmp = storage_info->InternalComparator();
+  const MutableCFOptions& cf_opts = cfd->GetLatestMutableCFOptions();
+  FileMetaData* file_meta = nullptr;
+  const bool no_io = false;
 
-  // unordered_map<string, string> property_bag = {{"qc", "3"}};
-  // string start_key = "789346";
-  // 임의 upper bound (TODO: 없어도 되는지 확인 필요)
-  // string end_key = "99999999999999999999";
+  // 레벨별 SST 분포 확인 코드
+  // string stats;
+  // db->GetProperty("rocksdb.levelstats", &stats);
+  // cout << stats << "\n";
 
-  // scan_opts.insert(start_key, end_key, property_bag);
-  // it->Prepare(scan_opts);
+  const vector<FileMetaData*>& files = storage_info->LevelFiles(6);
+  assert(!files.empty());
+  file_meta = files[0];
+  TableCache::TypedHandle* table_handle = nullptr;
+  s = tc->FindTable(read_options, file_options, *icmp, *file_meta,
+                    &table_handle, cf_opts,
+                    no_io); // TODO: 뒤에 optional parameter도 의미 파악 필요
+  if (!s.ok())
+    cout << "Debug: fail to find TableReader\n";
 
-  // it->Seek(start_key); // WIP - SeekToFirst not supported 문제 확인중
-  // cout << "status: " << it->status().ToString() << "\n";
+  TableReader* table = cache_interface.Value(table_handle);
+  BlockBasedTable* bbt = static_cast<BlockBasedTable*>(table);
+  if (bbt == nullptr)
+    cout << "BBT not found\n";
 
-  // assert(it->Valid());
-  // cout << "found!: " << it->value().ToString() << "\n";
-  // for (it->SeekToFirst(); it->Valid(); it->Next()) {
-  //   // Do something with it->key() and it->value().
-  // cout << it->key().ToString() << " " << it->value().ToString() << "\n";
-  // }
-  // delete it;
+  SABIQuery query({QueryCondition(0, CompareOp::EQUAL, "1")});
+  SABITableIterator sti(sabi_option, bbt, query);
+  sti.test();
 }
 
 void configure_rocksdb_option() {

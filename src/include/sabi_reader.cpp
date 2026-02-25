@@ -35,7 +35,7 @@ void SABIIterator::Prepare(const ScanOptions scan_opts[], size_t num_opts) {
   // TODO(TASK-44): 임시, 단일 항목 필터링 테스트용 코드. 추후에 대상 bitmap
   // 계산로직 작성 필요
   uint32_t using_idx = stoul(qc);
-  const Roaring& r = reader_->bitmap_index_.bitmaps[using_idx];
+  const Roaring& r = reader_->bitmap_index.bitmaps[using_idx];
   // WIP - 쿼리 대상 비트맵 포인터를 private member로 밀어넣기, Seek
   // / next시 roaring 이터레이터 위치 조정하도록 해야함. 포인터 소유권은
   // SABIIterator가 가지도록 구현해야함
@@ -79,19 +79,20 @@ SABIReader::SABIReader(Slice& index_block, SABIOptions options)
   // 1. Read footer
   uint32_t index_entries_cnt_ = DecodeFixed32(
       index_block.data() + index_block.size() - 3 * sizeof(uint32_t));
-  uint32_t bitmap_index_offset_offset = DecodeFixed32(
+  uint32_t bitmap_indexoffset_offset = DecodeFixed32(
       index_block.data() + index_block.size() - 2 * sizeof(uint32_t));
   uint32_t binning_policy_offset_offset = DecodeFixed32(
       index_block.data() + index_block.size() - 1 * sizeof(uint32_t));
 
-  data_entries_cnt_psum_.resize(index_entries_cnt_);
+  data_entries_cnt_psum.resize(index_entries_cnt_);
+  block_handles.resize(index_entries_cnt_);
 
   // 2. Read binning policy
   uint32_t binning_policy_offset_cnt =
       DecodeFixed32(index_block.data() + binning_policy_offset_offset);
   uint32_t binning_policy_cnt = binning_policy_offset_cnt - 1;
-  bitmap_index_.binning_policy.resize(binning_policy_cnt);
-  bitmap_index_.bitmap_nums.resize(binning_policy_cnt);
+  bitmap_index.binning_policy.resize(binning_policy_cnt);
+  bitmap_index.bitmap_nums.resize(binning_policy_cnt);
   assert(options_.sk_num == binning_policy_cnt);
 
   for (uint32_t i = 0; i < binning_policy_cnt; ++i) {
@@ -100,7 +101,7 @@ SABIReader::SABIReader(Slice& index_block, SABIOptions options)
                       (i + 1) * sizeof(uint32_t));
     uint32_t cur_binning_policy_size =
         DecodeFixed32(index_block.data() + cur_binning_policy_offset);
-    bitmap_index_.bitmap_nums[i] = cur_binning_policy_size;
+    bitmap_index.bitmap_nums[i] = cur_binning_policy_size;
 
     if (options_.sk_types[i] == SKType::CATEGORICAL) {
       // read {length prefixed string + uint32t (bin number)}
@@ -117,7 +118,7 @@ SABIReader::SABIReader(Slice& index_block, SABIOptions options)
         cur_binning_policy[j] = {key, DecodeFixed32(ptr)};
         ptr += sizeof(uint32_t);
       }
-      bitmap_index_.binning_policy[i] = std::move(cur_binning_policy);
+      bitmap_index.binning_policy[i] = std::move(cur_binning_policy);
     } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
       vector<double> cur_binning_policy(cur_binning_policy_size);
       for (uint32_t j = 0; j < cur_binning_policy_size; ++j) {
@@ -126,7 +127,7 @@ SABIReader::SABIReader(Slice& index_block, SABIOptions options)
                           sizeof(uint32_t) + j * sizeof(double));
         memcpy(&cur_binning_policy[j], &val_int, sizeof(double));
       }
-      bitmap_index_.binning_policy[i] = std::move(cur_binning_policy);
+      bitmap_index.binning_policy[i] = std::move(cur_binning_policy);
     } else {
       assert(false);
     }
@@ -134,13 +135,13 @@ SABIReader::SABIReader(Slice& index_block, SABIOptions options)
 
   // 3. Read bitmap index offset
   uint32_t bitmap_offset_cnt =
-      DecodeFixed32(index_block.data() + bitmap_index_offset_offset);
+      DecodeFixed32(index_block.data() + bitmap_indexoffset_offset);
   uint32_t bitmaps_cnt = bitmap_offset_cnt - 1;
-  bitmap_index_.bitmaps.resize(bitmaps_cnt);
+  bitmap_index.bitmaps.resize(bitmaps_cnt);
   vector<uint32_t> bitmap_offsets(bitmap_offset_cnt);
   for (uint32_t i = 0; i < bitmap_offset_cnt; ++i) {
     bitmap_offsets[i] =
-        DecodeFixed32(index_block.data() + bitmap_index_offset_offset +
+        DecodeFixed32(index_block.data() + bitmap_indexoffset_offset +
                       (i + 1) * sizeof(uint32_t));
   }
   for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
@@ -152,16 +153,20 @@ SABIReader::SABIReader(Slice& index_block, SABIOptions options)
     posix_memalign(&aligned_ptr, 32, size);
     AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr), std::free);
     memcpy(managed_aligned_ptr.get(), raw_ptr, size);
-    bitmap_index_.bitmaps[i] = Roaring::frozenView(
+    bitmap_index.bitmaps[i] = Roaring::frozenView(
         reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
     managed_buffers_.push_back(
         std::move(managed_aligned_ptr)); // move pointer ownership
   }
 
-  // 4. Read index block prefix sum
+  // 4. Read index block related informaiton
   for (uint32_t i = 0; i < index_entries_cnt_; ++i) {
-    data_entries_cnt_psum_[i] =
-        DecodeFixed32(index_block.data() + i * sizeof(uint32_t));
+    data_entries_cnt_psum[i] =
+        DecodeFixed32(index_block.data() + i * 3 * sizeof(uint32_t));
+    block_handles[i].set_offset(
+        DecodeFixed32(index_block.data() + i * 3 * sizeof(uint32_t) + 1));
+    block_handles[i].set_size(
+        DecodeFixed32(index_block.data() + i * 3 * sizeof(uint32_t) + 2));
   }
 
   // Dump(); // for test only.
@@ -181,10 +186,10 @@ size_t SABIReader::ApproximateMemoryUsage() const {
 
 void SABIReader::Dump() {
   cout << "==== dump ====\n";
-  cout << "bitmap count: " << bitmap_index_.bitmaps.size() << "\n";
+  cout << "bitmap count: " << bitmap_index.bitmaps.size() << "\n";
   cout << "bitmap_nums: \n";
-  for (uint32_t i = 0; i < bitmap_index_.bitmap_nums.size(); ++i)
-    cout << "\t" << bitmap_index_.bitmap_nums[i] << ", ";
+  for (uint32_t i = 0; i < bitmap_index.bitmap_nums.size(); ++i)
+    cout << "\t" << bitmap_index.bitmap_nums[i] << ", ";
   cout << "\n";
 }
 

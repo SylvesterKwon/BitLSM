@@ -1,95 +1,228 @@
+#include "rocksdb/options.h"
+#include "table/block_based/block.h"
+#include "table/format.h"
+#include <cstdint>
+#include <sabi_query.h>
+#define TEST_CACHE_LINE_SIZE                                                   \
+  64 // To avoid compile error when using roaring.hh &
+     // block_based_table_reader.h together
+
+#include "roaring.hh"
+#include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
 #include <iostream>
+#include <sabi_iterator.h>
 
 using namespace std;
 using namespace rocksdb;
+using namespace bitmap_index;
+using namespace roaring;
 
-// Table Iterator for SST with SABI
-// WIP - 자체 iterator 구상중
-class SABITableIterator {
-private:
-  BlockBasedTable* bbt;
-  uint32_t block_restart_interval;
+void SABITableIterator::get_all_by_indexes_from_data_block(
+    const BlockHandle& bh, vector<uint32_t>& indexes,
+    vector<PinnableSlice>& out_keys, vector<PinnableSlice>& out_values) {
+  DataBlockIter biter;
+  Status s;
+  out_keys.resize(indexes.size());
+  out_values.resize(indexes.size());
+  // TODO: nullptr 로 미사용중인 옵션을 통해 최적화 가능 여부 확인하기
+  bbt_->NewDataBlockIterator(ReadOptions(), bh, &biter, BlockType::kData,
+                             nullptr, nullptr, nullptr, false, false, s, true);
 
-public:
-  SABITableIterator(BlockBasedTable* bbt) {
-    this->bbt = bbt;
+  uint32_t cur_checkpoint =
+      UINT32_MAX; // UINT32_MAX means no valid checkpoint is used
+  uint32_t cur_offset = 0;
+  uint32_t result_idx = 0;
 
-    block_restart_interval =
-        bbt->get_rep()->table_options.block_restart_interval;
-  }
+  // cout << "restart points: " << biter.get_num_restarts_() << "\n"; // wip
+  // cout << "restart interval: " << block_restart_interval << "\n";
 
-  void test() {
-    BlockBasedTable::IndexReader* index_reader =
-        bbt->get_rep()->index_reader.get();
-    IndexBlockIter input_iter; // TODO: 역할 뭔지 확인 필요
-    InternalIteratorBase<IndexValue>* iiter = index_reader->NewIterator(
-        ReadOptions(), false, &input_iter, nullptr, nullptr);
-    iiter->SeekToFirst();
-    const BlockHandle& bh = iiter->value().handle;
-    // 이후 얻은 bh로 get_all_by_indexes_from_data_block
-  }
-
-  // Get all data entries by indexes from data block
-  // indexes must be sorted and unique
-  void get_all_by_indexes_from_data_block(const BlockHandle& bh,
-                                          vector<uint32_t>& indexes,
-                                          vector<PinnableSlice>& out_keys,
-                                          vector<PinnableSlice>& out_values) {
-    DataBlockIter biter;
-    Status s;
-    out_keys.resize(indexes.size());
-    out_values.resize(indexes.size());
-    // TODO: nullptr 로 미사용중인 옵션을 통해 최적화 가능 여부 확인하기
-    bbt->NewDataBlockIterator(ReadOptions(), bh, &biter, BlockType::kData,
-                              nullptr, nullptr, nullptr, false, false, s, true);
-
-    uint32_t cur_checkpoint =
-        UINT32_MAX; // UINT32_MAX means no valid checkpoint is used
-    uint32_t cur_offset = 0;
-    uint32_t result_idx = 0;
-
-    for (uint32_t i = 0; i < indexes.size(); i++) {
-      uint32_t target_checkpoint = indexes[i] / block_restart_interval;
-      if (cur_checkpoint != target_checkpoint) {
-        cur_checkpoint = target_checkpoint;
-        cur_offset = 0;
-        biter.SeekToRestartPoint(cur_checkpoint);
-        biter.Next(); // need to call Next once to access real data
-      }
-      uint32_t target_offset = indexes[i] % block_restart_interval;
-      while (cur_offset < target_offset && biter.Valid()) {
-        biter.Next();
-        cur_offset++;
-      }
-      if (biter.Valid()) {
-        // PinSelf vs PinSlice (zero-copy)
-        // TODO(TASK-93): Block cache 사용할 수 있도록 최적화 하기.
-        // PinSelf 방식은 hard-copy임
-        out_keys[i].PinSelf(biter.key());
-        out_values[i].PinSelf(biter.value());
-      } else {
-        assert(false);
-      }
+  for (uint32_t i = 0; i < indexes.size(); i++) {
+    uint32_t target_checkpoint = indexes[i] / block_restart_interval;
+    if (cur_checkpoint != target_checkpoint) {
+      cur_checkpoint = target_checkpoint;
+      cur_offset = 0;
+      biter.SeekToRestartPoint(cur_checkpoint);
+      biter.Next(); // need to call Next once to access real data
+    }
+    uint32_t target_offset = indexes[i] % block_restart_interval;
+    while (cur_offset < target_offset && biter.Valid()) {
+      biter.Next();
+      cur_offset++;
+    }
+    if (biter.Valid()) {
+      // PinSelf vs PinSlice (zero-copy)
+      // TODO(TASK-93): Block cache 사용할 수 있도록 최적화 하기.
+      // PinSelf 방식은 hard-copy임
+      out_keys[i].PinSelf(biter.key());
+      out_values[i].PinSelf(biter.value());
+    } else {
+      assert(false);
     }
   }
+}
 
-  void example_get_all_by_indexes_from_data_block() {
-    // 1. 요청할 인덱스
-    std::vector<uint32_t> my_indexes = {10, 5, 100};
+SABITableIterator::SABITableIterator(SABIOptions options, BlockBasedTable* bbt,
+                                     SABIQuery query)
+    : options_(options), bbt_(bbt) {
+  index_reader_ = bbt_->get_rep()->index_reader.get();
+  block_restart_interval = bbt->get_rep()->table_options.block_restart_interval;
+  sabi_reader_ = static_cast<SABIReader*>(index_reader_->GetUDIReader());
 
-    // 2. 결과를 담을 배열 미리 생성
-    // 중요, 크기 미리 잡아둬야함!!!
-    size_t num_items = my_indexes.size();
-    std::vector<PinnableSlice> keys(num_items);
-    std::vector<PinnableSlice> values(num_items);
+  // 1. Build query bitmap
+  Roaring query_bitmap = GetBitmapFromQuery(query);
 
-    // 3. 함수 호출 (vector의 내부 데이터 포인터를 넘김)
-    // &keys[0] 또는 keys.data()를 사용하면 PinnableSlice* 타입이 됨
-    // get_all_by_indexes_from_data_block(
-    //     handle, my_indexes,
-    //     keys.data(),  // PinnableSlice* (시작 주소)
-    //     values.data() // PinnableSlice* (시작 주소)
-    // );
+  // 2. Get target block handles (binary search)
+  int64_t last_added_block_idx = -1;
+  auto psum_begin = sabi_reader_->data_entries_cnt_psum.begin();
+  auto psum_end = sabi_reader_->data_entries_cnt_psum.end();
+  for (uint32_t target_idx : query_bitmap) {
+    cout << "target_idx: " << target_idx << "\n";
+    // target_idx is 0-based index, psum array is 1-based count array
+    // so upper_bound is always right
+    auto it = std::upper_bound(psum_begin, psum_end, target_idx);
+    if (it != psum_end) {
+      int64_t block_idx =
+          std::distance(sabi_reader_->data_entries_cnt_psum.begin(), it);
+      if (block_idx != last_added_block_idx) {
+        target_bhs_.push_back(sabi_reader_->block_handles[block_idx]);
+        last_added_block_idx = block_idx;
+        psum_begin = it;
+      }
+    } else {
+      assert(false);
+    }
   }
-};
+  cout << "total_size: " << sabi_reader_->data_entries_cnt_psum.size() << "\n";
+  cout << "target_bhs_size: " << target_bhs_.size() << "\n";
+}
+
+roaring::Roaring SABITableIterator::GetBitmapFromQuery(const SABIQuery& query) {
+  roaring::Roaring result;
+  if (query.conditions.empty())
+    return result;
+
+  bool is_first_condition = true;
+  for (const auto& cond : query.conditions) {
+
+    // 1. Create bitmap for current query condition
+    roaring::Roaring cur_cond_bitmap;
+    const SKType& cur_sk_type = options_.sk_types[cond.sk_idx];
+
+    uint32_t bitmap_offset = 0;
+    for (uint32_t i = 0; i < cond.sk_idx; ++i)
+      bitmap_offset += sabi_reader_->bitmap_index.bitmap_nums[i];
+
+    if (cur_sk_type == SKType::CATEGORICAL) {
+      if (cond.op != CompareOp::EQUAL)
+        assert(false);
+      const string& value = std::get<string>(cond.value);
+      vector<pair<string, uint32_t>>& cur_sk_binning_policy =
+          get<vector<pair<string, uint32_t>>>(
+              sabi_reader_->bitmap_index.binning_policy[cond.sk_idx]);
+      auto it = std::lower_bound(
+          cur_sk_binning_policy.begin(), cur_sk_binning_policy.end(), value,
+          [](const pair<string, uint32_t>& policy_entry, const string& val) {
+            return policy_entry.first < val;
+          });
+      if (it != cur_sk_binning_policy.end() && it->first == value) {
+        // Found bitmap for given query condition
+        uint32_t local_bin_idx = it->second;
+        cur_cond_bitmap =
+            sabi_reader_->bitmap_index.bitmaps[bitmap_offset + local_bin_idx];
+      } else {
+        // No bitmap for given query condition, leave it empty bitmap
+        // noop
+      }
+    } else if (cur_sk_type == SKType::CONTINUOUS) {
+      const double& value = std::get<double>(cond.value);
+      const vector<double>& boundaries = std::get<vector<double>>(
+          sabi_reader_->bitmap_index.binning_policy[cond.sk_idx]);
+      uint32_t num_bins = sabi_reader_->bitmap_index.bitmap_nums[cond.sk_idx];
+
+      // 1. Find bin index by value
+      // upper_bound: value보다 큰 첫 번째 경계값의 위치
+      auto it = std::upper_bound(boundaries.begin(), boundaries.end(), value);
+
+      int32_t target_bin_idx;
+      if (it == boundaries.begin()) {
+        // Case A: Given value is smaller than leftmost bin (virtual bin -1)
+        target_bin_idx = -1;
+      } else if (it == boundaries.end()) {
+        // Case B: Given value is larger than rightmost bin (virtual bin N)
+        target_bin_idx = static_cast<int32_t>(num_bins);
+      } else {
+        // Case C: Else
+        target_bin_idx =
+            static_cast<int32_t>(std::distance(boundaries.begin(), it)) - 1;
+      }
+      // Why using virtual vin -1, N?: To unify range logic without complex
+      // branching. e.g., In case of N=10, [10,10]. Range will clamped into
+      // inverted range [10,9]. This means empty set.
+
+      // 2. Set raw range based on operator
+      int32_t start_bin = 0;
+      int32_t end_bin = -1; // 기본값: 역전된 범위 (Empty)
+      switch (cond.op) {
+      case CompareOp::EQUAL:
+        start_bin = target_bin_idx;
+        end_bin = target_bin_idx;
+        break;
+      case CompareOp::GREATER_EQUAL: // >= value
+        start_bin = target_bin_idx;
+        end_bin = static_cast<int32_t>(num_bins) - 1;
+        break;
+      case CompareOp::LESS_EQUAL: // <= value
+        start_bin = 0;
+        end_bin = target_bin_idx;
+        break;
+      default:
+        assert(false);
+      }
+      // Clamp range
+      if (start_bin < 0)
+        start_bin = 0;
+      if (end_bin >= static_cast<int32_t>(num_bins))
+        end_bin = static_cast<int32_t>(num_bins) - 1;
+
+      // 3. Merge bitmap (OR)
+      for (uint32_t i = start_bin; i <= end_bin; ++i) {
+        uint32_t global_idx = bitmap_offset + i;
+        cur_cond_bitmap |= sabi_reader_->bitmap_index.bitmaps[global_idx];
+      }
+    }
+
+    if (is_first_condition) {
+      result = cur_cond_bitmap;
+      is_first_condition = false;
+    } else {
+      result &= cur_cond_bitmap;
+    }
+
+    // Optimization: If result bitmap is already empty set, return immediately
+    if (result.isEmpty())
+      return result;
+  }
+
+  return result;
+}
+
+void SABITableIterator::test() {
+  IndexBlockIter ibiter;
+  InternalIteratorBase<IndexValue>* iiter = index_reader_->NewIterator(
+      ReadOptions(), false, &ibiter, nullptr, nullptr);
+  iiter->SeekToFirst();
+  const BlockHandle& bh = iiter->value().handle;
+  // 이후 얻은 bh로 get_all_by_indexes_from_data_block
+
+  std::vector<uint32_t> my_indexes = {0, 1, 4};
+  size_t num_items = my_indexes.size();
+  std::vector<PinnableSlice> keys, values;
+
+  get_all_by_indexes_from_data_block(bh, my_indexes, keys, values);
+
+  // for (uint32_t i = 0; i < num_items; ++i) {
+  //   cout << "{" << keys[i].ToStringView() << ", " << values[i].ToStringView()
+  //        << "}\n";
+  // }
+}

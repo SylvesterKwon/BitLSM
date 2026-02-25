@@ -25,8 +25,10 @@ Slice SABIBuilder::AddIndexEntry(const Slice& last_key_in_current_block,
                                  const Slice* first_key_in_next_block,
                                  const BlockHandle& block_handle,
                                  string* separator_scratch) {
-  // Add table KVPairs prefix count
+  // Add table KVPairs prefix count / bh.offset / bh.size
   PutFixed32(&index_blob_, data_entries_cnt_);
+  PutFixed32(&index_blob_, block_handle.offset);
+  PutFixed32(&index_blob_, block_handle.size);
   ++index_entries_cnt_;
   return last_key_in_current_block;
 }

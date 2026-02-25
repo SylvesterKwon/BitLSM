@@ -48,6 +48,8 @@ inline void create_kvp(DB* db, uint64_t n, uint32_t sk_num,
 
     // Creating Batch KVPs
     for (uint32_t i = 0; i < kvps.size(); i++) {
+      kvps[i].second.clear();
+
       for (uint32_t j = 0; j < sk_num; ++j) {
         string sk_val;
         // 임시로 연속형, 범주형 SK를 교차로 나오도록 하였음

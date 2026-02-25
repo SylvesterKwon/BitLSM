@@ -1,8 +1,11 @@
 #pragma once
 
+#define TEST_CACHE_LINE_SIZE 64 // To avoid compile error
+
 #include "roaring.hh"
 #include "rocksdb/options.h"
 #include "rocksdb/user_defined_index.h"
+#include "table/format.h"
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -65,16 +68,18 @@ private:
 
 public:
   SABIBuilder(SABIOptions options);
-  rocksdb::Slice AddIndexEntry(const rocksdb::Slice& last_key_in_current_block,
-                               const rocksdb::Slice* first_key_in_next_block,
-                               const BlockHandle& block_handle,
-                               std::string* separator_scratch);
+  rocksdb::Slice AddIndexEntry(
+      const rocksdb::Slice& last_key_in_current_block,
+      const rocksdb::Slice* first_key_in_next_block,
+      const rocksdb::UserDefinedIndexBuilder::BlockHandle& block_handle,
+      std::string* separator_scratch);
   void OnKeyAdded(const rocksdb::Slice& key, ValueType type,
                   const rocksdb::Slice& value);
   rocksdb::Status Finish(rocksdb::Slice* index_contents);
   void Dump();
 };
 
+// Not used. Using SABITableIterator Instead.
 class SABIIterator : public rocksdb::UserDefinedIndexIterator {
 private:
   const SABIReader* reader_;
@@ -97,15 +102,14 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
 
 private:
   SABIOptions options_;
-  std::vector<uint32_t> data_entries_cnt_psum_;
   using AlignedPtr = std::unique_ptr<char[], void (*)(void*)>;
   std::vector<AlignedPtr> managed_buffers_;
 
-  // Bitmap Index
-  BitmapIndex bitmap_index_;
-
 public:
   SABIReader(rocksdb::Slice& index_block, SABIOptions options_);
+  BitmapIndex bitmap_index;
+  std::vector<uint32_t> data_entries_cnt_psum;
+  std::vector<rocksdb::BlockHandle> block_handles;
   std::unique_ptr<rocksdb::UserDefinedIndexIterator>
   NewIterator(const rocksdb::ReadOptions& read_options);
   size_t ApproximateMemoryUsage() const;
