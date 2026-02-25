@@ -34,9 +34,6 @@ void SABITableIterator::get_all_by_indexes_from_data_block(
   uint32_t cur_offset = 0;
   uint32_t result_idx = 0;
 
-  // cout << "restart points: " << biter.get_num_restarts_() << "\n"; // wip
-  // cout << "restart interval: " << block_restart_interval << "\n";
-
   for (uint32_t i = 0; i < indexes.size(); i++) {
     uint32_t target_checkpoint = indexes[i] / block_restart_interval;
     if (cur_checkpoint != target_checkpoint) {
@@ -77,7 +74,7 @@ SABITableIterator::SABITableIterator(SABIOptions options, BlockBasedTable* bbt,
   auto psum_begin = sabi_reader_->data_entries_cnt_psum.begin();
   auto psum_end = sabi_reader_->data_entries_cnt_psum.end();
   for (uint32_t target_idx : query_bitmap) {
-    cout << "target_idx: " << target_idx << "\n";
+    // cout << "target_idx: " << target_idx << "\n";
     // target_idx is 0-based index, psum array is 1-based count array
     // so upper_bound is always right
     auto it = std::upper_bound(psum_begin, psum_end, target_idx);
@@ -93,8 +90,17 @@ SABITableIterator::SABITableIterator(SABIOptions options, BlockBasedTable* bbt,
       assert(false);
     }
   }
-  cout << "total_size: " << sabi_reader_->data_entries_cnt_psum.size() << "\n";
+
+  // Debug
+  sabi_reader_->Dump();
+  cout << "\n";
+  cout << "total_bhs_size: " << sabi_reader_->data_entries_cnt_psum.size()
+       << "\n";
   cout << "target_bhs_size: " << target_bhs_.size() << "\n";
+  cout << "("
+       << (double)target_bhs_.size() /
+              sabi_reader_->data_entries_cnt_psum.size()
+       << ")\n";
 }
 
 roaring::Roaring SABITableIterator::GetBitmapFromQuery(const SABIQuery& query) {
@@ -161,8 +167,7 @@ roaring::Roaring SABITableIterator::GetBitmapFromQuery(const SABIQuery& query) {
       // inverted range [10,9]. This means empty set.
 
       // 2. Set raw range based on operator
-      int32_t start_bin = 0;
-      int32_t end_bin = -1; // 기본값: 역전된 범위 (Empty)
+      int32_t start_bin, end_bin;
       switch (cond.op) {
       case CompareOp::EQUAL:
         start_bin = target_bin_idx;
@@ -182,12 +187,15 @@ roaring::Roaring SABITableIterator::GetBitmapFromQuery(const SABIQuery& query) {
       // Clamp range
       if (start_bin < 0)
         start_bin = 0;
-      if (end_bin >= static_cast<int32_t>(num_bins))
+      if (static_cast<int32_t>(num_bins) <= end_bin)
         end_bin = static_cast<int32_t>(num_bins) - 1;
 
+      // Debug
+      cout << "s: " << start_bin << ", e: " << end_bin << "\n";
+
       // 3. Merge bitmap (OR)
-      for (uint32_t i = start_bin; i <= end_bin; ++i) {
-        uint32_t global_idx = bitmap_offset + i;
+      for (int32_t i = start_bin; i <= end_bin; ++i) {
+        int32_t global_idx = bitmap_offset + i;
         cur_cond_bitmap |= sabi_reader_->bitmap_index.bitmaps[global_idx];
       }
     }
@@ -198,8 +206,13 @@ roaring::Roaring SABITableIterator::GetBitmapFromQuery(const SABIQuery& query) {
     } else {
       result &= cur_cond_bitmap;
     }
+    // Debug: Print cardinality each step
+    cout << "cur_cond_bitmap cardinality: " << cur_cond_bitmap.cardinality()
+         << "\n";
+    cout << "result cardinality: " << result.cardinality() << "\n";
 
-    // Optimization: If result bitmap is already empty set, return immediately
+    // Optimization: If result bitmap is already empty set, return
+    // immediately
     if (result.isEmpty())
       return result;
   }

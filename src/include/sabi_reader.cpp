@@ -101,7 +101,12 @@ SABIReader::SABIReader(Slice& index_block, SABIOptions options)
                       (i + 1) * sizeof(uint32_t));
     uint32_t cur_binning_policy_size =
         DecodeFixed32(index_block.data() + cur_binning_policy_offset);
-    bitmap_index.bitmap_nums[i] = cur_binning_policy_size;
+    if (options_.sk_types[i] == SKType::CATEGORICAL) {
+      bitmap_index.bitmap_nums[i] = cur_binning_policy_size;
+    } else {
+      // since it uses one more array to represent boundary
+      bitmap_index.bitmap_nums[i] = cur_binning_policy_size - 1;
+    }
 
     if (options_.sk_types[i] == SKType::CATEGORICAL) {
       // read {length prefixed string + uint32t (bin number)}
@@ -185,7 +190,7 @@ size_t SABIReader::ApproximateMemoryUsage() const {
 };
 
 void SABIReader::Dump() {
-  cout << "==== dump ====\n";
+  cout << "==== SABI Dump ====\n";
   cout << "bitmap count: " << bitmap_index.bitmaps.size() << "\n";
   cout << "bitmap_nums: \n";
   for (uint32_t i = 0; i < bitmap_index.bitmap_nums.size(); ++i)

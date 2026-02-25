@@ -269,8 +269,12 @@ Status SABIBuilder::Finish(Slice* index_contents) {
       vector<double>& binning =
           std::get<vector<double>>(bitmap_index_.binning_policy[i]);
       PutFixed32(&index_blob_, binning.size());
-      for (auto& bi : binning)
-        PutFixed64(&index_blob_, bi);
+      for (auto& bi : binning) {
+        uint64_t val_encoded;
+        // Prevent implicit double->uint64_t cast
+        std::memcpy(&val_encoded, &bi, sizeof(double));
+        PutFixed64(&index_blob_, val_encoded);
+      }
     } else {
       assert(false);
     }
@@ -294,7 +298,7 @@ Status SABIBuilder::Finish(Slice* index_contents) {
 }
 
 void SABIBuilder::Dump() {
-  cout << "==== dump ====\n";
+  cout << "==== SABI Dump ====\n";
   cout << "total_data_entries_size_uncomp_: " << total_data_entries_size_uncomp_
        << "\n";
   cout << "data_entries_cnt_: " << data_entries_cnt_ << "\n";

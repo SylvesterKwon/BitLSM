@@ -25,9 +25,7 @@ Status s;
 SABIOptions sabi_option;
 
 void test() {
-  // scratch //
   // create_kvp(db, 1e7, 16);
-  // return;
   // FlushOptions flush_opts;
   // db->Flush(flush_opts);
   // return;
@@ -44,10 +42,10 @@ void test() {
   // FindTable 호출을 위한 파라미터들
   const ReadOptions& read_options = ReadOptions();
   const FileOptions& file_options = FileOptions();
-  VersionStorageInfo* storage_info = v->storage_info();
+  const VersionStorageInfo* storage_info = v->storage_info();
   const InternalKeyComparator* icmp = storage_info->InternalComparator();
   const MutableCFOptions& cf_opts = cfd->GetLatestMutableCFOptions();
-  FileMetaData* file_meta = nullptr;
+  const FileMetaData* file_meta = nullptr;
   const bool no_io = false;
 
   // 레벨별 SST 분포 확인 코드
@@ -70,9 +68,19 @@ void test() {
   if (bbt == nullptr)
     cout << "BBT not found\n";
 
-  SABIQuery query({QueryCondition(0, CompareOp::EQUAL, "1")});
+  // SABIQuery query({QueryCondition(0, CompareOp::EQUAL, "1"),
+  //                  QueryCondition(0, CompareOp::EQUAL, "2")});
+  // SABIQuery query({QueryCondition(0, CompareOp::EQUAL, "1"),
+  //                  QueryCondition(2, CompareOp::EQUAL, "1")});
+  SABIQuery query({
+      QueryCondition(1, CompareOp::GREATER_EQUAL, (double)50),
+      QueryCondition(3, CompareOp::GREATER_EQUAL, (double)50),
+      QueryCondition(5, CompareOp::GREATER_EQUAL, (double)50),
+  });
+  // WIP - 블록 필터링 효율 맞는지 계산중이였음...
+  // SST 덤프랑 같이 봐야할듯.
   SABITableIterator sti(sabi_option, bbt, query);
-  sti.test();
+  // sti.test();
 }
 
 void configure_rocksdb_option() {
