@@ -62,13 +62,13 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
 SABITableIterator::SABITableIterator(SABIOptions options, BlockBasedTable* bbt,
                                      SABIQuery query)
     : options_(options), bbt_(bbt),
+      index_reader_(bbt_->get_rep()->index_reader.get()),
+      sabi_reader_(static_cast<SABIReader*>(index_reader_->GetUDIReader())),
       // 1. Build query bitmap
       query_bitmap_(GetBitmapFromQuery(query)),
       bitmap_iter_(query_bitmap_.begin()), bitmap_end_(query_bitmap_.end()) {
-  index_reader_ = bbt_->get_rep()->index_reader.get();
   block_restart_interval_ =
       bbt->get_rep()->table_options.block_restart_interval;
-  sabi_reader_ = static_cast<SABIReader*>(index_reader_->GetUDIReader());
 
   // 2. Get target block handles (binary search)
   int64_t last_added_block_idx = -1;
@@ -208,9 +208,9 @@ roaring::Roaring SABITableIterator::GetBitmapFromQuery(const SABIQuery& query) {
       result &= cur_cond_bitmap;
     }
     // Debug: Print cardinality each step
-    cout << "cur_cond_bitmap cardinality: " << cur_cond_bitmap.cardinality()
-         << "\n";
-    cout << "result cardinality: " << result.cardinality() << "\n";
+    // cout << "cur_cond_bitmap cardinality: " << cur_cond_bitmap.cardinality()
+    //      << "\n";
+    // cout << "result cardinality: " << result.cardinality() << "\n";
 
     // Optimization: If result bitmap is already empty set, return
     // immediately
@@ -271,25 +271,42 @@ void SABITableIterator::LoadNextBlock() {
 }
 
 void SABITableIterator::Next() {
-  // 순회해야하는 블록핸들 리스트는 target_blocks_ 참조
-  // TODO: Implement
+  assert(valid_);
+
+  // 1. Move buffer cursor to next buffer entry
+  buffer_idx_++;
+
+  // 2. If all buffer entries consumed, load next block
+  if (buffer_idx_ >= keys_buffer_.size()) {
+    valid_ = false;
+    LoadNextBlock();
+  }
 }
 
 bool SABITableIterator::Valid() { return valid_; }
 
 void SABITableIterator::test() {
-  IndexBlockIter ibiter;
-  InternalIteratorBase<IndexValue>* iiter = index_reader_->NewIterator(
-      ReadOptions(), false, &ibiter, nullptr, nullptr);
-  iiter->SeekToFirst();
-  const BlockHandle& bh = iiter->value().handle;
+  cout << "test: " << target_blocks_[0].second.offset() << " "
+       << target_blocks_[0].second.size() << "\n";
+
+  // LoadNextBlock Test
+  LoadNextBlock();
+  for (auto& i : keys_buffer_) {
+    cout << i.ToStringView() << "\n";
+  }
+
+  // IndexBlockIter ibiter;
+  // InternalIteratorBase<IndexValue>* iiter = index_reader_->NewIterator(
+  //     ReadOptions(), false, &ibiter, nullptr, nullptr);
+  // iiter->SeekToFirst();
+  // const BlockHandle& bh = iiter->value().handle;
   // 이후 얻은 bh로 GetAllByIndexesFromDataBlock
 
-  std::vector<uint32_t> my_indexes = {0, 1, 4};
-  size_t num_items = my_indexes.size();
-  std::vector<PinnableSlice> keys, values;
+  // std::vector<uint32_t> my_indexes = {0, 1, 4};
+  // size_t num_items = my_indexes.size();
+  // std::vector<PinnableSlice> keys, values;
 
-  GetAllByIndexesFromDataBlock(bh, my_indexes, keys, values);
+  // GetAllByIndexesFromDataBlock(bh, my_indexes, keys, values);
 
   // for (uint32_t i = 0; i < num_items; ++i) {
   //   cout << "{" << keys[i].ToStringView() << ", " << values[i].ToStringView()

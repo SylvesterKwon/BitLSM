@@ -166,15 +166,17 @@ SABIReader::SABIReader(Slice& index_block, SABIOptions options)
 
   // 4. Read index block related informaiton
   for (uint32_t i = 0; i < index_entries_cnt_; ++i) {
-    data_entries_cnt_psum[i] =
-        DecodeFixed32(index_block.data() + i * 3 * sizeof(uint32_t));
+    const char* cur_index_entry_base_ptr =
+        index_block.data() + i * 3 * sizeof(uint32_t);
+
+    data_entries_cnt_psum[i] = DecodeFixed32(cur_index_entry_base_ptr);
     block_handles[i].set_offset(
-        DecodeFixed32(index_block.data() + i * 3 * sizeof(uint32_t) + 1));
+        DecodeFixed32(cur_index_entry_base_ptr + sizeof(uint32_t)));
     block_handles[i].set_size(
-        DecodeFixed32(index_block.data() + i * 3 * sizeof(uint32_t) + 2));
+        DecodeFixed32(cur_index_entry_base_ptr + 2 * sizeof(uint32_t)));
   }
 
-  // Dump(); // for test only.
+  // Dump();
 }
 
 unique_ptr<UserDefinedIndexIterator>
