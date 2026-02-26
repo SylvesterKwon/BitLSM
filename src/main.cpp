@@ -68,19 +68,10 @@ void test() {
   if (bbt == nullptr)
     cout << "BBT not found\n";
 
-  // SABIQuery query({QueryCondition(0, CompareOp::EQUAL, "1"),
-  //                  QueryCondition(0, CompareOp::EQUAL, "2")});
-  // SABIQuery query({QueryCondition(0, CompareOp::EQUAL, "1"),
-  //                  QueryCondition(2, CompareOp::EQUAL, "1")});
-  SABIQuery query({
-      QueryCondition(1, CompareOp::GREATER_EQUAL, (double)50),
-      QueryCondition(3, CompareOp::GREATER_EQUAL, (double)50),
-      QueryCondition(5, CompareOp::GREATER_EQUAL, (double)50),
-  });
-  // WIP - 블록 필터링 효율 맞는지 계산중이였음...
-  // SST 덤프랑 같이 봐야할듯.
+  SABIQuery query({QueryCondition(0, CompareOp::EQUAL, "1"),
+                   QueryCondition(2, CompareOp::EQUAL, "1")});
   SABITableIterator sti(sabi_option, bbt, query);
-  // sti.test();
+  sti.test();
 }
 
 void configure_rocksdb_option() {

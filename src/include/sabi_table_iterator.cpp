@@ -18,7 +18,7 @@ using namespace rocksdb;
 using namespace bitmap_index;
 using namespace roaring;
 
-void SABITableIterator::get_all_by_indexes_from_data_block(
+void SABITableIterator::GetAllByIndexesFromDataBlock(
     const BlockHandle& bh, vector<uint32_t>& indexes,
     vector<PinnableSlice>& out_keys, vector<PinnableSlice>& out_values) {
   DataBlockIter biter;
@@ -35,14 +35,14 @@ void SABITableIterator::get_all_by_indexes_from_data_block(
   uint32_t result_idx = 0;
 
   for (uint32_t i = 0; i < indexes.size(); i++) {
-    uint32_t target_checkpoint = indexes[i] / block_restart_interval;
+    uint32_t target_checkpoint = indexes[i] / block_restart_interval_;
     if (cur_checkpoint != target_checkpoint) {
       cur_checkpoint = target_checkpoint;
       cur_offset = 0;
       biter.SeekToRestartPoint(cur_checkpoint);
       biter.Next(); // need to call Next once to access real data
     }
-    uint32_t target_offset = indexes[i] % block_restart_interval;
+    uint32_t target_offset = indexes[i] % block_restart_interval_;
     while (cur_offset < target_offset && biter.Valid()) {
       biter.Next();
       cur_offset++;
@@ -61,19 +61,20 @@ void SABITableIterator::get_all_by_indexes_from_data_block(
 
 SABITableIterator::SABITableIterator(SABIOptions options, BlockBasedTable* bbt,
                                      SABIQuery query)
-    : options_(options), bbt_(bbt) {
+    : options_(options), bbt_(bbt),
+      // 1. Build query bitmap
+      query_bitmap_(GetBitmapFromQuery(query)),
+      bitmap_iter_(query_bitmap_.begin()), bitmap_end_(query_bitmap_.end()) {
   index_reader_ = bbt_->get_rep()->index_reader.get();
-  block_restart_interval = bbt->get_rep()->table_options.block_restart_interval;
+  block_restart_interval_ =
+      bbt->get_rep()->table_options.block_restart_interval;
   sabi_reader_ = static_cast<SABIReader*>(index_reader_->GetUDIReader());
-
-  // 1. Build query bitmap
-  Roaring query_bitmap = GetBitmapFromQuery(query);
 
   // 2. Get target block handles (binary search)
   int64_t last_added_block_idx = -1;
   auto psum_begin = sabi_reader_->data_entries_cnt_psum.begin();
   auto psum_end = sabi_reader_->data_entries_cnt_psum.end();
-  for (uint32_t target_idx : query_bitmap) {
+  for (uint32_t target_idx : query_bitmap_) {
     // cout << "target_idx: " << target_idx << "\n";
     // target_idx is 0-based index, psum array is 1-based count array
     // so upper_bound is always right
@@ -82,7 +83,8 @@ SABITableIterator::SABITableIterator(SABIOptions options, BlockBasedTable* bbt,
       int64_t block_idx =
           std::distance(sabi_reader_->data_entries_cnt_psum.begin(), it);
       if (block_idx != last_added_block_idx) {
-        target_bhs_.push_back(sabi_reader_->block_handles[block_idx]);
+        target_blocks_.push_back(
+            {block_idx, sabi_reader_->block_handles[block_idx]});
         last_added_block_idx = block_idx;
         psum_begin = it;
       }
@@ -90,17 +92,16 @@ SABITableIterator::SABITableIterator(SABIOptions options, BlockBasedTable* bbt,
       assert(false);
     }
   }
-
-  // Debug
-  sabi_reader_->Dump();
-  cout << "\n";
-  cout << "total_bhs_size: " << sabi_reader_->data_entries_cnt_psum.size()
-       << "\n";
-  cout << "target_bhs_size: " << target_bhs_.size() << "\n";
-  cout << "("
-       << (double)target_bhs_.size() /
-              sabi_reader_->data_entries_cnt_psum.size()
-       << ")\n";
+  // Debug block hit ratio
+  // sabi_reader_->Dump();
+  // cout << "\n";
+  // cout << "total_bhs_size: " << sabi_reader_->data_entries_cnt_psum.size()
+  //      << "\n";
+  // cout << "target_blocks_size: " << target_blocks_.size() << "\n";
+  // cout << "("
+  //      << (double)target_blocks_.size() /
+  //             sabi_reader_->data_entries_cnt_psum.size()
+  //      << ")\n";
 }
 
 roaring::Roaring SABITableIterator::GetBitmapFromQuery(const SABIQuery& query) {
@@ -220,22 +221,91 @@ roaring::Roaring SABITableIterator::GetBitmapFromQuery(const SABIQuery& query) {
   return result;
 }
 
+void SABITableIterator::LoadNextBlock() {
+  // 특정 블록을 열었는데, 비트맵 필터링 결과 실제로는 0건일 수도 있음 (False
+  // Positive). 그럴 경우 데이터가 나올 때까지 다음 블록을 계속 열어야 함.
+  while (true) {
+    cur_target_block_idx_++;
+    // 1. If there's no block left to read, return it
+    if (cur_target_block_idx_ >= target_blocks_.size()) {
+      valid_ = false;
+      return;
+    }
+
+    // 2. Global (SST) index -> Local (Block) ID
+    auto& [cur_bh_idx, cur_bh] = target_blocks_[cur_target_block_idx_];
+    uint32_t global_start_idx =
+        (cur_bh_idx == 0) ? 0
+                          : sabi_reader_->data_entries_cnt_psum[cur_bh_idx - 1];
+    uint32_t global_end_idx = sabi_reader_->data_entries_cnt_psum[cur_bh_idx];
+
+    local_indexes_.clear();
+    while (bitmap_iter_ != bitmap_end_) {
+      uint32_t global_id = *bitmap_iter_;
+      if (global_id >= global_end_idx)
+        break;
+      if (global_id >= global_start_idx)
+        local_indexes_.push_back(global_id - global_start_idx);
+
+      bitmap_iter_++;
+    }
+
+    // 3. Handle no row matching row for current block
+    if (local_indexes_.empty())
+      continue; // Move to next block
+
+    // 4. Load data block
+    keys_buffer_.clear(), values_buffer_.clear();
+    GetAllByIndexesFromDataBlock(cur_bh, local_indexes_, keys_buffer_,
+                                 values_buffer_);
+
+    // 5. Finalize loaded buffer
+    if (!keys_buffer_.empty()) {
+      buffer_idx_ = 0;
+      valid_ = true;
+      return;
+    }
+  }
+
+  // TODO: 혹시 빈 유효성 검사는 어디서할까?
+}
+
+void SABITableIterator::Next() {
+  // 순회해야하는 블록핸들 리스트는 target_blocks_ 참조
+  // TODO: Implement
+}
+
+bool SABITableIterator::Valid() { return valid_; }
+
 void SABITableIterator::test() {
   IndexBlockIter ibiter;
   InternalIteratorBase<IndexValue>* iiter = index_reader_->NewIterator(
       ReadOptions(), false, &ibiter, nullptr, nullptr);
   iiter->SeekToFirst();
   const BlockHandle& bh = iiter->value().handle;
-  // 이후 얻은 bh로 get_all_by_indexes_from_data_block
+  // 이후 얻은 bh로 GetAllByIndexesFromDataBlock
 
   std::vector<uint32_t> my_indexes = {0, 1, 4};
   size_t num_items = my_indexes.size();
   std::vector<PinnableSlice> keys, values;
 
-  get_all_by_indexes_from_data_block(bh, my_indexes, keys, values);
+  GetAllByIndexesFromDataBlock(bh, my_indexes, keys, values);
 
   // for (uint32_t i = 0; i < num_items; ++i) {
   //   cout << "{" << keys[i].ToStringView() << ", " << values[i].ToStringView()
   //        << "}\n";
   // }
+
+  // 아래는 테스트 한 data block에 몇개의 entry가 들어가는가
+
+  // DataBlockIter biter;
+  // Status s;
+  // bbt_->NewDataBlockIterator(ReadOptions(), bh, &biter, BlockType::kData,
+  //                            nullptr, nullptr, nullptr, false, false, s,
+  //                            true);
+  // uint32_t cnt = 0;
+  // for (biter.SeekToFirst(); biter.Valid(); biter.Next()) {
+  //   cnt += 1;
+  // }
+  // cout << "block cnt: " << cnt << "\n";
 }
