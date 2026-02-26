@@ -267,7 +267,7 @@ void SABITableIterator::LoadNextBlock() {
     }
   }
 
-  // TODO: 혹시 빈 유효성 검사는 어디서할까?
+  // TODO: 혹시 빈 유효성 검사는 어디서할지?
 }
 
 void SABITableIterator::Next() {
@@ -285,14 +285,12 @@ void SABITableIterator::Next() {
 
 bool SABITableIterator::Valid() { return valid_; }
 
-void SABITableIterator::test() {
-  cout << "test: " << target_blocks_[0].second.offset() << " "
-       << target_blocks_[0].second.size() << "\n";
-
+void SABITableIterator::TEST() {
   // LoadNextBlock Test
   LoadNextBlock();
-  for (auto& i : keys_buffer_) {
-    cout << i.ToStringView() << "\n";
+  for (uint32_t i = 0; i < keys_buffer_.size(); ++i) {
+    cout << keys_buffer_[i].ToStringView() << "\n";
+    TEST_DumpValue(values_buffer_[i]);
   }
 
   // IndexBlockIter ibiter;
@@ -325,4 +323,23 @@ void SABITableIterator::test() {
   //   cnt += 1;
   // }
   // cout << "block cnt: " << cnt << "\n";
+}
+
+void SABITableIterator::TEST_DumpValue(Slice input) {
+  std::cout << "==== Value Decode Debug (" << input.size() << " bytes) ====\n";
+  for (uint32_t i = 0; i < options_.sk_num; ++i) {
+    rocksdb::Slice part;
+    GetLengthPrefixedSlice(&input, &part);
+    std::cout << "  [SK:" << i << "] ";
+
+    if (options_.sk_types[i] == SKType::CATEGORICAL) {
+      std::cout << "(CAT) : " << part.ToString();
+    } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
+      // Builder에서 문자열 형태로 저장했으므로 문자열로 출력하되, double 해석
+      // 가능 여부 확인
+      std::string s = part.ToString();
+      std::cout << "(CONT): " << s;
+    }
+    std::cout << "\n";
+  }
 }

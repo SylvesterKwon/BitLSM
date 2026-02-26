@@ -68,10 +68,12 @@ void test() {
   if (bbt == nullptr)
     cout << "BBT not found\n";
 
-  SABIQuery query({QueryCondition(0, CompareOp::EQUAL, "1"),
-                   QueryCondition(2, CompareOp::EQUAL, "1")});
+  // SABIQuery query({QueryCondition(0, CompareOp::EQUAL, "25"),
+  //                  QueryCondition(2, CompareOp::EQUAL, "24")});
+  SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)25),
+                   QueryCondition(1, CompareOp::LESS_EQUAL, (double)27)});
   SABITableIterator sti(sabi_option, bbt, query);
-  sti.test();
+  sti.TEST();
 }
 
 void configure_rocksdb_option() {

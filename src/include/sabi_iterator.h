@@ -53,8 +53,9 @@ public:
                     SABIQuery query);
   void Next(); // Get Next Data Entries
   bool Valid();
-  // TODO: 값 조회 로직도 추가 필!
-  void test();
+  // TODO: 값 조회 로직도 추가 필
+  void TEST();
+  void TEST_DumpValue(rocksdb::Slice slice); // Inspect Value for debug
 };
 
 } // namespace bitmap_index
