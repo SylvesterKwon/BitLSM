@@ -51,6 +51,7 @@ private:
 public:
   SABITableIterator(SABIOptions options, rocksdb::BlockBasedTable* bbt,
                     SABIQuery query);
+  void SeekToFirst();
   void Next(); // Get Next Data Entries
   bool Valid();
   // TODO: 값 조회 로직도 추가 필

@@ -192,7 +192,7 @@ roaring::Roaring SABITableIterator::GetBitmapFromQuery(const SABIQuery& query) {
         end_bin = static_cast<int32_t>(num_bins) - 1;
 
       // Debug
-      cout << "s: " << start_bin << ", e: " << end_bin << "\n";
+      // cout << "s: " << start_bin << ", e: " << end_bin << "\n";
 
       // 3. Merge bitmap (OR)
       for (int32_t i = start_bin; i <= end_bin; ++i) {
@@ -270,6 +270,15 @@ void SABITableIterator::LoadNextBlock() {
   // TODO: 혹시 빈 유효성 검사는 어디서할지?
 }
 
+void SABITableIterator::SeekToFirst() {
+  cur_target_block_idx_ = -1;
+  buffer_idx_ = 0;
+  keys_buffer_.clear();
+  values_buffer_.clear();
+  bitmap_iter_ = query_bitmap_.begin();
+  LoadNextBlock();
+}
+
 void SABITableIterator::Next() {
   assert(valid_);
 
@@ -279,6 +288,7 @@ void SABITableIterator::Next() {
   // 2. If all buffer entries consumed, load next block
   if (buffer_idx_ >= keys_buffer_.size()) {
     valid_ = false;
+    cout << "need new block ==========\n";
     LoadNextBlock();
   }
 }
@@ -286,12 +296,17 @@ void SABITableIterator::Next() {
 bool SABITableIterator::Valid() { return valid_; }
 
 void SABITableIterator::TEST() {
-  // LoadNextBlock Test
-  LoadNextBlock();
-  for (uint32_t i = 0; i < keys_buffer_.size(); ++i) {
-    cout << keys_buffer_[i].ToStringView() << "\n";
-    TEST_DumpValue(values_buffer_[i]);
+  for (SeekToFirst(); Valid(); Next()) {
+    cout << keys_buffer_[buffer_idx_].ToStringView() << "\n";
+    TEST_DumpValue(values_buffer_[buffer_idx_]);
   }
+
+  // LoadNextBlock Test
+  // LoadNextBlock();
+  // for (uint32_t i = 0; i < keys_buffer_.size(); ++i) {
+  //   cout << keys_buffer_[i].ToStringView() << "\n";
+  //   TEST_DumpValue(values_buffer_[i]);
+  // }
 
   // IndexBlockIter ibiter;
   // InternalIteratorBase<IndexValue>* iiter = index_reader_->NewIterator(
