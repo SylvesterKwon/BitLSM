@@ -79,6 +79,7 @@ private:
 public:
   SABILevelIterator(rocksdb::ColumnFamilyData* cfd, uint32_t level,
                     SABIOptions options, SABIQuery query);
+  ~SABILevelIterator() override;
   void SeekToFirst() override;
   void Next() override;
   rocksdb::Slice key() const override;

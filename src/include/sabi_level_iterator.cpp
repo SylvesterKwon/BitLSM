@@ -20,37 +20,21 @@ SABILevelIterator::SABILevelIterator(ColumnFamilyData* cfd, uint32_t level,
       storage_info_(v_->storage_info()),
       icmp_(storage_info_->InternalComparator()),
       cf_opts_(cfd->GetLatestMutableCFOptions()),
-      files_(storage_info_->LevelFiles(level_)),
-      cur_file_idx_(0), cur_table_handle_(nullptr),
-      cur_sti_(nullptr) {}
+      files_(storage_info_->LevelFiles(level_)), cur_file_idx_(0),
+      cur_table_handle_(nullptr), cur_sti_(nullptr) {}
+
+SABILevelIterator::~SABILevelIterator() {
+  if (cur_sti_)
+    delete cur_sti_;
+  if (cur_table_handle_)
+    tc_->get_cache().Release(cur_table_handle_);
+}
 
 void SABILevelIterator::LoadFile(size_t idx) {
   cout << "new SST ================================\n";
-  // 1. Validate file index range
-  if (idx >= files_.size()) {
-    valid_ = false;
-    return;
-  }
-
-  // 2. Read BlockBasedTable
-  const ReadOptions& read_options = ReadOptions();
-  const FileOptions& file_options = FileOptions();
-  TableCache::TypedHandle* new_table_handle = nullptr;
-  const FileMetaData* file_meta = files_[idx];
-  const bool no_io = false;
-
-  Status s = tc_->FindTable(read_options, file_options, *icmp_, *file_meta,
-                            &new_table_handle, cf_opts_, no_io);
-  if (!s.ok()) {
-    valid_ = false;
-    std::cerr << "Failed to load SST\n";
-    return;
-  }
+  // 1. Clean up existing iterator & table handle
+  valid_ = false;
   TableCache::CacheInterface cache_interface = tc_->get_cache();
-  TableReader* table = cache_interface.Value(new_table_handle);
-  BlockBasedTable* bbt = static_cast<BlockBasedTable*>(table);
-
-  // 3. Clean up existing iterator & table handle
   if (cur_sti_ != nullptr) {
     delete cur_sti_;
     cur_sti_ = nullptr;
@@ -60,17 +44,36 @@ void SABILevelIterator::LoadFile(size_t idx) {
     cur_table_handle_ = nullptr;
   }
 
+  // 2. Validate file index range
+  if (idx >= files_.size()) {
+    return;
+  }
+
+  // 3. Read BlockBasedTable
+  const ReadOptions& read_options = ReadOptions();
+  const FileOptions& file_options = FileOptions();
+  TableCache::TypedHandle* new_table_handle = nullptr;
+  const FileMetaData* file_meta = files_[idx];
+  const bool no_io = false;
+
+  Status s = tc_->FindTable(read_options, file_options, *icmp_, *file_meta,
+                            &new_table_handle, cf_opts_, no_io);
+  if (!s.ok()) {
+    std::cerr << "Failed to load SST\n";
+    return;
+  }
+  TableReader* table = cache_interface.Value(new_table_handle);
+  BlockBasedTable* bbt = static_cast<BlockBasedTable*>(table);
+
   // 4. Prepare new SABITableIterator
   cur_table_handle_ = new_table_handle;
   // TODO: MVCC 를 위한 seqno 전달
   cur_sti_ = new SABITableIterator(options_, bbt, query_);
-  valid_ = true;
 }
 
 void SABILevelIterator::SeekToFirst() {
   // 1. Set file cursor to zero
   cur_file_idx_ = 0;
-  valid_ = false;
 
   // 2. Load files sequentially until valid data is found
   while (cur_file_idx_ < files_.size()) {
@@ -78,7 +81,6 @@ void SABILevelIterator::SeekToFirst() {
 
     if (cur_sti_ != nullptr) {
       cur_sti_->SeekToFirst();
-
       if (cur_sti_->Valid()) {
         valid_ = true;
         return;
@@ -99,14 +101,14 @@ void SABILevelIterator::Next() {
 
   // 3. If current table is no longer valid, move to next valid table
   if (!cur_sti_->Valid()) {
+    valid_ = false;
     while (true) {
       cur_file_idx_++;
       if (cur_file_idx_ >= files_.size()) {
-        valid_ = false;
         return;
       }
       LoadFile(cur_file_idx_);
-      if (Valid()) {
+      if (cur_sti_ != nullptr) {
         cur_sti_->SeekToFirst();
         if (cur_sti_->Valid()) {
           valid_ = true;
@@ -129,7 +131,8 @@ Slice SABILevelIterator::value() const {
 
 void SABILevelIterator::TEST_DumpValue(Slice input) {
   for (uint32_t i = 0; i < options_.sk_num; ++i) {
-    if (i) cout<<" / ";
+    if (i)
+      cout << " / ";
     rocksdb::Slice part;
     GetLengthPrefixedSlice(&input, &part);
     if (options_.sk_types[i] == SKType::CATEGORICAL) {
@@ -141,5 +144,5 @@ void SABILevelIterator::TEST_DumpValue(Slice input) {
       cout << s;
     }
   }
-  cout<<"\n";
+  cout << "\n";
 }
