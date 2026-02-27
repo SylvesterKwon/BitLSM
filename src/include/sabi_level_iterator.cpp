@@ -20,9 +20,12 @@ SABILevelIterator::SABILevelIterator(ColumnFamilyData* cfd, uint32_t level,
       storage_info_(v_->storage_info()),
       icmp_(storage_info_->InternalComparator()),
       cf_opts_(cfd->GetLatestMutableCFOptions()),
-      files_(storage_info_->LevelFiles(level_)) {}
+      files_(storage_info_->LevelFiles(level_)),
+      cur_file_idx_(0), cur_table_handle_(nullptr),
+      cur_sti_(nullptr) {}
 
 void SABILevelIterator::LoadFile(size_t idx) {
+  cout << "new SST ================================\n";
   // 1. Validate file index range
   if (idx >= files_.size()) {
     valid_ = false;
@@ -112,4 +115,31 @@ void SABILevelIterator::Next() {
       }
     }
   }
+}
+
+Slice SABILevelIterator::key() const {
+  assert(Valid());
+  return cur_sti_->key();
+}
+
+Slice SABILevelIterator::value() const {
+  assert(Valid());
+  return cur_sti_->value();
+}
+
+void SABILevelIterator::TEST_DumpValue(Slice input) {
+  for (uint32_t i = 0; i < options_.sk_num; ++i) {
+    if (i) cout<<" / ";
+    rocksdb::Slice part;
+    GetLengthPrefixedSlice(&input, &part);
+    if (options_.sk_types[i] == SKType::CATEGORICAL) {
+      cout << part.ToString();
+    } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
+      // Builder에서 문자열 형태로 저장했으므로 문자열로 출력하되, double 해석
+      // 가능 여부 확인
+      string s = part.ToString();
+      cout << s;
+    }
+  }
+  cout<<"\n";
 }

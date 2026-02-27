@@ -81,5 +81,3 @@ void SABIMergingIterator::Next() {
   // TODO: implement this
   assert(false);
 };
-
-bool SABITableIterator::Valid() { return valid_; }

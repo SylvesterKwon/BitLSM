@@ -1,9 +1,6 @@
 #pragma once
 
 #include "db/version_set.h"
-#define TEST_CACHE_LINE_SIZE                                                   \
-  64 // To avoid compile error when using roaring.hh &
-     // block_based_table_reader.h together
 
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
@@ -13,15 +10,14 @@ namespace bitmap_index {
 
 // Abstract class for internal iterator SABITableIterator, SABIMemTableIterator
 class SABIInternalIterator {
-private:
-  bool _valid = false;
+protected:
+  bool valid_ = false;
 
 public:
-  virtual ~SABIInternalIterator();
-
+  virtual ~SABIInternalIterator() {}
   virtual void SeekToFirst() = 0;
   virtual void Next() = 0;
-  bool Valid() { return _valid; };
+  bool Valid() const { return valid_; };
   virtual rocksdb::Slice key() const = 0;
   virtual rocksdb::Slice value() const = 0;
 };
@@ -46,7 +42,7 @@ private:
   const rocksdb::MutableCFOptions& cf_opts_;
 
   // Internal status for iterating
-  bool valid_ = false;
+  // -
 
 public:
   SABIMergingIterator(rocksdb::ColumnFamilyData* cfd, SABIOptions options,
@@ -54,7 +50,8 @@ public:
   ~SABIMergingIterator();
   void SeekToFirst();
   void Next(); // Get Next Data Entries
-  bool Valid();
+  // TODO: Merging iterator는 internal iterator 상속받아야하는가? (internal
+  // 아니고 sabiiterator같은공통개념)
 };
 
 // Level Iterator for SST with SABI
@@ -73,7 +70,6 @@ private:
   const std::vector<rocksdb::FileMetaData*>& files_;
 
   // Internal status for iterating
-  bool valid_ = false;
   uint32_t cur_file_idx_;
   rocksdb::TableCache::TypedHandle* cur_table_handle_;
   SABITableIterator* cur_sti_;
@@ -85,6 +81,9 @@ public:
                     SABIOptions options, SABIQuery query);
   void SeekToFirst() override;
   void Next() override;
+  rocksdb::Slice key() const override;
+  rocksdb::Slice value() const override;
+  void TEST_DumpValue(rocksdb::Slice slice); // Inspect Value for debug
 };
 
 // Table Iterator for SST with SABI
@@ -102,7 +101,6 @@ private:
   roaring::Roaring query_bitmap_;                // bitmap for current iteration
   roaring::Roaring::const_iterator bitmap_iter_; // bitmap iterator
   roaring::Roaring::const_iterator bitmap_end_;
-  bool valid_ = false;
   std::vector<std::pair<uint32_t,
                         rocksdb::BlockHandle>>
       target_blocks_;                   // {index, blockhandle}

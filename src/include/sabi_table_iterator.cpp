@@ -380,18 +380,17 @@ void SABITableIterator::Next() {
   // 2. If all buffer entries consumed, load next block
   if (buffer_idx_ >= keys_buffer_.size()) {
     valid_ = false;
-    cout << "need new block ==========\n";
     LoadNextBlock();
   }
 }
 
 Slice SABITableIterator::key() const {
-  assert(valid_);
+  assert(Valid());
   return keys_buffer_[buffer_idx_];
 }
 
 Slice SABITableIterator::value() const {
-  assert(valid_);
+  assert(Valid());
   return values_buffer_[buffer_idx_];
 }
 

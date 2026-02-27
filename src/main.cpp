@@ -49,36 +49,26 @@ void test() {
   const bool no_io = false;
 
   // 레벨별 SST 분포 확인 코드
-  // string stats;
-  // db->GetProperty("rocksdb.levelstats", &stats);
-  // cout << stats << "\n";
+  string stats;
+  db->GetProperty("rocksdb.levelstats", &stats);
+  cout << stats << "\n";
 
-  const vector<FileMetaData*>& files = storage_info->LevelFiles(6);
-  assert(!files.empty());
-  file_meta = files[0];
-  TableCache::TypedHandle* table_handle = nullptr;
-  s = tc->FindTable(read_options, file_options, *icmp, *file_meta,
-                    &table_handle, cf_opts,
-                    no_io); // TODO: 뒤에 optional parameter도 의미 파악 필요
-  if (!s.ok())
-    cout << "Debug: fail to find TableReader\n";
-
-  TableReader* table = cache_interface.Value(table_handle);
-  BlockBasedTable* bbt = static_cast<BlockBasedTable*>(table);
-  if (bbt == nullptr)
-    cout << "BBT not found\n";
-
+  // query samples
   // SABIQuery query({QueryCondition(0, CompareOp::EQUAL, "25"),
   //                  QueryCondition(2, CompareOp::EQUAL, "24")});
-  SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)25.1),
-                   QueryCondition(1, CompareOp::LESS_EQUAL, (double)25.2)});
-  // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)26.241745)});
-  SABITableIterator sti(sabi_option, bbt, query);
+  // SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)25.1),
+  //                  QueryCondition(1, CompareOp::LESS_EQUAL, (double)25.2)});
+  SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)25.161031)});
 
-  for (sti.SeekToFirst(); sti.Valid(); sti.Next()) {
-    cout << sti.key().ToStringView() << "\n";
-    sti.TEST_DumpValue(sti.value());
+  SABILevelIterator sli(cfd, 6, sabi_option, query);
+  uint32_t total_cnt=0;
+  for (sli.SeekToFirst(); sli.Valid(); sli.Next()) {
+    cout << sli.key().ToStringView() << ": ";
+    sli.TEST_DumpValue(sli.value());
+    total_cnt++;
   }
+  cout<<"total: "<<total_cnt<<"\n";
+  return;
 }
 
 void configure_rocksdb_option() {
