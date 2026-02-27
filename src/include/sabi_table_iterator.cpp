@@ -387,23 +387,14 @@ void SABITableIterator::Next() {
 
 bool SABITableIterator::Valid() { return valid_; }
 
-void SABITableIterator::TEST() {
-  for (SeekToFirst(); Valid(); Next()) {
-    cout << keys_buffer_[buffer_idx_].ToStringView() << "\n";
-    TEST_DumpValue(values_buffer_[buffer_idx_]);
-  }
+Slice SABITableIterator::key() const {
+  assert(valid_);
+  return keys_buffer_[buffer_idx_];
+}
 
-  // TEST: 한 data block에 몇개의 entry가 들어가는가 테스트용
-  // DataBlockIter biter;
-  // Status s;
-  // bbt_->NewDataBlockIterator(ReadOptions(), bh, &biter, BlockType::kData,
-  //                            nullptr, nullptr, nullptr, false, false, s,
-  //                            true);
-  // uint32_t cnt = 0;
-  // for (biter.SeekToFirst(); biter.Valid(); biter.Next()) {
-  //   cnt += 1;
-  // }
-  // cout << "block cnt: " << cnt << "\n";
+Slice SABITableIterator::value() const {
+  assert(valid_);
+  return values_buffer_[buffer_idx_];
 }
 
 void SABITableIterator::TEST_DumpValue(Slice input) {

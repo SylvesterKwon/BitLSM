@@ -74,7 +74,11 @@ void test() {
                    QueryCondition(1, CompareOp::LESS_EQUAL, (double)25.2)});
   // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)26.241745)});
   SABITableIterator sti(sabi_option, bbt, query);
-  sti.TEST();
+
+  for (sti.SeekToFirst(); sti.Valid(); sti.Next()) {
+    cout << sti.key().ToStringView() << "\n";
+    sti.TEST_DumpValue(sti.value());
+  }
 }
 
 void configure_rocksdb_option() {
