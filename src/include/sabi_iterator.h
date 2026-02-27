@@ -11,7 +11,6 @@
 namespace bitmap_index {
 
 // Table Iterator for SST with SABI
-// WIP - 자체 iterator 구상중
 class SABITableIterator {
 private:
   // Table & query context
@@ -19,6 +18,7 @@ private:
   rocksdb::BlockBasedTable* bbt_;
   rocksdb::BlockBasedTable::IndexReader* index_reader_;
   SABIReader* sabi_reader_;
+  SABIQuery query_;
   uint32_t block_restart_interval_;
 
   // Internal status for iterating
@@ -47,6 +47,7 @@ private:
   roaring::Roaring GetBitmapFromQuery(const SABIQuery& query);
   // Fill buffer by loading next data block
   void LoadNextBlock();
+  bool CheckCondition(rocksdb::Slice value);
 
 public:
   SABITableIterator(SABIOptions options, rocksdb::BlockBasedTable* bbt,

@@ -70,8 +70,9 @@ void test() {
 
   // SABIQuery query({QueryCondition(0, CompareOp::EQUAL, "25"),
   //                  QueryCondition(2, CompareOp::EQUAL, "24")});
-  SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)25),
-                   QueryCondition(1, CompareOp::LESS_EQUAL, (double)27)});
+  SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)25.1),
+                   QueryCondition(1, CompareOp::LESS_EQUAL, (double)25.2)});
+  // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)26.241745)});
   SABITableIterator sti(sabi_option, bbt, query);
   sti.TEST();
 }

@@ -1,6 +1,7 @@
 #include "rocksdb/options.h"
 #include "table/block_based/block.h"
 #include "table/format.h"
+#include <charconv>
 #include <cstdint>
 #include <sabi_query.h>
 #define TEST_CACHE_LINE_SIZE                                                   \
@@ -61,12 +62,20 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
 
 SABITableIterator::SABITableIterator(SABIOptions options, BlockBasedTable* bbt,
                                      SABIQuery query)
-    : options_(options), bbt_(bbt),
+    : options_(options), bbt_(bbt), query_(std::move(query)),
       index_reader_(bbt_->get_rep()->index_reader.get()),
       sabi_reader_(static_cast<SABIReader*>(index_reader_->GetUDIReader())),
       // 1. Build query bitmap
-      query_bitmap_(GetBitmapFromQuery(query)),
+      query_bitmap_(GetBitmapFromQuery(query_)),
       bitmap_iter_(query_bitmap_.begin()), bitmap_end_(query_bitmap_.end()) {
+  // Sort query condition by sk_idx
+  // This is for using forward scan while value validation
+  // TODO: 상위 컴포넌트에서 쿼리 정렬상태 sk_idx 순으로 넘겨주도록 보장하고
+  // 아래 로직 삭제하기
+  std::sort(query_.conditions.begin(), query_.conditions.end(),
+            [](const QueryCondition& a, const QueryCondition& b) {
+              return a.sk_idx < b.sk_idx;
+            });
   block_restart_interval_ =
       bbt->get_rep()->table_options.block_restart_interval;
 
@@ -222,8 +231,6 @@ roaring::Roaring SABITableIterator::GetBitmapFromQuery(const SABIQuery& query) {
 }
 
 void SABITableIterator::LoadNextBlock() {
-  // 특정 블록을 열었는데, 비트맵 필터링 결과 실제로는 0건일 수도 있음 (False
-  // Positive). 그럴 경우 데이터가 나올 때까지 다음 블록을 계속 열어야 함.
   while (true) {
     cur_target_block_idx_++;
     // 1. If there's no block left to read, return it
@@ -259,15 +266,100 @@ void SABITableIterator::LoadNextBlock() {
     GetAllByIndexesFromDataBlock(cur_bh, local_indexes_, keys_buffer_,
                                  values_buffer_);
 
-    // 5. Finalize loaded buffer
+    // 5. Validate & filter value (two-pointer filtering)
+    size_t valid_cursor = 0;
+    for (size_t i = 0; i < keys_buffer_.size(); ++i) {
+      if (CheckCondition(values_buffer_[i])) {
+        if (i != valid_cursor) {
+          keys_buffer_[valid_cursor] = std::move(keys_buffer_[i]);
+          values_buffer_[valid_cursor] = std::move(values_buffer_[i]);
+        }
+        valid_cursor++;
+      }
+    }
+    keys_buffer_.resize(valid_cursor);
+    values_buffer_.resize(valid_cursor);
+
+    // 6. Finalize loaded buffer
     if (!keys_buffer_.empty()) {
       buffer_idx_ = 0;
       valid_ = true;
       return;
     }
   }
+}
 
-  // TODO: 혹시 빈 유효성 검사는 어디서할지?
+bool SABITableIterator::CheckCondition(rocksdb::Slice row_value) {
+  if (query_.conditions.empty())
+    return true;
+
+  uint32_t cur_sk_idx = 0;
+  uint32_t cur_cond_idx = 0;
+
+  // For all query condition
+  while (cur_cond_idx < query_.conditions.size()) {
+    uint32_t target_sk_idx = query_.conditions[cur_cond_idx].sk_idx;
+
+    // 1. Skip unnecessary sk
+    while (cur_sk_idx < target_sk_idx) {
+      // If there's no sk left (maybe new kind of sk is queried) return false
+      if (row_value.empty())
+        return false;
+      Slice ignored;
+      GetLengthPrefixedSlice(&row_value, &ignored); // Move pointer
+      cur_sk_idx++;
+    }
+
+    // 2. Read target sk value
+    Slice target_sk_val_slice;
+    if (!GetLengthPrefixedSlice(&row_value, &target_sk_val_slice))
+      return false;
+    cur_sk_idx++;
+    double val_double;
+    bool parsed = false; // To prevent redundant double parse
+
+    // 3. Check all condition for current sk
+    while (cur_cond_idx < query_.conditions.size() &&
+           query_.conditions[cur_cond_idx].sk_idx == target_sk_idx) {
+      const auto& cond = query_.conditions[cur_cond_idx];
+      bool match = false;
+      const SKType sk_type = options_.sk_types[cond.sk_idx];
+
+      if (sk_type == SKType::CATEGORICAL) {
+        const string& query_val = get<string>(cond.value);
+        int cmp = target_sk_val_slice.compare(query_val);
+        if (cond.op == CompareOp::EQUAL)
+          match = (cmp == 0);
+        else if (cond.op == CompareOp::GREATER_EQUAL)
+          match = (cmp >= 0);
+        else if (cond.op == CompareOp::LESS_EQUAL)
+          match = (cmp <= 0);
+        else
+          assert(false);
+      } else if (sk_type == SKType::CONTINUOUS) {
+        if (!parsed) {
+          auto res = std::from_chars(target_sk_val_slice.data(),
+                                     target_sk_val_slice.data() +
+                                         target_sk_val_slice.size(),
+                                     val_double);
+          if (res.ec != std::errc())
+            return false;
+          parsed = true;
+        }
+        double query_val = std::get<double>(cond.value);
+        if (cond.op == CompareOp::EQUAL)
+          match = (val_double == query_val);
+        else if (cond.op == CompareOp::GREATER_EQUAL)
+          match = (val_double >= query_val);
+        else if (cond.op == CompareOp::LESS_EQUAL)
+          match = (val_double <= query_val);
+      }
+      if (!match)
+        return false;
+      cur_cond_idx++;
+    }
+  }
+  return true;
 }
 
 void SABITableIterator::SeekToFirst() {
@@ -301,33 +393,7 @@ void SABITableIterator::TEST() {
     TEST_DumpValue(values_buffer_[buffer_idx_]);
   }
 
-  // LoadNextBlock Test
-  // LoadNextBlock();
-  // for (uint32_t i = 0; i < keys_buffer_.size(); ++i) {
-  //   cout << keys_buffer_[i].ToStringView() << "\n";
-  //   TEST_DumpValue(values_buffer_[i]);
-  // }
-
-  // IndexBlockIter ibiter;
-  // InternalIteratorBase<IndexValue>* iiter = index_reader_->NewIterator(
-  //     ReadOptions(), false, &ibiter, nullptr, nullptr);
-  // iiter->SeekToFirst();
-  // const BlockHandle& bh = iiter->value().handle;
-  // 이후 얻은 bh로 GetAllByIndexesFromDataBlock
-
-  // std::vector<uint32_t> my_indexes = {0, 1, 4};
-  // size_t num_items = my_indexes.size();
-  // std::vector<PinnableSlice> keys, values;
-
-  // GetAllByIndexesFromDataBlock(bh, my_indexes, keys, values);
-
-  // for (uint32_t i = 0; i < num_items; ++i) {
-  //   cout << "{" << keys[i].ToStringView() << ", " << values[i].ToStringView()
-  //        << "}\n";
-  // }
-
-  // 아래는 테스트 한 data block에 몇개의 entry가 들어가는가
-
+  // TEST: 한 data block에 몇개의 entry가 들어가는가 테스트용
   // DataBlockIter biter;
   // Status s;
   // bbt_->NewDataBlockIterator(ReadOptions(), bh, &biter, BlockType::kData,
