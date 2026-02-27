@@ -1,5 +1,6 @@
 #pragma once
 
+#include "db/version_set.h"
 #define TEST_CACHE_LINE_SIZE                                                   \
   64 // To avoid compile error when using roaring.hh &
      // block_based_table_reader.h together
@@ -10,8 +11,84 @@
 
 namespace bitmap_index {
 
+// Abstract class for internal iterator SABITableIterator, SABIMemTableIterator
+class SABIInternalIterator {
+private:
+  bool _valid = false;
+
+public:
+  virtual ~SABIInternalIterator();
+
+  virtual void SeekToFirst() = 0;
+  virtual void Next() = 0;
+  bool Valid() { return _valid; };
+  virtual rocksdb::Slice key() const = 0;
+  virtual rocksdb::Slice value() const = 0;
+};
+
+class SABIMergingIterator;
+class SABILevelIterator;
+class SABITableIterator;
+// class SABIMemTableIterator;
+
+// Merging Iterator for SABI. Internally contains SABITableIterator and
+// MemTableIterator
+class SABIMergingIterator {
+private:
+  // Table & query context
+  const SABIOptions options_;
+  const SABIQuery query_;
+  const rocksdb::ColumnFamilyData* cfd_;
+  rocksdb::Version* v_;
+  rocksdb::TableCache* tc_;
+  const rocksdb::VersionStorageInfo* storage_info_;
+  const rocksdb::InternalKeyComparator* icmp_;
+  const rocksdb::MutableCFOptions& cf_opts_;
+
+  // Internal status for iterating
+  bool valid_ = false;
+
+public:
+  SABIMergingIterator(rocksdb::ColumnFamilyData* cfd, SABIOptions options,
+                      SABIQuery query);
+  ~SABIMergingIterator();
+  void SeekToFirst();
+  void Next(); // Get Next Data Entries
+  bool Valid();
+};
+
+// Level Iterator for SST with SABI
+class SABILevelIterator : public SABIInternalIterator {
+private:
+  // Table & query context
+  uint32_t level_;
+  const SABIOptions options_;
+  const SABIQuery query_;
+  const rocksdb::ColumnFamilyData* cfd_;
+  rocksdb::Version* v_;
+  rocksdb::TableCache* tc_;
+  const rocksdb::VersionStorageInfo* storage_info_;
+  const rocksdb::InternalKeyComparator* icmp_;
+  const rocksdb::MutableCFOptions& cf_opts_;
+  const std::vector<rocksdb::FileMetaData*>& files_;
+
+  // Internal status for iterating
+  bool valid_ = false;
+  uint32_t cur_file_idx_;
+  rocksdb::TableCache::TypedHandle* cur_table_handle_;
+  SABITableIterator* cur_sti_;
+
+  void LoadFile(size_t idx); // Open file with index
+
+public:
+  SABILevelIterator(rocksdb::ColumnFamilyData* cfd, uint32_t level,
+                    SABIOptions options, SABIQuery query);
+  void SeekToFirst() override;
+  void Next() override;
+};
+
 // Table Iterator for SST with SABI
-class SABITableIterator {
+class SABITableIterator : public SABIInternalIterator {
 private:
   // Table & query context
   SABIOptions options_;
@@ -52,11 +129,10 @@ private:
 public:
   SABITableIterator(SABIOptions options, rocksdb::BlockBasedTable* bbt,
                     SABIQuery query);
-  void SeekToFirst();
-  void Next(); // Get Next Data Entries
-  bool Valid();
-  // TODO: 값 조회 로직도 추가 필
-  void TEST();
+  void SeekToFirst() override;
+  void Next() override; // Get Next Data Entries
+  rocksdb::Slice key() const override;
+  rocksdb::Slice value() const override;
   void TEST_DumpValue(rocksdb::Slice slice); // Inspect Value for debug
 };
 

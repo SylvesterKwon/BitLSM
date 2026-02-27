@@ -1,0 +1,115 @@
+#include "db/version_set.h"
+#include "rocksdb/options.h"
+#include "sabi.h"
+#include "table/block_based/block_based_table_reader.h"
+#include "table/format.h"
+#include <cstdint>
+#include <iostream>
+#include <sabi_iterator.h>
+#include <sabi_query.h>
+
+using namespace std;
+using namespace rocksdb;
+using namespace bitmap_index;
+using namespace roaring;
+
+SABILevelIterator::SABILevelIterator(ColumnFamilyData* cfd, uint32_t level,
+                                     SABIOptions options, SABIQuery query)
+    : cfd_(cfd), level_(level), options_(options), query_(std::move(query)),
+      v_(cfd->current()), tc_(cfd->table_cache()),
+      storage_info_(v_->storage_info()),
+      icmp_(storage_info_->InternalComparator()),
+      cf_opts_(cfd->GetLatestMutableCFOptions()),
+      files_(storage_info_->LevelFiles(level_)) {}
+
+void SABILevelIterator::LoadFile(size_t idx) {
+  // 1. Validate file index range
+  if (idx >= files_.size()) {
+    valid_ = false;
+    return;
+  }
+
+  // 2. Read BlockBasedTable
+  const ReadOptions& read_options = ReadOptions();
+  const FileOptions& file_options = FileOptions();
+  TableCache::TypedHandle* new_table_handle = nullptr;
+  const FileMetaData* file_meta = files_[idx];
+  const bool no_io = false;
+
+  Status s = tc_->FindTable(read_options, file_options, *icmp_, *file_meta,
+                            &new_table_handle, cf_opts_, no_io);
+  if (!s.ok()) {
+    valid_ = false;
+    std::cerr << "Failed to load SST\n";
+    return;
+  }
+  TableCache::CacheInterface cache_interface = tc_->get_cache();
+  TableReader* table = cache_interface.Value(new_table_handle);
+  BlockBasedTable* bbt = static_cast<BlockBasedTable*>(table);
+
+  // 3. Clean up existing iterator & table handle
+  if (cur_sti_ != nullptr) {
+    delete cur_sti_;
+    cur_sti_ = nullptr;
+  }
+  if (cur_table_handle_ != nullptr) {
+    cache_interface.Release(cur_table_handle_);
+    cur_table_handle_ = nullptr;
+  }
+
+  // 4. Prepare new SABITableIterator
+  cur_table_handle_ = new_table_handle;
+  // TODO: MVCC 를 위한 seqno 전달
+  cur_sti_ = new SABITableIterator(options_, bbt, query_);
+  valid_ = true;
+}
+
+void SABILevelIterator::SeekToFirst() {
+  // 1. Set file cursor to zero
+  cur_file_idx_ = 0;
+  valid_ = false;
+
+  // 2. Load files sequentially until valid data is found
+  while (cur_file_idx_ < files_.size()) {
+    LoadFile(cur_file_idx_);
+
+    if (cur_sti_ != nullptr) {
+      cur_sti_->SeekToFirst();
+
+      if (cur_sti_->Valid()) {
+        valid_ = true;
+        return;
+      }
+    }
+    // If no valid data found, move next file
+    cur_file_idx_++;
+  }
+  // If there's no valid data at all, valid_ is set to false
+}
+
+void SABILevelIterator::Next() {
+  // 1. Check current validity
+  assert(Valid());
+
+  // 2. Advance current SABITableIterator
+  cur_sti_->Next();
+
+  // 3. If current table is no longer valid, move to next valid table
+  if (!cur_sti_->Valid()) {
+    while (true) {
+      cur_file_idx_++;
+      if (cur_file_idx_ >= files_.size()) {
+        valid_ = false;
+        return;
+      }
+      LoadFile(cur_file_idx_);
+      if (Valid()) {
+        cur_sti_->SeekToFirst();
+        if (cur_sti_->Valid()) {
+          valid_ = true;
+          return;
+        }
+      }
+    }
+  }
+}

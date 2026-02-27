@@ -385,8 +385,6 @@ void SABITableIterator::Next() {
   }
 }
 
-bool SABITableIterator::Valid() { return valid_; }
-
 Slice SABITableIterator::key() const {
   assert(valid_);
   return keys_buffer_[buffer_idx_];
