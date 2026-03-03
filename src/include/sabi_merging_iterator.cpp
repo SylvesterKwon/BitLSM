@@ -3,7 +3,6 @@
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
 #include "table/format.h"
-#include <cstdint>
 #include <iostream>
 #include <sabi_iterator.h>
 #include <sabi_query.h>
@@ -17,67 +16,121 @@ SABIMergingIterator::SABIMergingIterator(ColumnFamilyData* cfd,
     : cfd_(cfd), options_(options), query_(query), v_(cfd->current()),
       tc_(cfd->table_cache()), storage_info_(v_->storage_info()),
       icmp_(storage_info_->InternalComparator()),
-      cf_opts_(cfd->GetLatestMutableCFOptions()) {
+      cf_opts_(cfd->GetLatestMutableCFOptions()),
+      heap_(IteratorComparator(icmp_)) {
+  // 1. Protect current version
   v_->Ref();
-  // WIP - 위 맴버 변수중에 level iterator로 위임한것들 있어서 뺄 수 있는건
+
+  // TODO: 위 맴버 변수중에 level iterator로 위임한것들 있어서 뺄 수 있는건
   // 빼야함
 
-  const FileMetaData* file_meta = nullptr;
-  const bool no_io = false;
-  const ReadOptions& read_options = ReadOptions();
-  const FileOptions& file_options = FileOptions();
+  // 2. Add MemTable iterators
+  // TODO: implement this
 
-  uint32_t num_levels = storage_info_->num_levels(); // TODO: usethis
-  const vector<FileMetaData*>& files = storage_info_->LevelFiles(6);
-  assert(!files.empty());
-  file_meta = files[0]; // TODO: SST파일 추출 예시
-  // WIP - 레벨 이터레이터 짜고 다시 돌아오기
-  // version vs superversion 질문하기.
-  // version 쓸때 ref , unref 이런거 컨셉한번보기
-
-  TableCache::TypedHandle* table_handle = nullptr;
-
-  Status s = tc_->FindTable(
-      read_options, file_options, *icmp_, *file_meta, &table_handle, cf_opts_,
-      no_io); // TODO: 뒤에 optional parameter도 의미 파악 필요
-  if (!s.ok())
-    cout << "Debug: fail to find TableReader\n";
-
+  // 3. Add L0 iterators
   TableCache::CacheInterface cache_interface = tc_->get_cache();
-  TableReader* table = cache_interface.Value(table_handle);
-  BlockBasedTable* bbt = static_cast<BlockBasedTable*>(table);
+  const vector<FileMetaData*>& l0_files = storage_info_->LevelFiles(0);
+  for (FileMetaData* meta : l0_files) {
+    TableCache::TypedHandle* table_handle = nullptr;
+    ReadOptions ro;
+    Status s = tc_->FindTable(ro, FileOptions(), *icmp_, *meta, &table_handle,
+                              cf_opts_);
+    if (!s.ok()) {
+      std::cerr << "[SABIMergingIterator]: Failed to load L0 file "
+                << meta->fd.GetNumber() << "\n";
+      continue;
+    }
+    TableReader* table = cache_interface.Value(table_handle);
+    BlockBasedTable* bbt = static_cast<BlockBasedTable*>(table);
+
+    // cout << "[SABIMergingIterator] Added L0 SST iterator\n";
+    ch_iters_.push_back(new SABITableIterator(options_, bbt, query_));
+    l0_handles_.push_back(table_handle);
+  }
+
+  // 4. Add L1+ level iterators
+  for (uint32_t level = 1; level < storage_info_->num_non_empty_levels();
+       ++level) {
+    if (storage_info_->NumLevelFiles(level) > 0) {
+      ch_iters_.push_back(new SABILevelIterator(cfd_, level, options_, query_));
+    }
+  }
 };
 
 SABIMergingIterator::~SABIMergingIterator() {
+  // 1. Free children iterators
+  for (auto* ch : ch_iters_)
+    delete ch;
+  ch_iters_.clear();
+
+  // 2. Release cache for L0 SST
+  for (auto* handle : l0_handles_)
+    tc_->get_cache().Release(handle);
+  l0_handles_.clear();
+
+  // 3. Free current version
   if (v_)
     v_->Unref();
 }
 
 void SABIMergingIterator::SeekToFirst() {
-  // // 1. 힙 초기화 (기존에 들어있던 게 있다면 비움)
-  // while (!heap_.empty()) {
-  //   heap_.pop();
-  // }
-  // current_ = nullptr;
+  // 1. Clear existing heap
+  while (!heap_.empty())
+    heap_.pop();
+  valid_ = false;
 
-  // // 2. 모든 자식 이터레이터 초기화
-  // for (auto* child : children_) {
-  //   child->SeekToFirst();
+  // 2. Propagate SeekToFirst & Register to heap
+  for (auto* child : ch_iters_) {
+    child->SeekToFirst();
+    if (child->Valid())
+      heap_.push(child);
+  }
 
-  //   // 3. 유효한 데이터가 있는 자식만 힙에 등록
-  //   // (데이터가 없거나 쿼리 조건에 맞는 게 하나도 없는 파일은 여기서 탈락함)
-  //   if (child->Valid()) {
-  //     heap_.push(child);
-  //   }
-  // }
-
-  // // 4. 힙의 최상단(가장 작은 Key)을 현재 커서로 설정
-  // if (!heap_.empty()) {
-  //   current_ = heap_.top();
-  // }
+  // 3. Set current iterator
+  if (!heap_.empty()) {
+    valid_ = true;
+  }
 }
 
 void SABIMergingIterator::Next() {
-  // TODO: implement this
-  assert(false);
-};
+  assert(Valid());
+  // cout << "[SABIMergingIterator] Next() Called\n";
+
+  // 1. Forward top iterator in heap
+  SABIInternalIterator* top_iter = heap_.top();
+  heap_.pop();
+  top_iter->Next();
+  if (top_iter->Valid())
+    heap_.push(top_iter);
+
+  // 2. Update valid_
+  valid_ = !heap_.empty();
+}
+
+Slice SABIMergingIterator::key() const {
+  assert(Valid());
+  return heap_.top()->key();
+}
+
+Slice SABIMergingIterator::value() const {
+  assert(Valid());
+  return heap_.top()->value();
+}
+
+void SABIMergingIterator::TEST_DumpValue(Slice input) {
+  for (uint32_t i = 0; i < options_.sk_num; ++i) {
+    if (i)
+      cout << " / ";
+    rocksdb::Slice part;
+    GetLengthPrefixedSlice(&input, &part);
+    if (options_.sk_types[i] == SKType::CATEGORICAL) {
+      cout << part.ToString();
+    } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
+      // Builder에서 문자열 형태로 저장했으므로 문자열로 출력하되, double 해석
+      // 가능 여부 확인
+      string s = part.ToString();
+      cout << s;
+    }
+  }
+  cout << "\n";
+}

@@ -31,7 +31,9 @@ SABILevelIterator::~SABILevelIterator() {
 }
 
 void SABILevelIterator::LoadFile(size_t idx) {
-  cout << "new SST ================================\n";
+  // cout << "[SABILevelIterator] level " << level_ << ", " << idx
+  //      << " th file is loading\n";
+
   // 1. Clean up existing iterator & table handle
   valid_ = false;
   TableCache::CacheInterface cache_interface = tc_->get_cache();

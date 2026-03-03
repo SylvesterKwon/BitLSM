@@ -35,18 +35,6 @@ void test() {
   VersionSet* vs = db_impl->GetVersionSet();
   ColumnFamilySet* cf_set = vs->GetColumnFamilySet();
   ColumnFamilyData* cfd = cf_set->GetColumnFamily("default");
-  Version* v = cfd->current();
-  TableCache* tc = cfd->table_cache();
-  TableCache::CacheInterface cache_interface = tc->get_cache();
-
-  // FindTable 호출을 위한 파라미터들
-  const ReadOptions& read_options = ReadOptions();
-  const FileOptions& file_options = FileOptions();
-  const VersionStorageInfo* storage_info = v->storage_info();
-  const InternalKeyComparator* icmp = storage_info->InternalComparator();
-  const MutableCFOptions& cf_opts = cfd->GetLatestMutableCFOptions();
-  const FileMetaData* file_meta = nullptr;
-  const bool no_io = false;
 
   // 레벨별 SST 분포 확인 코드
   string stats;
@@ -57,17 +45,34 @@ void test() {
   // SABIQuery query({QueryCondition(0, CompareOp::EQUAL, "25"),
   //                  QueryCondition(2, CompareOp::EQUAL, "24")});
   // SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)25.1),
-  //                  QueryCondition(1, CompareOp::LESS_EQUAL, (double)25.2)});
-  SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)25.161031)});
+  //  QueryCondition(1, CompareOp::LESS_EQUAL, (double)25.2)});
+  // L0 point query sample
+  SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)43.877001)});
+  // L5 point query sample
+  // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)77.597704)});
+  // L6 point query sample
+  // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)25.161031)});
+  // Find all query sample
+  // SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)0)});
 
-  SABILevelIterator sli(cfd, 6, sabi_option, query);
-  uint32_t total_cnt=0;
-  for (sli.SeekToFirst(); sli.Valid(); sli.Next()) {
-    cout << sli.key().ToStringView() << ": ";
-    sli.TEST_DumpValue(sli.value());
+  // SABILevelIterator sli(cfd, 6, sabi_option, query);
+  // uint32_t total_cnt = 0;
+  // for (sli.SeekToFirst(); sli.Valid(); sli.Next()) {
+  //   cout << sli.key().ToStringView() << ": ";
+  //   sli.TEST_DumpValue(sli.value());
+  //   total_cnt++;
+  // }
+  // cout << "total: " << total_cnt << "\n";
+
+  SABIMergingIterator smi(cfd, sabi_option, query);
+  uint32_t total_cnt = 0;
+  for (smi.SeekToFirst(); smi.Valid(); smi.Next()) {
+    cout << smi.key().ToStringView() << ": ";
+    smi.TEST_DumpValue(smi.value());
     total_cnt++;
   }
-  cout<<"total: "<<total_cnt<<"\n";
+  cout << "total: " << total_cnt << "\n";
+
   return;
 }
 

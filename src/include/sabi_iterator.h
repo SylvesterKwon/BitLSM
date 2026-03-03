@@ -4,6 +4,7 @@
 
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
+#include <queue>
 #include <sabi_query.h>
 
 namespace bitmap_index {
@@ -27,31 +28,47 @@ class SABILevelIterator;
 class SABITableIterator;
 // class SABIMemTableIterator;
 
+// Iterator comparator for SABIMergingIterator
+struct IteratorComparator {
+  const rocksdb::InternalKeyComparator* icmp_;
+  IteratorComparator(const rocksdb::InternalKeyComparator* icmp = nullptr)
+      : icmp_(icmp) {}
+  bool operator()(const SABIInternalIterator* a,
+                  const SABIInternalIterator* b) const {
+    return icmp_->Compare(a->key(), b->key()) > 0;
+  }
+};
+
 // Merging Iterator for SABI. Internally contains SABITableIterator and
 // MemTableIterator
-class SABIMergingIterator {
+class SABIMergingIterator : public SABIInternalIterator {
 private:
   // Table & query context
   const SABIOptions options_;
   const SABIQuery query_;
-  const rocksdb::ColumnFamilyData* cfd_;
+  rocksdb::ColumnFamilyData* cfd_;
   rocksdb::Version* v_;
   rocksdb::TableCache* tc_;
   const rocksdb::VersionStorageInfo* storage_info_;
   const rocksdb::InternalKeyComparator* icmp_;
   const rocksdb::MutableCFOptions& cf_opts_;
+  std::vector<rocksdb::TableCache::TypedHandle*> l0_handles_; // L0 handles
 
   // Internal status for iterating
-  // -
+  std::vector<SABIInternalIterator*> ch_iters_; // Children iterators
+  std::priority_queue<SABIInternalIterator*, std::vector<SABIInternalIterator*>,
+                      IteratorComparator>
+      heap_;
 
 public:
   SABIMergingIterator(rocksdb::ColumnFamilyData* cfd, SABIOptions options,
                       SABIQuery query);
-  ~SABIMergingIterator();
-  void SeekToFirst();
-  void Next(); // Get Next Data Entries
-  // TODO: Merging iterator는 internal iterator 상속받아야하는가? (internal
-  // 아니고 sabiiterator같은공통개념)
+  ~SABIMergingIterator() override;
+  void SeekToFirst() override;
+  void Next() override;
+  rocksdb::Slice key() const override;
+  rocksdb::Slice value() const override;
+  void TEST_DumpValue(rocksdb::Slice slice); // Inspect Value for debug
 };
 
 // Level Iterator for SST with SABI
@@ -61,7 +78,7 @@ private:
   uint32_t level_;
   const SABIOptions options_;
   const SABIQuery query_;
-  const rocksdb::ColumnFamilyData* cfd_;
+  rocksdb::ColumnFamilyData* cfd_;
   rocksdb::Version* v_;
   rocksdb::TableCache* tc_;
   const rocksdb::VersionStorageInfo* storage_info_;
