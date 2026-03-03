@@ -1,5 +1,7 @@
 #pragma once
 
+#include "rocksdb/slice.h"
+#include "sabi.h"
 #include <cstdint>
 #include <string>
 #include <variant>
@@ -27,6 +29,7 @@ struct QueryCondition {
 // Full query statement for SABI
 struct SABIQuery {
   std::vector<QueryCondition> conditions;
+  bool CheckCondition(rocksdb::Slice value, SABIOptions options);
 };
 
 } // namespace bitmap_index
