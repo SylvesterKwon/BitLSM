@@ -4,10 +4,10 @@
 #include <sabi_query.h>
 
 using namespace std;
-using namespace bitmap_index;
 using namespace rocksdb;
 
-bool SABIQuery::CheckCondition(rocksdb::Slice row_value, SABIOptions options) {
+namespace bitmap_index {
+bool SABIQuery::CheckCondition(rocksdb::Slice slice, SABIOptions options) {
   if (conditions.empty())
     return true;
 
@@ -21,16 +21,16 @@ bool SABIQuery::CheckCondition(rocksdb::Slice row_value, SABIOptions options) {
     // 1. Skip unnecessary sk
     while (cur_sk_idx < target_sk_idx) {
       // If there's no sk left (maybe new kind of sk is queried) return false
-      if (row_value.empty())
+      if (slice.empty())
         return false;
       Slice ignored;
-      GetLengthPrefixedSlice(&row_value, &ignored); // Move pointer
+      GetLengthPrefixedSlice(&slice, &ignored); // Move pointer
       cur_sk_idx++;
     }
 
-    // 2. Read target sk value
+    // 2. Read target sk slice
     Slice target_sk_val_slice;
-    if (!GetLengthPrefixedSlice(&row_value, &target_sk_val_slice))
+    if (!GetLengthPrefixedSlice(&slice, &target_sk_val_slice))
       return false;
     cur_sk_idx++;
     double val_double;
@@ -79,3 +79,4 @@ bool SABIQuery::CheckCondition(rocksdb::Slice row_value, SABIOptions options) {
   }
   return true;
 }
+} // namespace bitmap_index

@@ -1,7 +1,6 @@
 #include "rocksdb/options.h"
 #include "table/block_based/block.h"
 #include "table/format.h"
-#include <charconv>
 #include <cstdint>
 #include <sabi_query.h>
 #define TEST_CACHE_LINE_SIZE                                                   \
@@ -60,7 +59,7 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
   }
 }
 
-SABITableIterator::SABITableIterator(SABIOptions options, BlockBasedTable* bbt,
+SABITableIterator::SABITableIterator(BlockBasedTable* bbt, SABIOptions options,
                                      SABIQuery query)
     : options_(options), bbt_(bbt), query_(std::move(query)),
       index_reader_(bbt_->get_rep()->index_reader.get()),
@@ -269,7 +268,7 @@ void SABITableIterator::LoadNextBlock() {
     // 5. Validate & filter value (two-pointer filtering)
     size_t valid_cursor = 0;
     for (size_t i = 0; i < keys_buffer_.size(); ++i) {
-      if (CheckCondition(values_buffer_[i])) {
+      if (query_.CheckCondition(values_buffer_[i], options_)) {
         if (i != valid_cursor) {
           keys_buffer_[valid_cursor] = std::move(keys_buffer_[i]);
           values_buffer_[valid_cursor] = std::move(values_buffer_[i]);
@@ -287,79 +286,6 @@ void SABITableIterator::LoadNextBlock() {
       return;
     }
   }
-}
-
-bool SABITableIterator::CheckCondition(rocksdb::Slice row_value) {
-  if (query_.conditions.empty())
-    return true;
-
-  uint32_t cur_sk_idx = 0;
-  uint32_t cur_cond_idx = 0;
-
-  // For all query condition
-  while (cur_cond_idx < query_.conditions.size()) {
-    uint32_t target_sk_idx = query_.conditions[cur_cond_idx].sk_idx;
-
-    // 1. Skip unnecessary sk
-    while (cur_sk_idx < target_sk_idx) {
-      // If there's no sk left (maybe new kind of sk is queried) return false
-      if (row_value.empty())
-        return false;
-      Slice ignored;
-      GetLengthPrefixedSlice(&row_value, &ignored); // Move pointer
-      cur_sk_idx++;
-    }
-
-    // 2. Read target sk value
-    Slice target_sk_val_slice;
-    if (!GetLengthPrefixedSlice(&row_value, &target_sk_val_slice))
-      return false;
-    cur_sk_idx++;
-    double val_double;
-    bool parsed = false; // To prevent redundant double parse
-
-    // 3. Check all condition for current sk
-    while (cur_cond_idx < query_.conditions.size() &&
-           query_.conditions[cur_cond_idx].sk_idx == target_sk_idx) {
-      const auto& cond = query_.conditions[cur_cond_idx];
-      bool match = false;
-      const SKType sk_type = options_.sk_types[cond.sk_idx];
-
-      if (sk_type == SKType::CATEGORICAL) {
-        const string& query_val = get<string>(cond.value);
-        int cmp = target_sk_val_slice.compare(query_val);
-        if (cond.op == CompareOp::EQUAL)
-          match = (cmp == 0);
-        else if (cond.op == CompareOp::GREATER_EQUAL)
-          match = (cmp >= 0);
-        else if (cond.op == CompareOp::LESS_EQUAL)
-          match = (cmp <= 0);
-        else
-          assert(false);
-      } else if (sk_type == SKType::CONTINUOUS) {
-        if (!parsed) {
-          auto res = std::from_chars(target_sk_val_slice.data(),
-                                     target_sk_val_slice.data() +
-                                         target_sk_val_slice.size(),
-                                     val_double);
-          if (res.ec != std::errc())
-            return false;
-          parsed = true;
-        }
-        double query_val = std::get<double>(cond.value);
-        if (cond.op == CompareOp::EQUAL)
-          match = (val_double == query_val);
-        else if (cond.op == CompareOp::GREATER_EQUAL)
-          match = (val_double >= query_val);
-        else if (cond.op == CompareOp::LESS_EQUAL)
-          match = (val_double <= query_val);
-      }
-      if (!match)
-        return false;
-      cur_cond_idx++;
-    }
-  }
-  return true;
 }
 
 void SABITableIterator::SeekToFirst() {
@@ -404,8 +330,6 @@ void SABITableIterator::TEST_DumpValue(Slice input) {
     if (options_.sk_types[i] == SKType::CATEGORICAL) {
       std::cout << "(CAT) : " << part.ToString();
     } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
-      // Builder에서 문자열 형태로 저장했으므로 문자열로 출력하되, double 해석
-      // 가능 여부 확인
       std::string s = part.ToString();
       std::cout << "(CONT): " << s;
     }

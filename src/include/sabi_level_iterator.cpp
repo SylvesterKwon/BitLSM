@@ -1,3 +1,4 @@
+#include "db/column_family.h"
 #include "db/version_set.h"
 #include "rocksdb/options.h"
 #include "sabi.h"
@@ -13,13 +14,13 @@ using namespace rocksdb;
 using namespace bitmap_index;
 using namespace roaring;
 
-SABILevelIterator::SABILevelIterator(ColumnFamilyData* cfd, uint32_t level,
+SABILevelIterator::SABILevelIterator(SuperVersion* sv, uint32_t level,
                                      SABIOptions options, SABIQuery query)
-    : cfd_(cfd), level_(level), options_(options), query_(std::move(query)),
-      v_(cfd->current()), tc_(cfd->table_cache()),
+    : sv_(sv), cfd_(sv->cfd), level_(level), options_(options),
+      query_(std::move(query)), v_(sv->current), tc_(cfd_->table_cache()),
       storage_info_(v_->storage_info()),
       icmp_(storage_info_->InternalComparator()),
-      cf_opts_(cfd->GetLatestMutableCFOptions()),
+      cf_opts_(sv_->mutable_cf_options),
       files_(storage_info_->LevelFiles(level_)), cur_file_idx_(0),
       cur_table_handle_(nullptr), cur_sti_(nullptr) {}
 
@@ -70,7 +71,7 @@ void SABILevelIterator::LoadFile(size_t idx) {
   // 4. Prepare new SABITableIterator
   cur_table_handle_ = new_table_handle;
   // TODO: MVCC 를 위한 seqno 전달
-  cur_sti_ = new SABITableIterator(options_, bbt, query_);
+  cur_sti_ = new SABITableIterator(bbt, options_, query_);
 }
 
 void SABILevelIterator::SeekToFirst() {
@@ -140,8 +141,6 @@ void SABILevelIterator::TEST_DumpValue(Slice input) {
     if (options_.sk_types[i] == SKType::CATEGORICAL) {
       cout << part.ToString();
     } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
-      // Builder에서 문자열 형태로 저장했으므로 문자열로 출력하되, double 해석
-      // 가능 여부 확인
       string s = part.ToString();
       cout << s;
     }

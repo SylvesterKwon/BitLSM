@@ -1,5 +1,6 @@
 #pragma once
 
+#include "db/column_family.h"
 #include "db/version_set.h"
 
 #include "sabi.h"
@@ -26,7 +27,7 @@ public:
 class SABIMergingIterator;
 class SABILevelIterator;
 class SABITableIterator;
-// class SABIMemTableIterator;
+class SABIMemTableIterator;
 
 // Iterator comparator for SABIMergingIterator
 struct IteratorComparator {
@@ -46,6 +47,7 @@ private:
   // Table & query context
   const SABIOptions options_;
   const SABIQuery query_;
+  rocksdb::SuperVersion* sv_;
   rocksdb::ColumnFamilyData* cfd_;
   rocksdb::Version* v_;
   rocksdb::TableCache* tc_;
@@ -61,7 +63,7 @@ private:
       heap_;
 
 public:
-  SABIMergingIterator(rocksdb::ColumnFamilyData* cfd, SABIOptions options,
+  SABIMergingIterator(rocksdb::SuperVersion* sv, SABIOptions options,
                       SABIQuery query);
   ~SABIMergingIterator() override;
   void SeekToFirst() override;
@@ -78,6 +80,7 @@ private:
   uint32_t level_;
   const SABIOptions options_;
   const SABIQuery query_;
+  rocksdb::SuperVersion* sv_;
   rocksdb::ColumnFamilyData* cfd_;
   rocksdb::Version* v_;
   rocksdb::TableCache* tc_;
@@ -94,7 +97,7 @@ private:
   void LoadFile(size_t idx); // Open file with index
 
 public:
-  SABILevelIterator(rocksdb::ColumnFamilyData* cfd, uint32_t level,
+  SABILevelIterator(rocksdb::SuperVersion* sv, uint32_t level,
                     SABIOptions options, SABIQuery query);
   ~SABILevelIterator() override;
   void SeekToFirst() override;
@@ -140,13 +143,36 @@ private:
   roaring::Roaring GetBitmapFromQuery(const SABIQuery& query);
   // Fill buffer by loading next data block
   void LoadNextBlock();
-  bool CheckCondition(rocksdb::Slice value);
 
 public:
-  SABITableIterator(SABIOptions options, rocksdb::BlockBasedTable* bbt,
+  SABITableIterator(rocksdb::BlockBasedTable* bbt, SABIOptions options,
                     SABIQuery query);
   void SeekToFirst() override;
   void Next() override; // Get Next Data Entries
+  rocksdb::Slice key() const override;
+  rocksdb::Slice value() const override;
+  void TEST_DumpValue(rocksdb::Slice slice); // Inspect Value for debug
+};
+
+class SABIMemTableIterator : public SABIInternalIterator {
+private:
+  SABIOptions options_;
+  rocksdb::MemTable* mem_;
+  SABIQuery query_;
+
+  // Internal status for iterating
+  rocksdb::Arena arena_;
+  rocksdb::InternalIterator* iter_ = nullptr;
+
+  void FindNextValidEntry();
+
+public:
+  SABIMemTableIterator(rocksdb::MemTable* mem, SABIOptions options,
+                       SABIQuery query);
+  ~SABIMemTableIterator() override;
+
+  void SeekToFirst() override;
+  void Next() override;
   rocksdb::Slice key() const override;
   rocksdb::Slice value() const override;
   void TEST_DumpValue(rocksdb::Slice slice); // Inspect Value for debug

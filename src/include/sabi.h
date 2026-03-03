@@ -18,8 +18,9 @@ enum SKType {
   CONTINUOUS,
 };
 struct SABIOptions {
-  uint32_t sk_num;              // # of secondary keys
-  std::vector<SKType> sk_types; // sk type vector
+  uint32_t sk_num;                    // # of secondary keys
+  std::vector<SKType> sk_types;       // sk type vector
+  rocksdb::SequenceNumber read_seqno; // read sequence number
   double rho; // proportion parameter that determines bitmap budget
 };
 struct BitmapIndex {

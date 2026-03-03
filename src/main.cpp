@@ -1,6 +1,7 @@
 #include <cstring>
 #include <iostream>
 
+#include "db/column_family.h"
 #include "db/db_impl/db_impl.h"
 #include "include/utils.h"
 #include "rocksdb/db.h"
@@ -64,7 +65,12 @@ void test() {
   // }
   // cout << "total: " << total_cnt << "\n";
 
-  SABIMergingIterator smi(cfd, sabi_option, query);
+  // TODO: Query 전달하는 최상위 class 작업할시 seqno 확정해줘야함
+  // 지금은 임시로 생성
+  // 이하 getreferencedsuperversion 도 wrapper에 포함되어야함
+  sabi_option.read_seqno = db_impl->GetLatestSequenceNumber();
+  SuperVersion* sv(cfd->GetReferencedSuperVersion(db_impl));
+  SABIMergingIterator smi(sv, sabi_option, query);
   uint32_t total_cnt = 0;
   for (smi.SeekToFirst(); smi.Valid(); smi.Next()) {
     cout << smi.key().ToStringView() << ": ";
@@ -72,6 +78,15 @@ void test() {
     total_cnt++;
   }
   cout << "total: " << total_cnt << "\n";
+  // TODO: 이터레이터도 delete해야하는거 아닌가? 왜 delete가 안된다고하지?
+
+  // TODO: sv unref에 대한 책임도 바깥 레이어에서 가져감. 아래와 같이 수행할것
+  if (sv->Unref()) {
+    db_impl->mutex()->Lock();
+    sv->Cleanup();
+    db_impl->mutex()->Unlock();
+    delete sv;
+  }
 
   return;
 }
