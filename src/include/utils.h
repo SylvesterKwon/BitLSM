@@ -29,11 +29,12 @@ inline string random_string(size_t length) {
 
 // Creates initial key-value pairs
 inline void create_kvp(DB* db, uint64_t n, uint32_t sk_num,
-                       uint32_t payload_size = 32) {
+                       uint32_t payload_size = 32, bool debug = false) {
   chrono::_V2::system_clock::time_point start_time, end_time;
   chrono::milliseconds ms_duration;
 
-  cout << "creating " << n << " kvps...\n";
+  if (debug)
+    cout << "creating " << n << " kvps...\n";
   const uint64_t batch_size = 1e6;
   uint64_t total_batch = (n + batch_size - 1) / batch_size;
   uint64_t auto_increment = 0;
@@ -73,20 +74,25 @@ inline void create_kvp(DB* db, uint64_t n, uint32_t sk_num,
       batch.Put(k, v);
     db->Write(wo, &batch);
 
-    cout << "[BATCH " << setw(6) << cur_batch << " / " << setw(6) << total_batch
-         << "] ";
-    cout << "putted: " << auto_increment + 1 << " kvps, elapsed: "
+    if (debug) {
+
+      cout << "[BATCH " << setw(6) << cur_batch << " / " << setw(6)
+           << total_batch << "] ";
+      cout << "putted: " << auto_increment + 1 << " kvps, elapsed: "
+           << chrono::duration_cast<chrono::milliseconds>(
+                  chrono::high_resolution_clock::now() - start_time)
+                  .count()
+           << "ms \n";
+    }
+  }
+  if (debug) {
+
+    cout << "created " << n << "kvps. (total:"
          << chrono::duration_cast<chrono::milliseconds>(
                 chrono::high_resolution_clock::now() - start_time)
                 .count()
-         << "ms \n";
+         << "ms elpased)\n";
   }
-
-  cout << "created " << n << "kvps. (total:"
-       << chrono::duration_cast<chrono::milliseconds>(
-              chrono::high_resolution_clock::now() - start_time)
-              .count()
-       << "ms elpased)\n";
 }
 
 // SST 관찰 코드 (unused)
