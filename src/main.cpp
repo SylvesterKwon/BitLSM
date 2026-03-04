@@ -31,7 +31,6 @@ void test() {
   // db->Flush(flush_opts);
   // return;
 
-  // read test
   DBImpl* db_impl = static_cast<DBImpl*>(db);
   VersionSet* vs = db_impl->GetVersionSet();
   ColumnFamilySet* cf_set = vs->GetColumnFamilySet();
@@ -48,11 +47,11 @@ void test() {
   // SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)25.1),
   //  QueryCondition(1, CompareOp::LESS_EQUAL, (double)25.2)});
   // L0 point query sample
-  SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)43.877001)});
+  // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)43.877001)});
   // L5 point query sample
   // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)77.597704)});
   // L6 point query sample
-  // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)25.161031)});
+  SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)25.161031)});
   // Find all query sample
   // SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)0)});
 
@@ -68,10 +67,12 @@ void test() {
   // TODO: Query 전달하는 최상위 class 작업할시 seqno 확정해줘야함
   // 지금은 임시로 생성
   // 이하 getreferencedsuperversion 도 wrapper에 포함되어야함
+  uint32_t total_cnt = 0;
   sabi_option.read_seqno = db_impl->GetLatestSequenceNumber();
   SuperVersion* sv(cfd->GetReferencedSuperVersion(db_impl));
+
+  // Test: Merging iterator
   SABIMergingIterator smi(sv, sabi_option, query);
-  uint32_t total_cnt = 0;
   for (smi.SeekToFirst(); smi.Valid(); smi.Next()) {
     cout << smi.key().ToStringView() << ": ";
     smi.TEST_DumpValue(smi.value());

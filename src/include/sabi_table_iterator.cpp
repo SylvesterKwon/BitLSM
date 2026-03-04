@@ -266,8 +266,27 @@ void SABITableIterator::LoadNextBlock() {
                                  values_buffer_);
 
     // 5. Validate & filter value (two-pointer filtering)
+    Status s;
     size_t valid_cursor = 0;
     for (size_t i = 0; i < keys_buffer_.size(); ++i) {
+      // 5-1. Skip corrupted key
+      ParsedInternalKey ikey;
+      s = rocksdb::ParseInternalKey(keys_buffer_[i], &ikey, false);
+      if (!s.ok())
+        continue;
+
+      // 5-2. MVCC filtering
+      if (ikey.sequence > options_.read_seqno) {
+        continue;
+      }
+
+      // 5-3. Filter tombstone
+      if (ikey.type == rocksdb::kTypeDeletion ||
+          ikey.type == rocksdb::kTypeSingleDeletion) {
+        continue;
+      }
+
+      // 5-4. Filter query condition
       if (query_.CheckCondition(values_buffer_[i], options_)) {
         if (i != valid_cursor) {
           keys_buffer_[valid_cursor] = std::move(keys_buffer_[i]);

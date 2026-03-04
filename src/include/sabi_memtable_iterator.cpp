@@ -38,7 +38,7 @@ void SABIMemTableIterator::FindNextValidEntry() {
       continue;
     }
 
-    // 4 Filter query condition
+    // 4. Filter query condition
     if (query_.CheckCondition(iter_->value(), options_)) {
       valid_ = true;
       return;

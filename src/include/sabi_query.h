@@ -29,6 +29,7 @@ struct QueryCondition {
 // Full query statement for SABI
 struct SABIQuery {
   std::vector<QueryCondition> conditions;
+  // Validate given slice with given query condition & options
   bool CheckCondition(rocksdb::Slice slice, SABIOptions options);
 };
 
