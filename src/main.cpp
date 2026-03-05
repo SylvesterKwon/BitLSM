@@ -24,9 +24,9 @@ Status s;
 SABIOptions sabi_option;
 
 void test() {
-  create_kvp(db, 1e7, 16, 32, true);
-  FlushOptions flush_opts;
-  db->Flush(flush_opts);
+  create_kvp(db, 1e7, 16, 32, 42, true);
+  // FlushOptions flush_opts;
+  // db->Flush(flush_opts);
   return;
 
   // 레벨별 SST 분포 확인 코드
@@ -35,28 +35,24 @@ void test() {
   cout << stats << "\n";
 
   // query samples
-  // SABIQuery query({QueryCondition(0, CompareOp::EQUAL, "25"),
-  //                  QueryCondition(2, CompareOp::EQUAL, "24")});
+  SABIQuery query(
+      {QueryCondition(1, CompareOp::GREATER_EQUAL, (double)24.00001),
+       QueryCondition(1, CompareOp::LESS_EQUAL, (double)24.00002)});
   // SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)25.1),
   //  QueryCondition(1, CompareOp::LESS_EQUAL, (double)25.2)});
-  // L0 point query sample
-  // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)43.877001)});
-  // L5 point query sample
-  // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)77.597704)});
-  // L6 point query sample
-  // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)25.161031)});
+  // Point query sample
+  // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)24.016234)});
   // Find all query sample
-  SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)0)});
+  // SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)0)});
   SABIIterator si(db, cf_handles[0], sabi_option, query);
 
   uint32_t total_cnt = 0;
   for (si.SeekToFirst(); si.Valid(); si.Next()) {
     cout << si.key().ToStringView() << ": ";
-    // si.TEST_DumpValue(si.value());
+    si.TEST_DumpValue(si.value());
     total_cnt++;
   }
   cout << "total: " << total_cnt << "\n";
-
   return;
 }
 
@@ -84,6 +80,8 @@ int main(const int argc, char* argv[]) {
   const vector<ColumnFamilyDescriptor> column_families(
       {ColumnFamilyDescriptor(kDefaultColumnFamilyName, options)});
   s = DB::Open(options, db_path, column_families, &cf_handles, &db);
+  if (!s.ok())
+    cerr << "Failed to open DB: " << s.ToString() << "\n";
   assert(s.ok());
 
   test();

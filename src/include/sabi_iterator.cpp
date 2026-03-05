@@ -1,6 +1,7 @@
 #include "rocksdb/db.h"
 #include "rocksdb/snapshot.h"
 #include <cstdint>
+#include <iostream>
 #include <sabi_iterator.h>
 
 using namespace std;
@@ -95,6 +96,8 @@ void SABIIterator::FetchNextBatch(uint32_t batch_size) {
         continue;
 
       // 5-2. Value validation
+      // TODO(TASK-111): 값 인코딩 개선해서 CheckCondition 다 수행하는게 아니라
+      // seqno 비슷하게 작은 부분만 대조하면 되도록 수정하기.
       if (query_.CheckCondition(pin_values[i], options_)) {
         // 5-3. Move key/value to validated batch if valid entry
         batch_keys_.push_back(std::move(candidate_keys[i]));
@@ -138,4 +141,20 @@ Slice SABIIterator::key() const {
 Slice SABIIterator::value() const {
   assert(Valid());
   return batch_values_[batch_cur_idx_];
+}
+
+void SABIIterator::TEST_DumpValue(Slice input) {
+  for (uint32_t i = 0; i < options_.sk_num; ++i) {
+    if (i)
+      cout << " / ";
+    rocksdb::Slice part;
+    GetLengthPrefixedSlice(&input, &part);
+    if (options_.sk_types[i] == SKType::CATEGORICAL) {
+      cout << part.ToString();
+    } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
+      string s = part.ToString();
+      cout << s;
+    }
+  }
+  cout << "\n";
 }

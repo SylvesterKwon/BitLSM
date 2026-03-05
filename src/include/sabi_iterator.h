@@ -63,6 +63,7 @@ public:
   void Next() override;
   rocksdb::Slice key() const override;
   rocksdb::Slice value() const override;
+  void TEST_DumpValue(rocksdb::Slice slice); // Inspect Value for debug
 };
 
 // Iterator comparator for SABIMergingIterator
