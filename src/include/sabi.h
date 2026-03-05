@@ -36,7 +36,7 @@ struct BitmapIndex {
       binning_policy;
 };
 class SABIBuilder;
-class SABIIterator;
+class SABIUDIIterator;
 class SABIReader;
 class SABIFactory;
 
@@ -80,17 +80,10 @@ public:
   void Dump();
 };
 
-// Not used. Using SABITableIterator Instead.
-class SABIIterator : public rocksdb::UserDefinedIndexIterator {
-private:
-  const SABIReader* reader_;
-  const rocksdb::RangeOpt* range_;
-  std::string qc; // TODO: support complex query condition
-  std::vector<rocksdb::UserDefinedIndexBuilder::BlockHandle>
-      block_handles_to_visit_;
-
+// Not used. It's only for implementing UDI interface
+class SABIUDIIterator : public rocksdb::UserDefinedIndexIterator {
 public:
-  SABIIterator(const SABIReader* reader);
+  SABIUDIIterator(const SABIReader* reader);
   void Prepare(const rocksdb::ScanOptions scan_opts[], size_t num_opts);
   rocksdb::Status SeekAndGetResult(const rocksdb::Slice& target,
                                    rocksdb::IterateResult* result);
@@ -99,8 +92,6 @@ public:
 };
 
 class SABIReader : public rocksdb::UserDefinedIndexReader {
-  friend class SABIIterator;
-
 private:
   SABIOptions options_;
   using AlignedPtr = std::unique_ptr<char[], void (*)(void*)>;

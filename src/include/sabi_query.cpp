@@ -7,7 +7,8 @@ using namespace std;
 using namespace rocksdb;
 
 namespace bitmap_index {
-bool SABIQuery::CheckCondition(rocksdb::Slice slice, SABIOptions options) {
+bool SABIQuery::CheckCondition(rocksdb::Slice slice,
+                               const SABIOptions& options) {
   if (conditions.empty())
     return true;
 

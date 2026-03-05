@@ -1,10 +1,12 @@
 #pragma once
 
 #include "db/column_family.h"
+#include "db/db_impl/db_impl.h"
 #include "db/version_set.h"
 
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
+#include <cstdint>
 #include <queue>
 #include <sabi_query.h>
 
@@ -24,10 +26,44 @@ public:
   virtual rocksdb::Slice value() const = 0;
 };
 
+class SABIIterator;
 class SABIMergingIterator;
 class SABILevelIterator;
 class SABITableIterator;
 class SABIMemTableIterator;
+
+// Iterator for SABI
+class SABIIterator : public SABIInternalIterator {
+private:
+  rocksdb::DB* db_;
+  rocksdb::DBImpl* db_impl_;
+  rocksdb::ColumnFamilyHandle* cfh_; // To use multiget API
+  const rocksdb::Snapshot* snapshot_;
+  rocksdb::ColumnFamilyData* cfd_;
+  rocksdb::SuperVersion* sv_;
+
+  SABIMergingIterator* smi_;
+  SABIOptions options_;
+  SABIQuery query_;
+
+  // batch
+  std::vector<std::string> batch_keys_;
+  std::vector<std::string> batch_values_;
+  uint32_t batch_cur_idx_ = 0;
+
+  std::string latest_user_key_added;
+
+  void FetchNextBatch(uint32_t batch_size);
+
+public:
+  SABIIterator(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* cfh,
+               SABIOptions options, SABIQuery query);
+  ~SABIIterator() override;
+  void SeekToFirst() override;
+  void Next() override;
+  rocksdb::Slice key() const override;
+  rocksdb::Slice value() const override;
+};
 
 // Iterator comparator for SABIMergingIterator
 struct IteratorComparator {

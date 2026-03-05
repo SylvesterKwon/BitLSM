@@ -1,3 +1,4 @@
+#include "table/format.h"
 #include "util/coding.h"
 #include "util/coding_lean.h"
 #include <cstdint>
@@ -11,64 +12,25 @@ using namespace std;
 using namespace rocksdb;
 using namespace roaring;
 
-// TODO: Block random iteration 로직 가져와서 통합하기
 namespace bitmap_index {
 
 // ========================================================================
-// SABIIterator Implementation
+// SABIUDIIterator Implementation
 // ========================================================================
 
-SABIIterator::SABIIterator(const SABIReader* reader) : reader_(reader) {}
+SABIUDIIterator::SABIUDIIterator(const SABIReader* reader) {}
 
-void SABIIterator::Prepare(const ScanOptions scan_opts[], size_t num_opts) {
-  // 1. ScanOption 확인
-  assert(num_opts == 1 && scan_opts[0].property_bag);
-  range_ = &scan_opts[0].range;
-  auto it = scan_opts[0].property_bag->find("qc");
-  assert(it != scan_opts[0].property_bag->end());
-  qc = it->second;
-
-  // 2. bitset filtering 사용하여 방문 필요한 key 정리
-  // TODO: 이후에 복합 쿼리 들어오면 이곳에서 필요한 모든 전처리 (bitset
-  // 조합등) 진행할 것
-
-  // TODO(TASK-44): 임시, 단일 항목 필터링 테스트용 코드. 추후에 대상 bitmap
-  // 계산로직 작성 필요
-  uint32_t using_idx = stoul(qc);
-  const Roaring& r = reader_->bitmap_index.bitmaps[using_idx];
-  // WIP - 쿼리 대상 비트맵 포인터를 private member로 밀어넣기, Seek
-  // / next시 roaring 이터레이터 위치 조정하도록 해야함. 포인터 소유권은
-  // SABIIterator가 가지도록 구현해야함
-
-  // 3. Block prefetch
-  // TODO(TASK-46): Block prefetch, 완성된 쿼리 비트맵으로 탐색필요한 data
-  // block prefetch 해올 수 있을지?
+void SABIUDIIterator::Prepare(const ScanOptions scan_opts[], size_t num_opts) {
 };
 
-Status SABIIterator::SeekAndGetResult(const Slice& target,
-                                      IterateResult* result) {
-  // TODO: implement this
-  // WIP - 기존 블록 인덱스 어떻게 쓸 수 있을지?
-  // 1. 반환하는 행의 SST-local idx 도 반환필요
-  // 2. (optional) target 이상의 key를 가지면서도 비트맵 필터에 의해
-  // 방문해야하는 인덱스 엔트리중 가장 작은 인덱스 엔트리 방문 필요
+Status SABIUDIIterator::SeekAndGetResult(const Slice& target,
+                                         IterateResult* result) {
   return Status::OK();
 };
 
-Status SABIIterator::NextAndGetResult(IterateResult* result) {
-  // TODO: implement this
-  cout << "NextAndGetResult called\n";
-  return Status::OK();
-};
+Status SABIUDIIterator::NextAndGetResult(IterateResult* result) {};
 
-UserDefinedIndexBuilder::BlockHandle SABIIterator::value() {
-  // TODO: implement this
-  // TODO: 테스트코드에서 훔쳐옴.. 로직 확인필요
-  // UserDefinedIndexBuilder::BlockHandle handle{0, 0};
-  // handle.offset = iter_->second.first.offset;
-  // handle.size = iter_->second.first.size;
-  // return handle;
-};
+UserDefinedIndexBuilder::BlockHandle SABIUDIIterator::value() {};
 
 // ========================================================================
 // SABIReader Implementation
@@ -181,7 +143,7 @@ SABIReader::SABIReader(Slice& index_block, SABIOptions options)
 
 unique_ptr<UserDefinedIndexIterator>
 SABIReader::NewIterator(const ReadOptions& read_options) {
-  return make_unique<SABIIterator>(this);
+  return make_unique<SABIUDIIterator>(this);
 };
 
 // The memory usage of the index, including the size of the raw contents and

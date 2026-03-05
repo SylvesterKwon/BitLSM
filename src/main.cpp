@@ -1,8 +1,3 @@
-#include <cstring>
-#include <iostream>
-
-#include "db/column_family.h"
-#include "db/db_impl/db_impl.h"
 #include "include/utils.h"
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
@@ -10,6 +5,8 @@
 #include "sabi.h"
 #include "sabi_iterator.h"
 #include "table/block_based/block_based_table_reader.h"
+#include <cstring>
+#include <iostream>
 
 using namespace std;
 using namespace rocksdb;
@@ -21,20 +18,16 @@ const string db_path = "/scratch/data/user_defined_index_test";
 
 // GLOBAL VAR
 DB* db;
+vector<ColumnFamilyHandle*> cf_handles;
 Options options;
 Status s;
 SABIOptions sabi_option;
 
 void test() {
-  // create_kvp(db, 1e7, 16);
-  // FlushOptions flush_opts;
-  // db->Flush(flush_opts);
-  // return;
-
-  DBImpl* db_impl = static_cast<DBImpl*>(db);
-  VersionSet* vs = db_impl->GetVersionSet();
-  ColumnFamilySet* cf_set = vs->GetColumnFamilySet();
-  ColumnFamilyData* cfd = cf_set->GetColumnFamily("default");
+  create_kvp(db, 1e7, 16, 32, true);
+  FlushOptions flush_opts;
+  db->Flush(flush_opts);
+  return;
 
   // 레벨별 SST 분포 확인 코드
   string stats;
@@ -51,43 +44,18 @@ void test() {
   // L5 point query sample
   // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)77.597704)});
   // L6 point query sample
-  SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)25.161031)});
+  // SABIQuery query({QueryCondition(1, CompareOp::EQUAL, (double)25.161031)});
   // Find all query sample
-  // SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)0)});
+  SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)0)});
+  SABIIterator si(db, cf_handles[0], sabi_option, query);
 
-  // SABILevelIterator sli(cfd, 6, sabi_option, query);
-  // uint32_t total_cnt = 0;
-  // for (sli.SeekToFirst(); sli.Valid(); sli.Next()) {
-  //   cout << sli.key().ToStringView() << ": ";
-  //   sli.TEST_DumpValue(sli.value());
-  //   total_cnt++;
-  // }
-  // cout << "total: " << total_cnt << "\n";
-
-  // TODO: Query 전달하는 최상위 class 작업할시 seqno 확정해줘야함
-  // 지금은 임시로 생성
-  // 이하 getreferencedsuperversion 도 wrapper에 포함되어야함
   uint32_t total_cnt = 0;
-  sabi_option.read_seqno = db_impl->GetLatestSequenceNumber();
-  SuperVersion* sv(cfd->GetReferencedSuperVersion(db_impl));
-
-  // Test: Merging iterator
-  SABIMergingIterator smi(sv, sabi_option, query);
-  for (smi.SeekToFirst(); smi.Valid(); smi.Next()) {
-    cout << smi.key().ToStringView() << ": ";
-    smi.TEST_DumpValue(smi.value());
+  for (si.SeekToFirst(); si.Valid(); si.Next()) {
+    cout << si.key().ToStringView() << ": ";
+    // si.TEST_DumpValue(si.value());
     total_cnt++;
   }
   cout << "total: " << total_cnt << "\n";
-  // TODO: 이터레이터도 delete해야하는거 아닌가? 왜 delete가 안된다고하지?
-
-  // TODO: sv unref에 대한 책임도 바깥 레이어에서 가져감. 아래와 같이 수행할것
-  if (sv->Unref()) {
-    db_impl->mutex()->Lock();
-    sv->Cleanup();
-    db_impl->mutex()->Unlock();
-    delete sv;
-  }
 
   return;
 }
@@ -113,14 +81,18 @@ void configure_rocksdb_option() {
 int main(const int argc, char* argv[]) {
   // configure DB
   configure_rocksdb_option();
-  s = DB::Open(options, db_path, &db);
+  const vector<ColumnFamilyDescriptor> column_families(
+      {ColumnFamilyDescriptor(kDefaultColumnFamilyName, options)});
+  s = DB::Open(options, db_path, column_families, &cf_handles, &db);
   assert(s.ok());
 
-  ////////////////////////////////////////////////////////////////////////////////////////////////////
   test();
-  ////////////////////////////////////////////////////////////////////////////////////////////////////
 
   // close DB gracefully
+  for (auto handle : cf_handles) {
+    db->DestroyColumnFamilyHandle(handle);
+  }
+  cf_handles.clear();
   WaitForCompactOptions wait_for_compact_options = WaitForCompactOptions();
   wait_for_compact_options.close_db = true;
   s = db->WaitForCompact(wait_for_compact_options);

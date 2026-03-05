@@ -30,7 +30,7 @@ struct QueryCondition {
 struct SABIQuery {
   std::vector<QueryCondition> conditions;
   // Validate given slice with given query condition & options
-  bool CheckCondition(rocksdb::Slice slice, SABIOptions options);
+  bool CheckCondition(rocksdb::Slice slice, const SABIOptions& options);
 };
 
 } // namespace bitmap_index

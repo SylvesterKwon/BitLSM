@@ -12,7 +12,7 @@ TODO: rocksdb 브랜치 설정 하도록 안내
 TODO: RoaringBitmap 의존성 소개
 
 ### 1. 의존성 설치
-### 1-1. RocsDB dependency
+### 1-1. RocksDB dependency
 ```bash
 $ apt-get update && apt-get install -y \
 libsnappy-dev \ 
