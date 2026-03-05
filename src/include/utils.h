@@ -29,7 +29,9 @@ inline string random_string(size_t length) {
 
 // Creates initial key-value pairs
 inline void create_kvp(DB* db, uint64_t n, uint32_t sk_num,
-                       uint32_t payload_size = 32, bool debug = false) {
+                       uint32_t payload_size = 32, uint32_t seed = 42,
+                       bool debug = false) {
+  srand(seed);
   chrono::_V2::system_clock::time_point start_time, end_time;
   chrono::milliseconds ms_duration;
 
