@@ -24,20 +24,19 @@ Status s;
 SABIOptions sabi_option;
 
 void test() {
-  create_kvp(db, 1e7, 16, 32, 42, true);
+  // create_kvp(db, 1e7, 16, 32, 42, true);
   // FlushOptions flush_opts;
   // db->Flush(flush_opts);
-  return;
+  // return;
 
   // 레벨별 SST 분포 확인 코드
-  string stats;
-  db->GetProperty("rocksdb.levelstats", &stats);
-  cout << stats << "\n";
+  // string stats;
+  // db->GetProperty("rocksdb.levelstats", &stats);
+  // cout << stats << "\n";
 
   // query samples
-  SABIQuery query(
-      {QueryCondition(1, CompareOp::GREATER_EQUAL, (double)24.00001),
-       QueryCondition(1, CompareOp::LESS_EQUAL, (double)24.00002)});
+  SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)24.0001),
+                   QueryCondition(1, CompareOp::LESS_EQUAL, (double)24.0002)});
   // SABIQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)25.1),
   //  QueryCondition(1, CompareOp::LESS_EQUAL, (double)25.2)});
   // Point query sample

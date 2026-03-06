@@ -97,6 +97,40 @@ inline void create_kvp(DB* db, uint64_t n, uint32_t sk_num,
   }
 }
 
+// Creates a single key-value pair with a specific key
+inline void create_single_kvp(DB* db, const string& key, uint32_t sk_num,
+                              uint32_t payload_size = 32, uint32_t seed = 42,
+                              bool debug = false) {
+  srand(seed);
+
+  string value;
+  value.clear();
+
+  // 1. Create value
+  for (uint32_t j = 0; j < sk_num; ++j) {
+    string sk_val;
+    if (j % 2 == 0) {
+      sk_val = to_string(rand() % 100); // Categorical
+    } else {
+      sk_val = to_string((double)rand() / RAND_MAX * 100.0); // Continuous
+    }
+    PutLengthPrefixedSlice(&value, Slice(sk_val));
+  }
+
+  // 2. Payload
+  PutLengthPrefixedSlice(&value, Slice(random_string(payload_size)));
+
+  // 3. RocksDB Put
+  WriteOptions wo;
+  Status s = db->Put(wo, key, value);
+  assert(s.ok());
+
+  if (debug) {
+    cout << "  [DEBUG] Putted single KVP -> Key: " << key
+         << " (Value size: " << value.size() << " bytes)\n";
+  }
+}
+
 // SST 관찰 코드 (unused)
 inline void inspect_sst(const string& sst_file_path) {
   Options options;
