@@ -1,8 +1,8 @@
 #include "rocksdb/options.h"
 #include "table/block_based/block.h"
 #include "table/format.h"
+#include <bit_lsm_query.h>
 #include <cstdint>
-#include <sabi_query.h>
 #define TEST_CACHE_LINE_SIZE                                                   \
   64 // To avoid compile error when using roaring.hh &
      // block_based_table_reader.h together
@@ -10,12 +10,12 @@
 #include "roaring.hh"
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
+#include <bit_lsm_iterator.h>
 #include <iostream>
-#include <sabi_iterator.h>
 
 using namespace std;
 using namespace rocksdb;
-using namespace bitmap_index;
+using namespace bit_lsm;
 using namespace roaring;
 
 void SABITableIterator::GetAllByIndexesFromDataBlock(
@@ -59,8 +59,8 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
   }
 }
 
-SABITableIterator::SABITableIterator(BlockBasedTable* bbt, SABIOptions options,
-                                     SABIQuery query)
+SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
+                                     BitLSMOptions options, BitLSMQuery query)
     : options_(options), bbt_(bbt), query_(std::move(query)),
       index_reader_(bbt_->get_rep()->index_reader.get()),
       sabi_reader_(static_cast<SABIReader*>(index_reader_->GetUDIReader())),
@@ -112,7 +112,8 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt, SABIOptions options,
   //      << ")\n";
 }
 
-roaring::Roaring SABITableIterator::GetBitmapFromQuery(const SABIQuery& query) {
+roaring::Roaring
+SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
   roaring::Roaring result;
   if (query.conditions.empty())
     return result;

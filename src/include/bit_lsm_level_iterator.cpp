@@ -4,18 +4,19 @@
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
 #include "table/format.h"
+#include <bit_lsm_iterator.h>
+#include <bit_lsm_query.h>
 #include <cstdint>
 #include <iostream>
-#include <sabi_iterator.h>
-#include <sabi_query.h>
 
 using namespace std;
 using namespace rocksdb;
-using namespace bitmap_index;
+using namespace bit_lsm;
 using namespace roaring;
 
-SABILevelIterator::SABILevelIterator(SuperVersion* sv, uint32_t level,
-                                     SABIOptions options, SABIQuery query)
+BitLSMLevelIterator::BitLSMLevelIterator(SuperVersion* sv, uint32_t level,
+                                         BitLSMOptions options,
+                                         BitLSMQuery query)
     : sv_(sv), cfd_(sv->cfd), level_(level), options_(options),
       query_(std::move(query)), v_(sv->current), tc_(cfd_->table_cache()),
       storage_info_(v_->storage_info()),
@@ -24,15 +25,15 @@ SABILevelIterator::SABILevelIterator(SuperVersion* sv, uint32_t level,
       files_(storage_info_->LevelFiles(level_)), cur_file_idx_(0),
       cur_table_handle_(nullptr), cur_sti_(nullptr) {}
 
-SABILevelIterator::~SABILevelIterator() {
+BitLSMLevelIterator::~BitLSMLevelIterator() {
   if (cur_sti_)
     delete cur_sti_;
   if (cur_table_handle_)
     tc_->get_cache().Release(cur_table_handle_);
 }
 
-void SABILevelIterator::LoadFile(size_t idx) {
-  // cout << "[SABILevelIterator] level " << level_ << ", " << idx
+void BitLSMLevelIterator::LoadFile(size_t idx) {
+  // cout << "[BitLSMLevelIterator] level " << level_ << ", " << idx
   //      << " th file is loading\n";
 
   // 1. Clean up existing iterator & table handle
@@ -74,7 +75,7 @@ void SABILevelIterator::LoadFile(size_t idx) {
   cur_sti_ = new SABITableIterator(bbt, options_, query_);
 }
 
-void SABILevelIterator::SeekToFirst() {
+void BitLSMLevelIterator::SeekToFirst() {
   // 1. Set file cursor to zero
   cur_file_idx_ = 0;
 
@@ -95,7 +96,7 @@ void SABILevelIterator::SeekToFirst() {
   // If there's no valid data at all, valid_ is set to false
 }
 
-void SABILevelIterator::Next() {
+void BitLSMLevelIterator::Next() {
   // 1. Check current validity
   assert(Valid());
 
@@ -122,17 +123,17 @@ void SABILevelIterator::Next() {
   }
 }
 
-Slice SABILevelIterator::key() const {
+Slice BitLSMLevelIterator::key() const {
   assert(Valid());
   return cur_sti_->key();
 }
 
-Slice SABILevelIterator::value() const {
+Slice BitLSMLevelIterator::value() const {
   assert(Valid());
   return cur_sti_->value();
 }
 
-void SABILevelIterator::TEST_DumpValue(Slice input) {
+void BitLSMLevelIterator::TEST_DumpValue(Slice input) {
   for (uint32_t i = 0; i < options_.sk_num; ++i) {
     if (i)
       cout << " / ";

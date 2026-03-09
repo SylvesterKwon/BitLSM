@@ -7,7 +7,7 @@
 #include <variant>
 #include <vector>
 
-namespace bitmap_index {
+namespace bit_lsm {
 
 // Compare Operator
 enum class CompareOp {
@@ -26,11 +26,11 @@ struct QueryCondition {
       value; // double for continuous, string for categorical
 };
 
-// Full query statement for SABI
-struct SABIQuery {
+// Full query statement for BitLSM
+struct BitLSMQuery {
   std::vector<QueryCondition> conditions;
   // Validate given slice with given query condition & options
-  bool CheckCondition(rocksdb::Slice slice, const SABIOptions& options);
+  bool CheckCondition(rocksdb::Slice slice, const BitLSMOptions& options);
 };
 
-} // namespace bitmap_index
+} // namespace bit_lsm

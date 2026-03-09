@@ -1,15 +1,15 @@
 #include "rocksdb/db.h"
 #include "rocksdb/snapshot.h"
+#include <bit_lsm_iterator.h>
 #include <cstdint>
 #include <iostream>
-#include <sabi_iterator.h>
 
 using namespace std;
 using namespace rocksdb;
-using namespace bitmap_index;
+using namespace bit_lsm;
 
-SABIIterator::SABIIterator(DB* db, ColumnFamilyHandle* cfh, SABIOptions options,
-                           SABIQuery query)
+BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
+                               BitLSMOptions options, BitLSMQuery query)
     : db_(db), db_impl_(static_cast<DBImpl*>(db_)), cfh_(cfh),
       // 1. Create snapshot
       snapshot_(db_->GetSnapshot()),
@@ -22,11 +22,11 @@ SABIIterator::SABIIterator(DB* db, ColumnFamilyHandle* cfh, SABIOptions options,
   options_.read_seqno = snapshot_->GetSequenceNumber();
 
   // 4. Create merging iterator
-  smi_ = new SABIMergingIterator(sv_, options_, query_);
+  smi_ = new BitLSMMergingIterator(sv_, options_, query_);
 }
 
-SABIIterator::~SABIIterator() {
-  // 1. Free SABIMergingIterator
+BitLSMIterator::~BitLSMIterator() {
+  // 1. Free BitLSMMergingIterator
   delete smi_;
 
   // 2. Clean up super version
@@ -42,7 +42,7 @@ SABIIterator::~SABIIterator() {
     db_->ReleaseSnapshot(snapshot_);
 }
 
-void SABIIterator::FetchNextBatch(uint32_t batch_size) {
+void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
   Status s;
 
   // 1. Clean current batch
@@ -112,7 +112,7 @@ void SABIIterator::FetchNextBatch(uint32_t batch_size) {
     valid_ = true;
 }
 
-void SABIIterator::SeekToFirst() {
+void BitLSMIterator::SeekToFirst() {
   // 1. SeekToFirst internal iterator
   smi_->SeekToFirst();
   latest_user_key_added.clear();
@@ -121,7 +121,7 @@ void SABIIterator::SeekToFirst() {
   FetchNextBatch(1024); // TODO: parameterize it.
 }
 
-void SABIIterator::Next() {
+void BitLSMIterator::Next() {
   assert(Valid());
 
   // 1. Forward batch cursor
@@ -133,17 +133,17 @@ void SABIIterator::Next() {
   }
 }
 
-Slice SABIIterator::key() const {
+Slice BitLSMIterator::key() const {
   assert(Valid());
   return batch_keys_[batch_cur_idx_];
 }
 
-Slice SABIIterator::value() const {
+Slice BitLSMIterator::value() const {
   assert(Valid());
   return batch_values_[batch_cur_idx_];
 }
 
-void SABIIterator::TEST_DumpValue(Slice input) {
+void BitLSMIterator::TEST_DumpValue(Slice input) {
   for (uint32_t i = 0; i < options_.sk_num; ++i) {
     if (i)
       cout << " / ";

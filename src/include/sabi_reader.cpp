@@ -12,7 +12,7 @@ using namespace std;
 using namespace rocksdb;
 using namespace roaring;
 
-namespace bitmap_index {
+namespace bit_lsm {
 
 // ========================================================================
 // SABIUDIIterator Implementation
@@ -36,7 +36,7 @@ UserDefinedIndexBuilder::BlockHandle SABIUDIIterator::value() {};
 // SABIReader Implementation
 // ========================================================================
 
-SABIReader::SABIReader(Slice& index_block, SABIOptions options)
+SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
     : options_(options) {
   // 1. Read footer
   uint32_t index_entries_cnt_ = DecodeFixed32(
@@ -162,4 +162,4 @@ void SABIReader::Dump() {
   cout << "\n";
 }
 
-} // namespace bitmap_index
+} // namespace bit_lsm

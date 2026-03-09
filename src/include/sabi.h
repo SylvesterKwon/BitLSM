@@ -11,13 +11,13 @@
 #include <memory>
 #include <variant>
 
-namespace bitmap_index {
+namespace bit_lsm {
 
 enum SKType {
   CATEGORICAL,
   CONTINUOUS,
 };
-struct SABIOptions {
+struct BitLSMOptions {
   uint32_t sk_num;                    // # of secondary keys
   std::vector<SKType> sk_types;       // sk type vector
   rocksdb::SequenceNumber read_seqno; // read sequence number
@@ -43,7 +43,7 @@ class SABIFactory;
 class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
 
 private:
-  SABIOptions options_;
+  BitLSMOptions options_;
 
   // Buffer
   std::vector<std::vector<std::string>> sk_buf_;
@@ -68,7 +68,7 @@ private:
   void CalculateBitmapIndex();
 
 public:
-  SABIBuilder(SABIOptions options);
+  SABIBuilder(BitLSMOptions options);
   rocksdb::Slice AddIndexEntry(
       const rocksdb::Slice& last_key_in_current_block,
       const rocksdb::Slice* first_key_in_next_block,
@@ -93,12 +93,12 @@ public:
 
 class SABIReader : public rocksdb::UserDefinedIndexReader {
 private:
-  SABIOptions options_;
+  BitLSMOptions options_;
   using AlignedPtr = std::unique_ptr<char[], void (*)(void*)>;
   std::vector<AlignedPtr> managed_buffers_;
 
 public:
-  SABIReader(rocksdb::Slice& index_block, SABIOptions options_);
+  SABIReader(rocksdb::Slice& index_block, BitLSMOptions options_);
   BitmapIndex bitmap_index;
   std::vector<uint32_t> data_entries_cnt_psum;
   std::vector<rocksdb::BlockHandle> block_handles;
@@ -110,14 +110,14 @@ public:
 
 class SABIFactory : public rocksdb::UserDefinedIndexFactory {
 private:
-  SABIOptions options_;
+  BitLSMOptions options_;
 
 public:
-  SABIFactory(SABIOptions options) : options_(options) {};
+  SABIFactory(BitLSMOptions options) : options_(options) {};
   const char* Name() const override;
   rocksdb::UserDefinedIndexBuilder* NewBuilder() const override;
   std::unique_ptr<rocksdb::UserDefinedIndexReader>
   NewReader(rocksdb::Slice& index_block_) const override;
 };
 
-} // namespace bitmap_index
+} // namespace bit_lsm

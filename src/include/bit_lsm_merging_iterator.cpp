@@ -5,16 +5,17 @@
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
 #include "table/format.h"
+#include <bit_lsm_iterator.h>
+#include <bit_lsm_query.h>
 #include <iostream>
-#include <sabi_iterator.h>
-#include <sabi_query.h>
 
 using namespace std;
 using namespace rocksdb;
-using namespace bitmap_index;
+using namespace bit_lsm;
 
-SABIMergingIterator::SABIMergingIterator(SuperVersion* sv, SABIOptions options,
-                                         SABIQuery query)
+BitLSMMergingIterator::BitLSMMergingIterator(SuperVersion* sv,
+                                             BitLSMOptions options,
+                                             BitLSMQuery query)
     : sv_(sv), cfd_(sv_->cfd), options_(options), query_(std::move(query)),
       v_(sv_->current), tc_(cfd_->table_cache()),
       storage_info_(v_->storage_info()),
@@ -25,14 +26,14 @@ SABIMergingIterator::SABIMergingIterator(SuperVersion* sv, SABIOptions options,
   rocksdb::ReadOnlyMemTable* active_mem = sv_->mem;
   if (active_mem != nullptr) {
     rocksdb::MemTable* mem = static_cast<rocksdb::MemTable*>(active_mem);
-    ch_iters_.push_back(new SABIMemTableIterator(mem, options_, query_));
+    ch_iters_.push_back(new BitLSMMemTableIterator(mem, options_, query_));
   }
   // 1-2. Immutable MemTables
   MemTableListVersion* memtable_list_version_ = sv_->imm;
   if (memtable_list_version_ != nullptr) {
     for (ReadOnlyMemTable* imm_mem : memtable_list_version_->GetMemTables()) {
       rocksdb::MemTable* mem = static_cast<rocksdb::MemTable*>(imm_mem);
-      ch_iters_.push_back(new SABIMemTableIterator(mem, options_, query_));
+      ch_iters_.push_back(new BitLSMMemTableIterator(mem, options_, query_));
     }
   }
 
@@ -45,14 +46,14 @@ SABIMergingIterator::SABIMergingIterator(SuperVersion* sv, SABIOptions options,
     Status s = tc_->FindTable(ro, FileOptions(), *icmp_, *meta, &table_handle,
                               cf_opts_);
     if (!s.ok()) {
-      std::cerr << "[SABIMergingIterator]: Failed to load L0 file "
+      std::cerr << "[BitLSMMergingIterator]: Failed to load L0 file "
                 << meta->fd.GetNumber() << "\n";
       continue;
     }
     TableReader* table = cache_interface.Value(table_handle);
     BlockBasedTable* bbt = static_cast<BlockBasedTable*>(table);
 
-    // cout << "[SABIMergingIterator] Added L0 SST iterator\n";
+    // cout << "[BitLSMMergingIterator] Added L0 SST iterator\n";
     ch_iters_.push_back(new SABITableIterator(bbt, options_, query_));
     l0_handles_.push_back(table_handle);
   }
@@ -61,12 +62,12 @@ SABIMergingIterator::SABIMergingIterator(SuperVersion* sv, SABIOptions options,
   for (uint32_t level = 1; level < storage_info_->num_non_empty_levels();
        ++level) {
     if (storage_info_->NumLevelFiles(level) > 0) {
-      ch_iters_.push_back(new SABILevelIterator(sv, level, options_, query_));
+      ch_iters_.push_back(new BitLSMLevelIterator(sv, level, options_, query_));
     }
   }
 };
 
-SABIMergingIterator::~SABIMergingIterator() {
+BitLSMMergingIterator::~BitLSMMergingIterator() {
   // 1. Free children iterators
   for (auto* ch : ch_iters_)
     delete ch;
@@ -78,7 +79,7 @@ SABIMergingIterator::~SABIMergingIterator() {
   l0_handles_.clear();
 }
 
-void SABIMergingIterator::SeekToFirst() {
+void BitLSMMergingIterator::SeekToFirst() {
   // 1. Clear existing heap
   while (!heap_.empty())
     heap_.pop();
@@ -97,9 +98,9 @@ void SABIMergingIterator::SeekToFirst() {
   }
 }
 
-void SABIMergingIterator::Next() {
+void BitLSMMergingIterator::Next() {
   assert(Valid());
-  // cout << "[SABIMergingIterator] Next() Called\n";
+  // cout << "[BitLSMMergingIterator] Next() Called\n";
 
   // 1. Forward top iterator in heap
   SABIInternalIterator* top_iter = heap_.top();
@@ -112,17 +113,17 @@ void SABIMergingIterator::Next() {
   valid_ = !heap_.empty();
 }
 
-Slice SABIMergingIterator::key() const {
+Slice BitLSMMergingIterator::key() const {
   assert(Valid());
   return heap_.top()->key();
 }
 
-Slice SABIMergingIterator::value() const {
+Slice BitLSMMergingIterator::value() const {
   assert(Valid());
   return heap_.top()->value();
 }
 
-void SABIMergingIterator::TEST_DumpValue(Slice input) {
+void BitLSMMergingIterator::TEST_DumpValue(Slice input) {
   for (uint32_t i = 0; i < options_.sk_num; ++i) {
     if (i)
       cout << " / ";

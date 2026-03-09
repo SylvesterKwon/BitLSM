@@ -1,17 +1,17 @@
 #include "db/version_set.h"
 #include "rocksdb/options.h"
 #include "sabi.h"
+#include <bit_lsm_iterator.h>
+#include <bit_lsm_query.h>
 #include <cstdint>
 #include <iostream>
-#include <sabi_iterator.h>
-#include <sabi_query.h>
 
 using namespace std;
 using namespace rocksdb;
-using namespace bitmap_index;
+using namespace bit_lsm;
 using namespace roaring;
 
-void SABIMemTableIterator::FindNextValidEntry() {
+void BitLSMMemTableIterator::FindNextValidEntry() {
   valid_ = false;
   Status s;
 
@@ -48,43 +48,44 @@ void SABIMemTableIterator::FindNextValidEntry() {
   }
 }
 
-SABIMemTableIterator::SABIMemTableIterator(rocksdb::MemTable* mem,
-                                           SABIOptions options, SABIQuery query)
+BitLSMMemTableIterator::BitLSMMemTableIterator(rocksdb::MemTable* mem,
+                                               BitLSMOptions options,
+                                               BitLSMQuery query)
     : options_(options), mem_(mem), query_(std::move(query)), iter_(nullptr) {
   assert(mem_ != nullptr);
   ReadOptions ro;
   iter_ = mem_->NewIterator(ro, nullptr, &arena_, nullptr, false);
 }
 
-SABIMemTableIterator::~SABIMemTableIterator() {
+BitLSMMemTableIterator::~BitLSMMemTableIterator() {
   // Since iter_'s memory space is managed by arena, use destruct instead of
   // delete
   if (iter_ != nullptr)
     iter_->~InternalIterator();
 }
 
-void SABIMemTableIterator::SeekToFirst() {
+void BitLSMMemTableIterator::SeekToFirst() {
   iter_->SeekToFirst();
   FindNextValidEntry();
 }
 
-void SABIMemTableIterator::Next() {
+void BitLSMMemTableIterator::Next() {
   assert(Valid());
   iter_->Next();
   FindNextValidEntry();
 }
 
-Slice SABIMemTableIterator::key() const {
+Slice BitLSMMemTableIterator::key() const {
   assert(Valid());
   return iter_->key();
 }
 
-Slice SABIMemTableIterator::value() const {
+Slice BitLSMMemTableIterator::value() const {
   assert(Valid());
   return iter_->value();
 }
 
-void SABIMemTableIterator::TEST_DumpValue(Slice input) {
+void BitLSMMemTableIterator::TEST_DumpValue(Slice input) {
   for (uint32_t i = 0; i < options_.sk_num; ++i) {
     if (i)
       cout << " / ";

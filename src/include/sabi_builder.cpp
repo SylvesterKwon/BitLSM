@@ -11,11 +11,11 @@ using namespace std;
 using namespace rocksdb;
 using namespace roaring;
 
-namespace bitmap_index {
+namespace bit_lsm {
 // ========================================================================
 // SABIBuilder Implementation
 // ========================================================================
-SABIBuilder::SABIBuilder(SABIOptions options)
+SABIBuilder::SABIBuilder(BitLSMOptions options)
     : options_(options), sk_buf_(options.sk_num) {
   bitmap_index_.bitmap_nums.resize(options.sk_num, 0);
   bitmap_index_.binning_policy.resize(options.sk_num);
@@ -310,4 +310,4 @@ void SABIBuilder::Dump() {
   cout << "\n";
 }
 
-} // namespace bitmap_index
+} // namespace bit_lsm

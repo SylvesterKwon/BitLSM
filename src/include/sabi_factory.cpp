@@ -7,7 +7,7 @@ using namespace std;
 using namespace rocksdb;
 using namespace roaring;
 
-namespace bitmap_index {
+namespace bit_lsm {
 
 // ========================================================================
 // SABIFactory Implementation
@@ -24,4 +24,4 @@ SABIFactory::NewReader(Slice& index_block_) const {
   return unique_ptr<SABIReader>(new SABIReader(index_block_, options_));
 }
 
-} // namespace bitmap_index
+} // namespace bit_lsm

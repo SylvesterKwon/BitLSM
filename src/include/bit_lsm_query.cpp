@@ -1,14 +1,14 @@
 #include "rocksdb/slice.h"
 #include "sabi.h"
+#include <bit_lsm_query.h>
 #include <charconv>
-#include <sabi_query.h>
 
 using namespace std;
 using namespace rocksdb;
 
-namespace bitmap_index {
-bool SABIQuery::CheckCondition(rocksdb::Slice slice,
-                               const SABIOptions& options) {
+namespace bit_lsm {
+bool BitLSMQuery::CheckCondition(rocksdb::Slice slice,
+                                 const BitLSMOptions& options) {
   if (conditions.empty())
     return true;
 
@@ -80,4 +80,4 @@ bool SABIQuery::CheckCondition(rocksdb::Slice slice,
   }
   return true;
 }
-} // namespace bitmap_index
+} // namespace bit_lsm
