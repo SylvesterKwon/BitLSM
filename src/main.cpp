@@ -34,7 +34,7 @@ int main(const int argc, char* argv[]) {
       {QueryCondition(1, CompareOp::GREATER_EQUAL, (double)24.0002),
        QueryCondition(1, CompareOp::LESS_EQUAL, (double)24.0003)});
 
-  auto x = db.Search(query);
+  auto x = db.NewIterator(query);
   uint32_t cnt = 0;
   for (x->SeekToFirst(); x->Valid(); x->Next()) {
     cout << x->key().ToStringView() << ": ";

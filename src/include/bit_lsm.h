@@ -28,7 +28,7 @@ public:
            const std::vector<std::vector<std::string>>& indexed_attrs_list,
            const std::vector<std::string>& payloads);
   rocksdb::Status Delete(const std::string& key);
-  std::unique_ptr<BitLSMIterator> Search(const BitLSMQuery& query);
+  std::unique_ptr<BitLSMIterator> NewIterator(BitLSMQuery& query);
 
   // For debug
   void Statistics();

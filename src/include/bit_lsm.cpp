@@ -92,7 +92,12 @@ Status BitLSM::Delete(const string& key) {
   return Status();
 }
 
-unique_ptr<BitLSMIterator> BitLSM::Search(const BitLSMQuery& query) {
+unique_ptr<BitLSMIterator> BitLSM::NewIterator(BitLSMQuery& query) {
+  std::sort(query.conditions.begin(), query.conditions.end(),
+            [](const QueryCondition& a, const QueryCondition& b) {
+              return a.sk_idx < b.sk_idx;
+            });
+
   return std::make_unique<BitLSMIterator>(
       db_,
       cf_handles_[0], // 기본 Column Family 사용

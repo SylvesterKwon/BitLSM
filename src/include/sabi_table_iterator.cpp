@@ -69,12 +69,8 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
       bitmap_iter_(query_bitmap_.begin()), bitmap_end_(query_bitmap_.end()) {
   // Sort query condition by sk_idx
   // This is for using forward scan while value validation
-  // TODO: 상위 컴포넌트에서 쿼리 정렬상태 sk_idx 순으로 넘겨주도록 보장하고
-  // 아래 로직 삭제하기
-  std::sort(query_.conditions.begin(), query_.conditions.end(),
-            [](const QueryCondition& a, const QueryCondition& b) {
-              return a.sk_idx < b.sk_idx;
-            });
+
+  // Query is sorted in sk_idx order
   block_restart_interval_ =
       bbt->get_rep()->table_options.block_restart_interval;
 
