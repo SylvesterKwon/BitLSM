@@ -155,6 +155,10 @@ private:
   SABIReader* sabi_reader_;
   BitLSMQuery query_;
   uint32_t block_restart_interval_;
+  // Promoted to a member variable to enable Zero-copy evaluation.
+  // Keeping this iterator alive ensures the underlying data block remains
+  // pinned in the Block Cache, allowing us to safely use PinSlice() for values.
+  std::unique_ptr<rocksdb::DataBlockIter> biter_;
 
   // Internal status for iterating
   roaring::Roaring query_bitmap_;                // bitmap for current iteration

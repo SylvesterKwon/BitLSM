@@ -3,6 +3,7 @@
 #include "table/format.h"
 #include <bit_lsm_query.h>
 #include <cstdint>
+#include <memory>
 #define TEST_CACHE_LINE_SIZE                                                   \
   64 // To avoid compile error when using roaring.hh &
      // block_based_table_reader.h together
@@ -21,13 +22,17 @@ using namespace roaring;
 void SABITableIterator::GetAllByIndexesFromDataBlock(
     const BlockHandle& bh, vector<uint32_t>& indexes,
     vector<PinnableSlice>& out_keys, vector<PinnableSlice>& out_values) {
-  DataBlockIter biter;
   Status s;
+  out_keys.clear();
+  out_values.clear();
   out_keys.resize(indexes.size());
   out_values.resize(indexes.size());
-  // TODO: nullptr 로 미사용중인 옵션을 통해 최적화 가능 여부 확인하기
-  bbt_->NewDataBlockIterator(ReadOptions(), bh, &biter, BlockType::kData,
-                             nullptr, nullptr, nullptr, false, false, s, true);
+
+  // Delete previous block iterator to unpin previous block value
+  DataBlockIter* new_biter = bbt_->NewDataBlockIterator<DataBlockIter>(
+      ReadOptions(), bh, nullptr, BlockType::kData, nullptr, nullptr, nullptr,
+      false, false, s, true);
+  biter_.reset(new_biter);
 
   uint32_t cur_checkpoint =
       UINT32_MAX; // UINT32_MAX means no valid checkpoint is used
@@ -39,20 +44,19 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
     if (cur_checkpoint != target_checkpoint) {
       cur_checkpoint = target_checkpoint;
       cur_offset = 0;
-      biter.SeekToRestartPoint(cur_checkpoint);
-      biter.Next(); // need to call Next once to access real data
+      biter_->SeekToRestartPoint(cur_checkpoint);
+      biter_->Next(); // need to call Next once to access real data
     }
     uint32_t target_offset = indexes[i] % block_restart_interval_;
-    while (cur_offset < target_offset && biter.Valid()) {
-      biter.Next();
+    while (cur_offset < target_offset && biter_->Valid()) {
+      biter_->Next();
       cur_offset++;
     }
-    if (biter.Valid()) {
-      // PinSelf vs PinSlice (zero-copy)
-      // TODO(TASK-93): Block cache 사용할 수 있도록 최적화 하기.
-      // PinSelf 방식은 hard-copy임
-      out_keys[i].PinSelf(biter.key());
-      out_values[i].PinSelf(biter.value());
+    if (biter_->Valid()) {
+      // since key use delta-encoding and bufffer will be overwritten, we can't
+      // zero-copy it
+      out_keys[i].PinSelf(biter_->key());
+      out_values[i].PinSlice(biter_->value(), nullptr);
     } else {
       assert(false);
     }

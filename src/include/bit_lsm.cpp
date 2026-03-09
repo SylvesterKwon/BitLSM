@@ -93,6 +93,7 @@ Status BitLSM::Delete(const string& key) {
 }
 
 unique_ptr<BitLSMIterator> BitLSM::NewIterator(BitLSMQuery& query) {
+  // Sort query condition by attr_idx
   std::sort(query.conditions.begin(), query.conditions.end(),
             [](const QueryCondition& a, const QueryCondition& b) {
               return a.attr_idx < b.attr_idx;
