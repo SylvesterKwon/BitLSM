@@ -86,14 +86,14 @@ Slice BitLSMMemTableIterator::value() const {
 }
 
 void BitLSMMemTableIterator::TEST_DumpValue(Slice input) {
-  for (uint32_t i = 0; i < options_.sk_num; ++i) {
+  for (uint32_t i = 0; i < options_.attr_num; ++i) {
     if (i)
       cout << " / ";
     rocksdb::Slice part;
     GetLengthPrefixedSlice(&input, &part);
-    if (options_.sk_types[i] == SKType::CATEGORICAL) {
+    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
       cout << part.ToString();
-    } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
+    } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
       string s = part.ToString();
       cout << s;
     }

@@ -13,13 +13,13 @@
 
 namespace bit_lsm {
 
-enum SKType {
+enum AttrType {
   CATEGORICAL,
   CONTINUOUS,
 };
 struct BitLSMOptions {
-  uint32_t sk_num;                    // # of secondary keys
-  std::vector<SKType> sk_types;       // sk type vector
+  uint32_t attr_num;                  // # of attribute
+  std::vector<AttrType> attr_types;   // attribute type vector
   rocksdb::SequenceNumber read_seqno; // read sequence number
   double rho; // proportion parameter that determines bitmap budget
 };
@@ -28,7 +28,7 @@ struct BitmapIndex {
   std::vector<roaring::Roaring> bitmaps;
 
   // Binned bitmap index policy
-  std::vector<uint32_t> bitmap_nums; // # of bitmaps for each SK
+  std::vector<uint32_t> bitmap_nums; // # of bitmaps for each attr
   // continuous binning policy: vector<double>
   // categorical binning policy: vector<pair<string,uint32_t>>
   std::vector<std::variant<std::vector<double>,
@@ -46,7 +46,7 @@ private:
   BitLSMOptions options_;
 
   // Buffer
-  std::vector<std::vector<std::string>> sk_buf_;
+  std::vector<std::vector<std::string>> attr_buf_;
 
   // Statistics
   uint64_t total_data_entries_size_uncomp_ = 0; // total size of KVPs (bytes)

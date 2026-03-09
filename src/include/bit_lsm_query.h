@@ -20,7 +20,7 @@ enum class CompareOp {
 
 // Query condition
 struct QueryCondition {
-  uint32_t sk_idx;
+  uint32_t attr_idx;
   CompareOp op;
   std::variant<double, std::string>
       value; // double for continuous, string for categorical

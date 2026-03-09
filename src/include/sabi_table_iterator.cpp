@@ -67,10 +67,10 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
       // 1. Build query bitmap
       query_bitmap_(GetBitmapFromQuery(query_)),
       bitmap_iter_(query_bitmap_.begin()), bitmap_end_(query_bitmap_.end()) {
-  // Sort query condition by sk_idx
+  // Sort query condition by attr_idx
   // This is for using forward scan while value validation
 
-  // Query is sorted in sk_idx order
+  // Query is sorted in attr_idx order
   block_restart_interval_ =
       bbt->get_rep()->table_options.block_restart_interval;
 
@@ -119,25 +119,25 @@ SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
 
     // 1. Create bitmap for current query condition
     roaring::Roaring cur_cond_bitmap;
-    const SKType& cur_sk_type = options_.sk_types[cond.sk_idx];
+    const AttrType& cur_attr_type = options_.attr_types[cond.attr_idx];
 
     uint32_t bitmap_offset = 0;
-    for (uint32_t i = 0; i < cond.sk_idx; ++i)
+    for (uint32_t i = 0; i < cond.attr_idx; ++i)
       bitmap_offset += sabi_reader_->bitmap_index.bitmap_nums[i];
 
-    if (cur_sk_type == SKType::CATEGORICAL) {
+    if (cur_attr_type == AttrType::CATEGORICAL) {
       if (cond.op != CompareOp::EQUAL)
         assert(false);
       const string& value = std::get<string>(cond.value);
-      vector<pair<string, uint32_t>>& cur_sk_binning_policy =
+      vector<pair<string, uint32_t>>& cur_attr_binning_policy =
           get<vector<pair<string, uint32_t>>>(
-              sabi_reader_->bitmap_index.binning_policy[cond.sk_idx]);
+              sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
       auto it = std::lower_bound(
-          cur_sk_binning_policy.begin(), cur_sk_binning_policy.end(), value,
+          cur_attr_binning_policy.begin(), cur_attr_binning_policy.end(), value,
           [](const pair<string, uint32_t>& policy_entry, const string& val) {
             return policy_entry.first < val;
           });
-      if (it != cur_sk_binning_policy.end() && it->first == value) {
+      if (it != cur_attr_binning_policy.end() && it->first == value) {
         // Found bitmap for given query condition
         uint32_t local_bin_idx = it->second;
         cur_cond_bitmap =
@@ -146,11 +146,11 @@ SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
         // No bitmap for given query condition, leave it empty bitmap
         // noop
       }
-    } else if (cur_sk_type == SKType::CONTINUOUS) {
+    } else if (cur_attr_type == AttrType::CONTINUOUS) {
       const double& value = std::get<double>(cond.value);
       const vector<double>& boundaries = std::get<vector<double>>(
-          sabi_reader_->bitmap_index.binning_policy[cond.sk_idx]);
-      uint32_t num_bins = sabi_reader_->bitmap_index.bitmap_nums[cond.sk_idx];
+          sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
+      uint32_t num_bins = sabi_reader_->bitmap_index.bitmap_nums[cond.attr_idx];
 
       // 1. Find bin index by value
       // upper_bound: value보다 큰 첫 번째 경계값의 위치
@@ -338,14 +338,14 @@ Slice SABITableIterator::value() const {
 
 void SABITableIterator::TEST_DumpValue(Slice input) {
   std::cout << "==== Value Decode Debug (" << input.size() << " bytes) ====\n";
-  for (uint32_t i = 0; i < options_.sk_num; ++i) {
+  for (uint32_t i = 0; i < options_.attr_num; ++i) {
     rocksdb::Slice part;
     GetLengthPrefixedSlice(&input, &part);
-    std::cout << "  [SK:" << i << "] ";
+    std::cout << "  [ATTR:" << i << "] ";
 
-    if (options_.sk_types[i] == SKType::CATEGORICAL) {
+    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
       std::cout << "(CAT) : " << part.ToString();
-    } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
+    } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
       std::string s = part.ToString();
       std::cout << "(CONT): " << s;
     }

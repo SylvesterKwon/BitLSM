@@ -44,7 +44,7 @@ BitLSM::~BitLSM() {
 Status BitLSM::Put(const string& key, const vector<string>& indexed_attrs,
                    const string& payload) {
   // 1. Validate # of indexed attrs
-  if (indexed_attrs.size() != bit_lsm_options_.sk_num) {
+  if (indexed_attrs.size() != bit_lsm_options_.attr_num) {
     return Status::InvalidArgument(
         "The number of indexed_attrs does not match with db configuration.");
   }
@@ -70,10 +70,10 @@ BitLSM::PutBatch(const vector<string>& pks,
   uint32_t batch_size = pks.size();
 
   for (uint32_t i = 0; i < batch_size; ++i) {
-    if (indexed_attrs_list[i].size() != bit_lsm_options_.sk_num) {
+    if (indexed_attrs_list[i].size() != bit_lsm_options_.attr_num) {
       return rocksdb::Status::InvalidArgument(
           "PutBatch error: indexed_attrs size at index " + to_string(i) +
-          " does not match the configured sk_num.");
+          " does not match the configured attr_num.");
     }
 
     string serialized_value;
@@ -95,7 +95,7 @@ Status BitLSM::Delete(const string& key) {
 unique_ptr<BitLSMIterator> BitLSM::NewIterator(BitLSMQuery& query) {
   std::sort(query.conditions.begin(), query.conditions.end(),
             [](const QueryCondition& a, const QueryCondition& b) {
-              return a.sk_idx < b.sk_idx;
+              return a.attr_idx < b.attr_idx;
             });
 
   return std::make_unique<BitLSMIterator>(

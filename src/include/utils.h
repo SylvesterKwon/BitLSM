@@ -26,7 +26,7 @@ inline string random_string(size_t length) {
   return res;
 }
 
-inline void fill_kvp(bit_lsm::BitLSM* db, uint64_t n, uint32_t sk_num,
+inline void fill_kvp(bit_lsm::BitLSM* db, uint64_t n, uint32_t attr_num,
                      uint32_t payload_size = 32, uint32_t seed = 42,
                      bool debug = false) {
   srand(seed);
@@ -52,8 +52,8 @@ inline void fill_kvp(bit_lsm::BitLSM* db, uint64_t n, uint32_t sk_num,
     payloads.reserve(current_batch_limit);
 
     for (uint64_t i = 0; i < current_batch_limit; ++i) {
-      vector<string> indexed_attrs(sk_num);
-      for (uint32_t j = 0; j < sk_num; ++j) {
+      vector<string> indexed_attrs(attr_num);
+      for (uint32_t j = 0; j < attr_num; ++j) {
         if (j % 2 == 0) {
           indexed_attrs[j] = to_string(rand() % 100); // Categorical
         } else {
@@ -99,11 +99,11 @@ inline void fill_kvp(bit_lsm::BitLSM* db, uint64_t n, uint32_t sk_num,
 }
 
 inline void fill_single_kvp(bit_lsm::BitLSM* db, const string& key,
-                            uint32_t sk_num, uint32_t payload_size = 32,
+                            uint32_t attr_num, uint32_t payload_size = 32,
                             uint32_t seed = 42, bool debug = false) {
   srand(seed);
-  vector<string> indexed_attrs(sk_num);
-  for (uint32_t j = 0; j < sk_num; ++j) {
+  vector<string> indexed_attrs(attr_num);
+  for (uint32_t j = 0; j < attr_num; ++j) {
     if (j % 2 == 0) {
       indexed_attrs[j] = to_string(rand() % 100); // Categorical
     } else {
@@ -118,13 +118,13 @@ inline void fill_single_kvp(bit_lsm::BitLSM* db, const string& key,
 
   if (debug) {
     cout << "  [DEBUG] Putted single KVP -> Key: " << key
-         << " (Attributes: " << sk_num << ", Payload size: " << payload.size()
+         << " (Attributes: " << attr_num << ", Payload size: " << payload.size()
          << " bytes)\n";
   }
 }
 
 //////////////
-inline void old_create_kvp(DB* db, uint64_t n, uint32_t sk_num,
+inline void old_create_kvp(DB* db, uint64_t n, uint32_t attr_num,
                            uint32_t payload_size = 32, uint32_t seed = 42,
                            bool debug = false) {
   srand(seed);
@@ -144,16 +144,16 @@ inline void old_create_kvp(DB* db, uint64_t n, uint32_t sk_num,
     // Creating Batch KVPs
     for (uint32_t i = 0; i < kvps.size(); i++) {
       kvps[i].second.clear();
-      for (uint32_t j = 0; j < sk_num; ++j) {
-        string sk_val;
-        // 임시로 연속형, 범주형 SK를 교차로 나오도록 하였음
+      for (uint32_t j = 0; j < attr_num; ++j) {
+        string attr_val;
+        // 임시로 연속형, 범주형 attr를 교차로 나오도록 하였음
         // TODO: Workload generator와 연결되도록 수정필요
         if (j % 2 == 0) {
-          sk_val = to_string(rand() % 100); // Categorical
+          attr_val = to_string(rand() % 100); // Categorical
         } else {
-          sk_val = to_string((double)rand() / RAND_MAX * 100.0); // Continuous
+          attr_val = to_string((double)rand() / RAND_MAX * 100.0); // Continuous
         }
-        PutLengthPrefixedSlice(&kvps[i].second, Slice(sk_val));
+        PutLengthPrefixedSlice(&kvps[i].second, Slice(attr_val));
       }
       PutLengthPrefixedSlice(&kvps[i].second,
                              Slice(random_string(payload_size)));
@@ -185,20 +185,20 @@ inline void old_create_kvp(DB* db, uint64_t n, uint32_t sk_num,
 }
 
 // Creates a single key-value pair with a specific key
-inline void old_create_single_kvp(DB* db, const string& key, uint32_t sk_num,
+inline void old_create_single_kvp(DB* db, const string& key, uint32_t attr_num,
                                   uint32_t payload_size = 32,
                                   uint32_t seed = 42, bool debug = false) {
   srand(seed);
   string value;
   // 1. Create value
-  for (uint32_t j = 0; j < sk_num; ++j) {
-    string sk_val;
+  for (uint32_t j = 0; j < attr_num; ++j) {
+    string attr_val;
     if (j % 2 == 0) {
-      sk_val = to_string(rand() % 100); // Categorical
+      attr_val = to_string(rand() % 100); // Categorical
     } else {
-      sk_val = to_string((double)rand() / RAND_MAX * 100.0); // Continuous
+      attr_val = to_string((double)rand() / RAND_MAX * 100.0); // Continuous
     }
-    PutLengthPrefixedSlice(&value, Slice(sk_val));
+    PutLengthPrefixedSlice(&value, Slice(attr_val));
   }
   // 2. Payload
   PutLengthPrefixedSlice(&value, Slice(random_string(payload_size)));

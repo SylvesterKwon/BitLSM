@@ -55,7 +55,7 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
   uint32_t binning_policy_cnt = binning_policy_offset_cnt - 1;
   bitmap_index.binning_policy.resize(binning_policy_cnt);
   bitmap_index.bitmap_nums.resize(binning_policy_cnt);
-  assert(options_.sk_num == binning_policy_cnt);
+  assert(options_.attr_num == binning_policy_cnt);
 
   for (uint32_t i = 0; i < binning_policy_cnt; ++i) {
     uint32_t cur_binning_policy_offset =
@@ -63,14 +63,14 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
                       (i + 1) * sizeof(uint32_t));
     uint32_t cur_binning_policy_size =
         DecodeFixed32(index_block.data() + cur_binning_policy_offset);
-    if (options_.sk_types[i] == SKType::CATEGORICAL) {
+    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
       bitmap_index.bitmap_nums[i] = cur_binning_policy_size;
     } else {
       // since it uses one more array to represent boundary
       bitmap_index.bitmap_nums[i] = cur_binning_policy_size - 1;
     }
 
-    if (options_.sk_types[i] == SKType::CATEGORICAL) {
+    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
       // read {length prefixed string + uint32t (bin number)}
       const char* ptr =
           index_block.data() + cur_binning_policy_offset + sizeof(uint32_t);
@@ -86,7 +86,7 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
         ptr += sizeof(uint32_t);
       }
       bitmap_index.binning_policy[i] = std::move(cur_binning_policy);
-    } else if (options_.sk_types[i] == SKType::CONTINUOUS) {
+    } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
       vector<double> cur_binning_policy(cur_binning_policy_size);
       for (uint32_t j = 0; j < cur_binning_policy_size; ++j) {
         uint64_t val_int =
