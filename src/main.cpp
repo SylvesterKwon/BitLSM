@@ -31,17 +31,24 @@ int main(const int argc, char* argv[]) {
   db.Statistics();
 
   // query samples
-  BitLSMQuery query(
-      {QueryCondition(1, CompareOp::GREATER_EQUAL, (double)24.002),
-       QueryCondition(1, CompareOp::LESS_EQUAL, (double)24.003)});
-  auto x = db.NewIterator(query);
-  uint32_t cnt = 0;
-  for (x->SeekToFirst(); x->Valid(); x->Next()) {
-    cout << x->key().ToStringView() << ": ";
-    x->TEST_DumpValue(x->value());
-    cnt += 1;
+  chrono::_V2::system_clock::time_point start_time =
+      chrono::high_resolution_clock::now();
+  for (uint32_t i = 0; i < 10; i++) {
+    BitLSMQuery query({QueryCondition(1, CompareOp::GREATER_EQUAL, (double)20),
+                       QueryCondition(1, CompareOp::LESS_EQUAL, (double)30)});
+    auto x = db.NewIterator(query);
+    uint32_t cnt = 0;
+    for (x->SeekToFirst(); x->Valid(); x->Next()) {
+      cnt += 1;
+    }
+    cout << i << "\n";
   }
-  cout << "total #: " << cnt << "\n";
+
+  cout << "total:"
+       << chrono::duration_cast<chrono::milliseconds>(
+              chrono::high_resolution_clock::now() - start_time)
+              .count()
+       << "ms elpased\n";
 
   return 0;
 }
