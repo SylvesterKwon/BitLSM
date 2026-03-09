@@ -1,12 +1,11 @@
-#include "util/coding.h"
+
+#include "bit_lsm.h"
+#include <chrono>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
 #include <string>
-
-#include "rocksdb/db.h"
-#include "rocksdb/sst_file_reader.h"
-#include "rocksdb/table_properties.h"
+#include <vector>
 
 using namespace std;
 using namespace rocksdb;
@@ -27,14 +26,110 @@ inline string random_string(size_t length) {
   return res;
 }
 
-// Creates initial key-value pairs
-inline void create_kvp(DB* db, uint64_t n, uint32_t sk_num,
-                       uint32_t payload_size = 32, uint32_t seed = 42,
-                       bool debug = false) {
+inline void fill_kvp(bit_lsm::BitLSM* db, uint64_t n, uint32_t sk_num,
+                     uint32_t payload_size = 32, uint32_t seed = 42,
+                     bool debug = false) {
+  srand(seed);
+  chrono::_V2::system_clock::time_point start_time;
+
+  if (debug)
+    cout << "creating " << n << " kvps into BitLSM using Batch API...\n";
+
+  const uint64_t batch_size = 1e6; // 100만 건씩 묶어서 처리
+  uint64_t total_batch = (n + batch_size - 1) / batch_size;
+  uint64_t auto_increment = 0;
+
+  start_time = chrono::high_resolution_clock::now();
+
+  for (uint64_t cur_batch = 0; cur_batch < total_batch; ++cur_batch) {
+    uint64_t current_batch_limit = min(batch_size, n - auto_increment);
+    vector<string> pks;
+    vector<vector<string>> indexed_attrs_list;
+    vector<string> payloads;
+
+    pks.reserve(current_batch_limit);
+    indexed_attrs_list.reserve(current_batch_limit);
+    payloads.reserve(current_batch_limit);
+
+    for (uint64_t i = 0; i < current_batch_limit; ++i) {
+      vector<string> indexed_attrs(sk_num);
+      for (uint32_t j = 0; j < sk_num; ++j) {
+        if (j % 2 == 0) {
+          indexed_attrs[j] = to_string(rand() % 100); // Categorical
+        } else {
+          indexed_attrs[j] =
+              to_string((double)rand() / RAND_MAX * 100.0); // Continuous
+        }
+      }
+
+      string payload = random_string(payload_size);
+      auto_increment++;
+      string pk = to_string(auto_increment);
+
+      pks.push_back(std::move(pk));
+      indexed_attrs_list.push_back(std::move(indexed_attrs));
+      payloads.push_back(std::move(payload));
+    }
+
+    rocksdb::Status s = db->PutBatch(pks, indexed_attrs_list, payloads);
+    if (!s.ok()) {
+      cerr << "❌ PutBatch failed at batch " << cur_batch + 1 << ": "
+           << s.ToString() << "\n";
+      break;
+    }
+
+    if (debug) {
+      cout << "[BATCH " << setw(6) << cur_batch + 1 << " / " << setw(6)
+           << total_batch << "] ";
+      cout << "putted: " << auto_increment << " kvps, elapsed: "
+           << chrono::duration_cast<chrono::milliseconds>(
+                  chrono::high_resolution_clock::now() - start_time)
+                  .count()
+           << "ms \n";
+    }
+  }
+
+  if (debug) {
+    cout << "✅ created " << n << " kvps. (total:"
+         << chrono::duration_cast<chrono::milliseconds>(
+                chrono::high_resolution_clock::now() - start_time)
+                .count()
+         << "ms elapsed)\n";
+  }
+}
+
+inline void fill_single_kvp(bit_lsm::BitLSM* db, const string& key,
+                            uint32_t sk_num, uint32_t payload_size = 32,
+                            uint32_t seed = 42, bool debug = false) {
+  srand(seed);
+  vector<string> indexed_attrs(sk_num);
+  for (uint32_t j = 0; j < sk_num; ++j) {
+    if (j % 2 == 0) {
+      indexed_attrs[j] = to_string(rand() % 100); // Categorical
+    } else {
+      indexed_attrs[j] =
+          to_string((double)rand() / RAND_MAX * 100.0); // Continuous
+    }
+  }
+
+  string payload = random_string(payload_size);
+  rocksdb::Status s = db->Put(key, indexed_attrs, payload);
+  assert(s.ok());
+
+  if (debug) {
+    cout << "  [DEBUG] Putted single KVP -> Key: " << key
+         << " (Attributes: " << sk_num << ", Payload size: " << payload.size()
+         << " bytes)\n";
+  }
+}
+
+//////////////
+inline void old_create_kvp(DB* db, uint64_t n, uint32_t sk_num,
+                           uint32_t payload_size = 32, uint32_t seed = 42,
+                           bool debug = false) {
   srand(seed);
   chrono::_V2::system_clock::time_point start_time, end_time;
   chrono::milliseconds ms_duration;
-
   if (debug)
     cout << "creating " << n << " kvps...\n";
   const uint64_t batch_size = 1e6;
@@ -42,17 +137,13 @@ inline void create_kvp(DB* db, uint64_t n, uint32_t sk_num,
   uint64_t auto_increment = 0;
   vector<pair<string, string>> kvps(batch_size);
   WriteOptions wo = WriteOptions();
-
   start_time = chrono::high_resolution_clock::now();
-
   for (uint64_t cur_batch = 0; cur_batch < total_batch; ++cur_batch) {
     if (n - auto_increment < batch_size)
       kvps.resize(n - auto_increment);
-
     // Creating Batch KVPs
     for (uint32_t i = 0; i < kvps.size(); i++) {
       kvps[i].second.clear();
-
       for (uint32_t j = 0; j < sk_num; ++j) {
         string sk_val;
         // 임시로 연속형, 범주형 SK를 교차로 나오도록 하였음
@@ -69,15 +160,12 @@ inline void create_kvp(DB* db, uint64_t n, uint32_t sk_num,
       auto_increment++;
       kvps[i].first = to_string(auto_increment);
     }
-
     // RocksDB Put
     WriteBatch batch;
     for (auto& [k, v] : kvps)
       batch.Put(k, v);
     db->Write(wo, &batch);
-
     if (debug) {
-
       cout << "[BATCH " << setw(6) << cur_batch << " / " << setw(6)
            << total_batch << "] ";
       cout << "putted: " << auto_increment + 1 << " kvps, elapsed: "
@@ -88,7 +176,6 @@ inline void create_kvp(DB* db, uint64_t n, uint32_t sk_num,
     }
   }
   if (debug) {
-
     cout << "created " << n << "kvps. (total:"
          << chrono::duration_cast<chrono::milliseconds>(
                 chrono::high_resolution_clock::now() - start_time)
@@ -98,14 +185,11 @@ inline void create_kvp(DB* db, uint64_t n, uint32_t sk_num,
 }
 
 // Creates a single key-value pair with a specific key
-inline void create_single_kvp(DB* db, const string& key, uint32_t sk_num,
-                              uint32_t payload_size = 32, uint32_t seed = 42,
-                              bool debug = false) {
+inline void old_create_single_kvp(DB* db, const string& key, uint32_t sk_num,
+                                  uint32_t payload_size = 32,
+                                  uint32_t seed = 42, bool debug = false) {
   srand(seed);
-
   string value;
-  value.clear();
-
   // 1. Create value
   for (uint32_t j = 0; j < sk_num; ++j) {
     string sk_val;
@@ -116,67 +200,14 @@ inline void create_single_kvp(DB* db, const string& key, uint32_t sk_num,
     }
     PutLengthPrefixedSlice(&value, Slice(sk_val));
   }
-
   // 2. Payload
   PutLengthPrefixedSlice(&value, Slice(random_string(payload_size)));
-
   // 3. RocksDB Put
   WriteOptions wo;
   Status s = db->Put(wo, key, value);
   assert(s.ok());
-
   if (debug) {
-    cout << "  [DEBUG] Putted single KVP -> Key: " << key
+    cout << " [DEBUG] Putted single KVP -> Key: " << key
          << " (Value size: " << value.size() << " bytes)\n";
   }
-}
-
-// SST 관찰 코드 (unused)
-inline void inspect_sst(const string& sst_file_path) {
-  Options options;
-  SstFileReader reader(options);
-
-  // 1. SST 파일 열기
-  Status s = reader.Open(sst_file_path);
-  if (!s.ok()) {
-    cerr << "Error opening SST file: " << s.ToString() << "\n";
-    return;
-  }
-
-  // 2. 속성(Properties) 가져오기
-  shared_ptr<const TableProperties> props = reader.GetTableProperties();
-
-  // 3. 디버그할 속성 탐색
-  auto it = props->user_collected_properties.find("block_kv_cnt_psum");
-  if (it == props->user_collected_properties.end()) {
-    cout << "[Error] 'block_kv_cnt_psum' not found in this SST."
-         << "\n";
-    return;
-  }
-
-  // 4. 바이너리 데이터 역직렬화 (복원)
-  string data = it->second;
-  vector<uint32_t> block_kv_cnt_psum;
-  // 데이터 크기가 4바이트(uint32) 단위인지 체크
-  if (data.size() % sizeof(uint32_t) != 0) {
-    cerr << "[Error] Data size mismatch!" << "\n";
-    return;
-  }
-
-  block_kv_cnt_psum.resize(data.size() / sizeof(uint32_t));
-  memcpy(block_kv_cnt_psum.data(), data.data(), data.size());
-
-  // 5. 출력
-  cout << "=== Custom Property Content ===" << "\n";
-  cout << "Total Blocks Recorded: " << block_kv_cnt_psum.size() << "\n";
-  cout << "Values: [ ";
-  for (size_t i = 0; i < block_kv_cnt_psum.size(); ++i) {
-    cout << block_kv_cnt_psum[i]
-         << (i == block_kv_cnt_psum.size() - 1 ? "" : ", ");
-    if (i > 20) { // 너무 많으면 생략
-      cout << "... (total " << block_kv_cnt_psum.size() << ")";
-      break;
-    }
-  }
-  cout << " ]" << "\n";
 }

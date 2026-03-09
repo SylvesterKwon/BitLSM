@@ -1,0 +1,107 @@
+#include "bit_lsm.h"
+#include "bit_lsm_iterator.h"
+#include "rocksdb/options.h"
+#include "rocksdb/statistics.h"
+#include "sabi.h"
+#include <iostream>
+#include <string>
+
+using namespace std;
+using namespace rocksdb;
+using namespace bit_lsm;
+
+BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options)
+    : db_path_(db_path), bit_lsm_options_(bit_lsm_options) {
+  // configure DB
+  rocksdb_options_.create_if_missing = true;
+  BlockBasedTableOptions table_options;
+  table_options.user_defined_index_factory =
+      make_shared<SABIFactory>(bit_lsm_options_);
+  rocksdb_options_.table_factory.reset(
+      NewBlockBasedTableFactory(table_options));
+  const vector<ColumnFamilyDescriptor> column_families(
+      {ColumnFamilyDescriptor(kDefaultColumnFamilyName, rocksdb_options_)});
+  Status s =
+      DB::Open(rocksdb_options_, db_path, column_families, &cf_handles_, &db_);
+  if (!s.ok())
+    cerr << "Failed to open DB: " << s.ToString() << "\n";
+  assert(s.ok());
+}
+
+BitLSM::~BitLSM() {
+  Status s;
+  // Close DB gracefully
+  for (auto handle : cf_handles_)
+    db_->DestroyColumnFamilyHandle(handle);
+  WaitForCompactOptions wait_for_compact_options = WaitForCompactOptions();
+  wait_for_compact_options.close_db = true;
+  s = db_->WaitForCompact(wait_for_compact_options);
+  assert(s.ok());
+  delete db_;
+  cout << "DB successfully closed\n";
+}
+
+Status BitLSM::Put(const string& key, const vector<string>& indexed_attrs,
+                   const string& payload) {
+  // 1. Validate # of indexed attrs
+  if (indexed_attrs.size() != bit_lsm_options_.sk_num) {
+    return Status::InvalidArgument(
+        "The number of indexed_attrs does not match with db configuration.");
+  }
+
+  string serialized_value;
+  serialized_value.clear();
+
+  // 2. Serialize value
+  for (const string& attr : indexed_attrs)
+    PutLengthPrefixedSlice(&serialized_value, Slice(attr));
+  PutLengthPrefixedSlice(&serialized_value, Slice(payload));
+
+  // 3. Put Key-Value pair to RocksDB
+  return db_->Put(WriteOptions(), key, serialized_value);
+}
+
+rocksdb::Status
+BitLSM::PutBatch(const vector<string>& pks,
+                 const vector<vector<string>>& indexed_attrs_list,
+                 const vector<string>& payloads) {
+  // Assume all given vector has same length
+  WriteBatch batch;
+  uint32_t batch_size = pks.size();
+
+  for (uint32_t i = 0; i < batch_size; ++i) {
+    if (indexed_attrs_list[i].size() != bit_lsm_options_.sk_num) {
+      return rocksdb::Status::InvalidArgument(
+          "PutBatch error: indexed_attrs size at index " + to_string(i) +
+          " does not match the configured sk_num.");
+    }
+
+    string serialized_value;
+    for (const string& attr : indexed_attrs_list[i])
+      rocksdb::PutLengthPrefixedSlice(&serialized_value, rocksdb::Slice(attr));
+    rocksdb::PutLengthPrefixedSlice(&serialized_value,
+                                    rocksdb::Slice(payloads[i]));
+    batch.Put(pks[i], serialized_value);
+  }
+  rocksdb::WriteOptions wo;
+  return db_->Write(wo, &batch);
+}
+
+Status BitLSM::Delete(const string& key) {
+  return db_->Delete(WriteOptions(), key);
+  return Status();
+}
+
+unique_ptr<BitLSMIterator> BitLSM::Search(const BitLSMQuery& query) {
+  return std::make_unique<BitLSMIterator>(
+      db_,
+      cf_handles_[0], // 기본 Column Family 사용
+      bit_lsm_options_, query);
+}
+
+void BitLSM::Statistics() {
+  // Get levelstats
+  string stats;
+  db_->GetProperty("rocksdb.levelstats", &stats);
+  cout << stats << "\n";
+}
