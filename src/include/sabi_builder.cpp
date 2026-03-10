@@ -1,3 +1,4 @@
+#include "bit_lsm_utils.h"
 #include "util/coding.h"
 #include <charconv>
 #include <folly/Range.h>
@@ -35,12 +36,20 @@ Slice SABIBuilder::AddIndexEntry(const Slice& last_key_in_current_block,
 
 void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
                              const Slice& value) {
+  std::string_view buffer(value.data(), value.size());
+
   // 1. Buffer original attr data
   Slice v = value;
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
-    Slice res;
-    GetLengthPrefixedSlice(&v, &res);
-    attr_buf_[i].push_back(res.ToString());
+    AttrView attr_val = DecodeAttr(options_.attr_types[i], buffer, i);
+    if (options_.attr_types[i] == AttrType::CONTINUOUS) {
+      double val = std::get<double>(attr_val);
+      attr_buf_[i].push_back(
+          std::string(reinterpret_cast<const char*>(&val), sizeof(double)));
+    } else {
+      std::string_view str_val = std::get<std::string_view>(attr_val);
+      attr_buf_[i].push_back(std::string(str_val));
+    }
   }
 
   // 2. Calculate statistics
@@ -155,12 +164,8 @@ void SABIBuilder::SetContinuousPropertyBinningPolicy(
   vector<double> v(attr_buf_[i].size());
   transform(attr_buf_[i].begin(), attr_buf_[i].end(), v.begin(),
             [](const std::string& s) {
-              double res = 0.0;
-              auto result = from_chars(s.data(), s.data() + s.size(), res);
-              if (result.ec != std::errc()) {
-                cerr << "Error while transform attr_buf_ to double vector\n";
-                assert(false);
-              }
+              double res;
+              std::memcpy(&res, s.data(), sizeof(double));
               return res;
             });
   digest = digest.merge(folly::Range<const double*>(v.data(), v.size()));
@@ -201,10 +206,7 @@ void SABIBuilder::CalculateBitmapIndex() {
       for (uint32_t j = 0; j < attr_buf_[i].size(); ++j) {
         const string& key = attr_buf_[i][j];
         double key_value = 0.0;
-        auto res =
-            std::from_chars(key.data(), key.data() + key.size(), key_value);
-        if (res.ec != std::errc())
-          assert(false && "Invalid double string in buffer");
+        std::memcpy(&key_value, key.data(), sizeof(double));
 
         auto it = std::upper_bound(binning.begin(), binning.end(), key_value);
         uint32_t idx = std::distance(binning.begin(), it);
