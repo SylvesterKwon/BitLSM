@@ -2,6 +2,7 @@
 
 #define TEST_CACHE_LINE_SIZE 64 // To avoid compile error
 
+#include "bit_lsm_option.h"
 #include "roaring.hh"
 #include "rocksdb/options.h"
 #include "rocksdb/user_defined_index.h"
@@ -13,16 +14,6 @@
 
 namespace bit_lsm {
 
-enum AttrType {
-  CATEGORICAL,
-  CONTINUOUS,
-};
-struct BitLSMOptions {
-  uint32_t attr_num;                  // # of attribute
-  std::vector<AttrType> attr_types;   // attribute type vector
-  rocksdb::SequenceNumber read_seqno; // read sequence number
-  double rho; // proportion parameter that determines bitmap budget
-};
 struct BitmapIndex {
   // Bitmap
   std::vector<roaring::Roaring> bitmaps;

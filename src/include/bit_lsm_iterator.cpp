@@ -89,7 +89,7 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
                   candidate_key_slices.data(), pin_values.data(),
                   statuses.data(), true);
 
-    // 5. 교차 검증
+    // 5. Cross check
     for (uint32_t i = 0; i < candidate_key_slices.size(); ++i) {
       // 5-1. Check given candidate key exists in DB
       if (!statuses[i].ok())

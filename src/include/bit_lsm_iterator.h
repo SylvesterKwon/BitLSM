@@ -4,6 +4,7 @@
 #include "db/db_impl/db_impl.h"
 #include "db/version_set.h"
 
+#include "bit_lsm_option.h"
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
 #include <bit_lsm_query.h>
@@ -12,7 +13,7 @@
 
 namespace bit_lsm {
 
-// Abstract class for internal iterator SABITableIterator,
+// Abstract class for internal iterator like SABITableIterator,
 // BitLSMMemTableIterator
 class SABIInternalIterator {
 protected:

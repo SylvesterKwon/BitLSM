@@ -1,7 +1,8 @@
 #include "bit_lsm.h"
 #include "bit_lsm_iterator.h"
+#include "bit_lsm_option.h"
+#include "bit_lsm_utils.h"
 #include "rocksdb/options.h"
-#include "rocksdb/statistics.h"
 #include "sabi.h"
 #include <iostream>
 #include <string>
@@ -41,46 +42,38 @@ BitLSM::~BitLSM() {
   cout << "DB successfully closed\n";
 }
 
-Status BitLSM::Put(const string& key, const vector<string>& indexed_attrs,
+Status BitLSM::Put(const string& key, const vector<Attr>& attrs,
                    const string& payload) {
   // 1. Validate # of indexed attrs
-  if (indexed_attrs.size() != bit_lsm_options_.attr_num) {
+  if (attrs.size() != bit_lsm_options_.attr_num) {
     return Status::InvalidArgument(
-        "The number of indexed_attrs does not match with db configuration.");
+        "The number of attrs does not match with db configuration.");
   }
 
-  string serialized_value;
-  serialized_value.clear();
-
   // 2. Serialize value
-  for (const string& attr : indexed_attrs)
-    PutLengthPrefixedSlice(&serialized_value, Slice(attr));
-  PutLengthPrefixedSlice(&serialized_value, Slice(payload));
+  string serialized_value;
+  EncodeValue(bit_lsm_options_, attrs, payload, serialized_value);
 
   // 3. Put Key-Value pair to RocksDB
   return db_->Put(WriteOptions(), key, serialized_value);
 }
 
-rocksdb::Status
-BitLSM::PutBatch(const vector<string>& pks,
-                 const vector<vector<string>>& indexed_attrs_list,
-                 const vector<string>& payloads) {
+rocksdb::Status BitLSM::PutBatch(const vector<string>& pks,
+                                 const vector<vector<Attr>>& attrs_list,
+                                 const vector<string>& payloads) {
   // Assume all given vector has same length
   WriteBatch batch;
   uint32_t batch_size = pks.size();
 
   for (uint32_t i = 0; i < batch_size; ++i) {
-    if (indexed_attrs_list[i].size() != bit_lsm_options_.attr_num) {
+    if (attrs_list[i].size() != bit_lsm_options_.attr_num) {
       return rocksdb::Status::InvalidArgument(
-          "PutBatch error: indexed_attrs size at index " + to_string(i) +
+          "PutBatch error: attrs size at index " + to_string(i) +
           " does not match the configured attr_num.");
     }
 
     string serialized_value;
-    for (const string& attr : indexed_attrs_list[i])
-      rocksdb::PutLengthPrefixedSlice(&serialized_value, rocksdb::Slice(attr));
-    rocksdb::PutLengthPrefixedSlice(&serialized_value,
-                                    rocksdb::Slice(payloads[i]));
+    EncodeValue(bit_lsm_options_, attrs_list[i], payloads[i], serialized_value);
     batch.Put(pks[i], serialized_value);
   }
   rocksdb::WriteOptions wo;
@@ -89,7 +82,6 @@ BitLSM::PutBatch(const vector<string>& pks,
 
 Status BitLSM::Delete(const string& key) {
   return db_->Delete(WriteOptions(), key);
-  return Status();
 }
 
 unique_ptr<BitLSMIterator> BitLSM::NewIterator(BitLSMQuery& query) {

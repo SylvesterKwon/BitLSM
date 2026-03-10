@@ -1,7 +1,7 @@
 #pragma once
 
+#include "bit_lsm_option.h"
 #include "rocksdb/slice.h"
-#include "sabi.h"
 #include <cstdint>
 #include <string>
 #include <variant>
