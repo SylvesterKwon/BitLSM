@@ -60,12 +60,11 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
 
 void SABIBuilder::SetBinningPolicy() {
   // 1. Set target total bitmap index number
-  // (Total Bitmap Size)
-  // = (total_bitmaps_cnt) * (N/8)
-  // = (total_data_entries_size) * ρ
+  // total_bitmaps_cnt = attr_num / fpr
+  // rho: expected bin selectivity per point query (0, 1]
+  // e.g. rho=0.1 means 10 bins per attr on avg.
   uint32_t target_total_bitmaps_cnt =
-      (double)(total_data_entries_size_uncomp_ * 8) * options_.rho /
-      index_entries_cnt_;
+      (uint32_t)(options_.attr_num / options_.rho);
 
   // 2. Set # of bitmaps for each attr
   vector<map<string_view, uint32_t>> buf_map(

@@ -96,8 +96,6 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
         continue;
 
       // 5-2. Value validation
-      // TODO(TASK-111): 값 인코딩 개선해서 CheckCondition 다 수행하는게 아니라
-      // seqno 비슷하게 작은 부분만 대조하면 되도록 수정하기.
       if (query_.CheckCondition(pin_values[i], options_)) {
         // 5-3. Move key/value to validated batch if valid entry
         batch_keys_.push_back(std::move(candidate_keys[i]));
