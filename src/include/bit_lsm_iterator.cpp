@@ -1,3 +1,5 @@
+#include "bit_lsm_option.h"
+#include "bit_lsm_utils.h"
 #include "rocksdb/db.h"
 #include "rocksdb/snapshot.h"
 #include <bit_lsm_iterator.h>
@@ -139,20 +141,4 @@ Slice BitLSMIterator::key() const {
 Slice BitLSMIterator::value() const {
   assert(Valid());
   return batch_values_[batch_cur_idx_];
-}
-
-void BitLSMIterator::TEST_DumpValue(Slice input) {
-  for (uint32_t i = 0; i < options_.attr_num; ++i) {
-    if (i)
-      cout << " / ";
-    rocksdb::Slice part;
-    GetLengthPrefixedSlice(&input, &part);
-    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
-      cout << part.ToString();
-    } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
-      string s = part.ToString();
-      cout << s;
-    }
-  }
-  cout << "\n";
 }

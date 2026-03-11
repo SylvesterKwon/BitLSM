@@ -132,19 +132,3 @@ Slice BitLSMLevelIterator::value() const {
   assert(Valid());
   return cur_sti_->value();
 }
-
-void BitLSMLevelIterator::TEST_DumpValue(Slice input) {
-  for (uint32_t i = 0; i < options_.attr_num; ++i) {
-    if (i)
-      cout << " / ";
-    rocksdb::Slice part;
-    GetLengthPrefixedSlice(&input, &part);
-    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
-      cout << part.ToString();
-    } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
-      string s = part.ToString();
-      cout << s;
-    }
-  }
-  cout << "\n";
-}

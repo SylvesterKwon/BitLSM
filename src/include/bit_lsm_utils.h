@@ -1,6 +1,8 @@
 #include "bit_lsm_option.h"
 #include <cstdint>
 #include <cstring>
+#include <iomanip>
+#include <iostream>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -83,4 +85,19 @@ inline AttrView DecodeAttr(AttrType type, std::string_view buffer,
     return std::string_view(data_ptr, nxt_offset - cur_offset);
   }
 }
+
+inline void TEST_DumpValue(BitLSMOptions options, rocksdb::Slice input) {
+  for (uint32_t i = 0; i < options.attr_num; ++i) {
+    if (i)
+      std::cout << " / ";
+    AttrView av = DecodeAttr(options.attr_types[i], input.ToStringView(), i);
+    if (options.attr_types[i] == AttrType::CONTINUOUS) {
+      std::cout << std::fixed << std::setprecision(6) << std::get<double>(av);
+    } else {
+      std::cout << std::get<std::string_view>(av);
+    }
+  }
+  std::cout << "\n";
+}
+
 } // namespace bit_lsm

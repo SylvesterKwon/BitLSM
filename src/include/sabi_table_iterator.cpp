@@ -336,20 +336,3 @@ Slice SABITableIterator::value() const {
   assert(Valid());
   return values_buffer_[buffer_idx_];
 }
-
-void SABITableIterator::TEST_DumpValue(Slice input) {
-  std::cout << "==== Value Decode Debug (" << input.size() << " bytes) ====\n";
-  for (uint32_t i = 0; i < options_.attr_num; ++i) {
-    rocksdb::Slice part;
-    GetLengthPrefixedSlice(&input, &part);
-    std::cout << "  [ATTR:" << i << "] ";
-
-    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
-      std::cout << "(CAT) : " << part.ToString();
-    } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
-      std::string s = part.ToString();
-      std::cout << "(CONT): " << s;
-    }
-    std::cout << "\n";
-  }
-}
