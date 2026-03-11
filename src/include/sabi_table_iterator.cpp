@@ -130,6 +130,8 @@ SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
       bitmap_offset += sabi_reader_->bitmap_index.bitmap_nums[i];
 
     if (cur_attr_type == AttrType::CATEGORICAL) {
+      // We only support EQUAL for categorical type
+      // Maybe support OR clause
       if (cond.op != CompareOp::EQUAL)
         assert(false);
       const string& value = std::get<string>(cond.value);
@@ -184,13 +186,16 @@ SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
         end_bin = target_bin_idx;
         break;
       case CompareOp::GREATER_EQUAL: // >= value
+      case CompareOp::GREATER:       // > value
         start_bin = target_bin_idx;
         end_bin = static_cast<int32_t>(num_bins) - 1;
         break;
       case CompareOp::LESS_EQUAL: // <= value
+      case CompareOp::LESS:       // < value
         start_bin = 0;
         end_bin = target_bin_idx;
         break;
+
       default:
         assert(false);
       }

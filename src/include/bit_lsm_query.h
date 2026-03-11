@@ -14,8 +14,8 @@ enum class CompareOp {
   EQUAL,
   LESS_EQUAL,
   GREATER_EQUAL,
-  // LESS,
-  // GREATER,
+  LESS,
+  GREATER,
 };
 
 // Query condition

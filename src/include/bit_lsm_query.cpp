@@ -38,6 +38,10 @@ bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
           match = (cmp >= 0);
         else if (cond.op == CompareOp::LESS_EQUAL)
           match = (cmp <= 0);
+        else if (cond.op == CompareOp::GREATER)
+          match = (cmp > 0);
+        else if (cond.op == CompareOp::LESS)
+          match = (cmp < 0);
         else
           assert(false);
       } else if (attr_type == AttrType::CONTINUOUS) {
@@ -49,6 +53,10 @@ bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
           match = (val_double >= query_val);
         else if (cond.op == CompareOp::LESS_EQUAL)
           match = (val_double <= query_val);
+        else if (cond.op == CompareOp::GREATER)
+          match = (val_double > query_val);
+        else if (cond.op == CompareOp::LESS)
+          match = (val_double < query_val);
         else
           assert(false);
       }
