@@ -257,20 +257,22 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   vector<uint32_t> binning_policy_offset;
   binning_policy_offset.push_back(index_blob_.size());
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
+    // Add bin count
+    PutFixed32(&index_blob_, bitmap_index_.bitmap_nums[i]);
     if (options_.attr_types[i] == AttrType::CATEGORICAL) {
-      vector<pair<string, uint32_t>>& binning =
+      vector<pair<string, uint32_t>>& cur_binning_policy =
           std::get<vector<pair<string, uint32_t>>>(
               bitmap_index_.binning_policy[i]);
-      PutFixed32(&index_blob_, binning.size());
-      for (auto& bi : binning) {
+      PutFixed32(&index_blob_, cur_binning_policy.size()); // policy entry count
+      for (auto& bi : cur_binning_policy) {
         PutLengthPrefixedSlice(&index_blob_, bi.first);
         PutFixed32(&index_blob_, bi.second);
       }
     } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
-      vector<double>& binning =
+      vector<double>& cur_binning_policy =
           std::get<vector<double>>(bitmap_index_.binning_policy[i]);
-      PutFixed32(&index_blob_, binning.size());
-      for (auto& bi : binning) {
+      PutFixed32(&index_blob_, cur_binning_policy.size()); // policy entry count
+      for (auto& bi : cur_binning_policy) {
         uint64_t val_encoded;
         // Prevent implicit double->uint64_t cast
         std::memcpy(&val_encoded, &bi, sizeof(double));

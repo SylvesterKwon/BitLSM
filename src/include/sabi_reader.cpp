@@ -61,22 +61,20 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
     uint32_t cur_binning_policy_offset =
         DecodeFixed32(index_block.data() + binning_policy_offset_offset +
                       (i + 1) * sizeof(uint32_t));
-    uint32_t cur_binning_policy_size =
+
+    // Get bin count
+    bitmap_index.bitmap_nums[i] =
         DecodeFixed32(index_block.data() + cur_binning_policy_offset);
-    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
-      bitmap_index.bitmap_nums[i] = cur_binning_policy_size;
-    } else {
-      // since it uses one more array to represent boundary
-      bitmap_index.bitmap_nums[i] = cur_binning_policy_size - 1;
-    }
+    uint32_t cur_binning_policy_entry_count = DecodeFixed32(
+        index_block.data() + cur_binning_policy_offset + sizeof(uint32_t));
+    const char* ptr =
+        index_block.data() + cur_binning_policy_offset + 2 * sizeof(uint32_t);
 
     if (options_.attr_types[i] == AttrType::CATEGORICAL) {
       // read {length prefixed string + uint32t (bin number)}
-      const char* ptr =
-          index_block.data() + cur_binning_policy_offset + sizeof(uint32_t);
       vector<pair<string, uint32_t>> cur_binning_policy(
-          cur_binning_policy_size);
-      for (uint32_t j = 0; j < cur_binning_policy_size; ++j) {
+          cur_binning_policy_entry_count);
+      for (uint32_t j = 0; j < cur_binning_policy_entry_count; ++j) {
         uint32_t key_len = 0;
         // requires at least 5 bytes
         const char* key_start = GetVarint32Ptr(ptr, ptr + 5, &key_len);
@@ -87,11 +85,9 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
       }
       bitmap_index.binning_policy[i] = std::move(cur_binning_policy);
     } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
-      vector<double> cur_binning_policy(cur_binning_policy_size);
-      for (uint32_t j = 0; j < cur_binning_policy_size; ++j) {
-        uint64_t val_int =
-            DecodeFixed64(index_block.data() + cur_binning_policy_offset +
-                          sizeof(uint32_t) + j * sizeof(double));
+      vector<double> cur_binning_policy(cur_binning_policy_entry_count);
+      for (uint32_t j = 0; j < cur_binning_policy_entry_count; ++j) {
+        uint64_t val_int = DecodeFixed64(ptr + j * sizeof(double));
         memcpy(&cur_binning_policy[j], &val_int, sizeof(double));
       }
       bitmap_index.binning_policy[i] = std::move(cur_binning_policy);

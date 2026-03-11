@@ -200,9 +200,6 @@ SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
       if (static_cast<int32_t>(num_bins) <= end_bin)
         end_bin = static_cast<int32_t>(num_bins) - 1;
 
-      // Debug
-      // cout << "s: " << start_bin << ", e: " << end_bin << "\n";
-
       // 3. Merge bitmap (OR)
       for (int32_t i = start_bin; i <= end_bin; ++i) {
         int32_t global_idx = bitmap_offset + i;
