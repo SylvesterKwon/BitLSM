@@ -119,6 +119,7 @@ SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
     return result;
 
   bool is_first_condition = true;
+  vector<const roaring::Roaring*> bitmap_ptrs_buf;
   for (const auto& cond : query.conditions) {
 
     // 1. Create bitmap for current query condition
@@ -206,9 +207,15 @@ SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
         end_bin = static_cast<int32_t>(num_bins) - 1;
 
       // 3. Merge bitmap (OR)
-      for (int32_t i = start_bin; i <= end_bin; ++i) {
-        int32_t global_idx = bitmap_offset + i;
-        cur_cond_bitmap |= sabi_reader_->bitmap_index.bitmaps[global_idx];
+      uint32_t num_bitmaps = end_bin - start_bin + 1;
+      bitmap_ptrs_buf.clear();
+      bitmap_ptrs_buf.reserve(num_bitmaps);
+      for (int32_t i = start_bin; i <= end_bin; ++i)
+        bitmap_ptrs_buf.push_back(
+            &(sabi_reader_->bitmap_index.bitmaps[bitmap_offset + i]));
+      if (!bitmap_ptrs_buf.empty()) {
+        cur_cond_bitmap = roaring::Roaring::fastunion(bitmap_ptrs_buf.size(),
+                                                      bitmap_ptrs_buf.data());
       }
     }
 
