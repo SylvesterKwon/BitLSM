@@ -1,4 +1,4 @@
-## LSM-Tree bitmap index
+## BitLSM
 WIP
 
 Based on RocksDB v10.9.0
@@ -12,7 +12,9 @@ TODO: rocksdb 브랜치 설정 하도록 안내
 TODO: RoaringBitmap 의존성 소개
 
 ### 1. 의존성 설치
-### 1-1. RocksDB dependency
+
+RocksDB dependency
+
 ```bash
 $ apt-get update && apt-get install -y \
 libsnappy-dev \ 
@@ -20,6 +22,11 @@ zlib1g-dev \
 libbz2-dev \ 
 liblz4-dev \ 
 libzstd-dev
+```
+
+jemalloc
+```bash
+sudo apt-get install -y libjemalloc-dev
 ```
 
 ### 1-2. Facebook Folly

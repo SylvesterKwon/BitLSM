@@ -22,6 +22,7 @@ set(FAIL_ON_WARNINGS OFF CACHE BOOL "" FORCE)
 set(WITH_SNAPPY ON CACHE BOOL "" FORCE)
 set(WITH_LZ4 ON CACHE BOOL "" FORCE)
 set(WITH_ZSTD ON CACHE BOOL "" FORCE)
+set(WITH_JEMALLOC ON CACHE BOOL "" FORCE)
 
 add_subdirectory(third_party/rocksdb)
 set(ROCKSDB_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/rocksdb)
@@ -67,6 +68,7 @@ file(GLOB_RECURSE LIB_SOURCES "src/include/*.cpp")
 find_package(folly CONFIG REQUIRED)
 find_package(gflags REQUIRED) # for folly
 find_package(Threads REQUIRED)
+find_library(JEMALLOC_LIB jemalloc REQUIRED)
 
 # project_base_lib 정적 라이브러리 생성
 add_library(project_base_lib STATIC ${LIB_SOURCES})
@@ -103,6 +105,7 @@ rocksdb
 Folly::folly
 dl
 Threads::Threads
+${JEMALLOC_LIB}
 m
 z
 bz2
