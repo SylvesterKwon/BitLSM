@@ -8,8 +8,23 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # C++ Standard
 set(CMAKE_CXX_STANDARD 20)
 
-# 성능 측정시 아래 라인 활성화 (RelWithDebInfo 와 함께 사용)
-# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -fno-omit-frame-pointer")
+# Build Type & Compiler Flags Preferences
+# Default option (RelWithDebInfo)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING "Choose the type of build." FORCE)
+endif()
+# Release mode
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -mtune=native -DNDEBUG")
+# Debug mode
+set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g")
+# RelWithDebInfo mode
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O3 -march=native -mtune=native -g -fno-omit-frame-pointer -DNDEBUG")
+
+string(TOUPPER "${CMAKE_BUILD_TYPE}" UPPER_BUILD_TYPE)
+message(STATUS "=======================================================")
+message(STATUS "Current Build Type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "Active CXX Flags : ${CMAKE_CXX_FLAGS_${UPPER_BUILD_TYPE}}")
+message(STATUS "=======================================================")
 
 # RocksDB
 set(WITH_TESTS OFF CACHE BOOL "" FORCE)

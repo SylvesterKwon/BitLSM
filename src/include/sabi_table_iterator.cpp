@@ -11,8 +11,8 @@
 #include "roaring.hh"
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
+#include "table/block_based/block_based_table_reader_impl.h" // Required: provides NewDataBlockIterator<> template definition
 #include <bit_lsm_iterator.h>
-#include <iostream>
 
 using namespace std;
 using namespace rocksdb;
