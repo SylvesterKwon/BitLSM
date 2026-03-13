@@ -37,7 +37,8 @@ private:
   BitLSMOptions options_;
 
   // Buffer
-  std::vector<std::vector<std::string>> attr_buf_;
+  std::vector<std::variant<std::vector<std::string>, std::vector<double>>>
+      attr_buf_;
 
   // Statistics
   uint64_t total_data_entries_size_uncomp_ = 0; // total size of KVPs (bytes)
@@ -53,9 +54,9 @@ private:
   // Helper methods
   void SetBinningPolicy();
   void SetCategoricalPropertyBinningPolicy(
-      uint32_t i, std::vector<std::map<std::string_view, uint32_t>>& buf_map);
-  void SetContinuousPropertyBinningPolicy(
-      uint32_t i, std::vector<std::map<std::string_view, uint32_t>>& buf_map);
+      uint32_t i,
+      std::vector<std::unordered_map<std::string_view, uint32_t>>& cat_buf_map);
+  void SetContinuousPropertyBinningPolicy(uint32_t i);
   void CalculateBitmapIndex();
 
 public:

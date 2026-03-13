@@ -16,10 +16,17 @@ namespace bit_lsm {
 // ========================================================================
 // SABIBuilder Implementation
 // ========================================================================
-SABIBuilder::SABIBuilder(BitLSMOptions options)
-    : options_(options), attr_buf_(options.attr_num) {
+SABIBuilder::SABIBuilder(BitLSMOptions options) : options_(options) {
   bitmap_index_.bitmap_nums.resize(options.attr_num, 0);
   bitmap_index_.binning_policy.resize(options.attr_num);
+  attr_buf_.reserve(options.attr_num);
+  for (uint32_t i = 0; i < options_.attr_num; ++i) {
+    if (options_.attr_types[i] == AttrType::CONTINUOUS) {
+      attr_buf_.push_back(vector<double>());
+    } else {
+      attr_buf_.push_back(vector<string>());
+    }
+  }
 };
 
 Slice SABIBuilder::AddIndexEntry(const Slice& last_key_in_current_block,
@@ -43,12 +50,11 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
     AttrView attr_val = DecodeAttr(options_.attr_types[i], buffer, i);
     if (options_.attr_types[i] == AttrType::CONTINUOUS) {
-      double val = std::get<double>(attr_val);
-      attr_buf_[i].push_back(
-          std::string(reinterpret_cast<const char*>(&val), sizeof(double)));
+      double val = get<double>(attr_val);
+      get<vector<double>>(attr_buf_[i]).push_back(val);
     } else {
-      std::string_view str_val = std::get<std::string_view>(attr_val);
-      attr_buf_[i].push_back(std::string(str_val));
+      string_view str_val = get<string_view>(attr_val);
+      get<vector<string>>(attr_buf_[i]).emplace_back(str_val);
     }
   }
 
@@ -67,18 +73,28 @@ void SABIBuilder::SetBinningPolicy() {
       (uint32_t)(options_.attr_num / options_.rho);
 
   // 2. Set # of bitmaps for each attr
-  vector<map<string_view, uint32_t>> buf_map(
-      options_.attr_num); // map for counting each attr's value
+  vector<unordered_map<string_view, uint32_t>> cat_buf_map(
+      options_.attr_num); // map for counting each categorical attr's value
+  vector<uint32_t> cardinality(options_.attr_num, 0);
   uint32_t cardinality_ub =
       target_total_bitmaps_cnt; // theoretically max bins for one attr
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
-    for (uint32_t j = 0; j < data_entries_cnt_; ++j) {
-      buf_map[i][attr_buf_[i][j]]++;
-      // Optimization: keep map light when continuous property
-      // It is inevitable to keep all value's count when categorical property
-      if (options_.attr_types[i] == AttrType::CONTINUOUS &&
-          buf_map[i].size() >= cardinality_ub)
-        break;
+    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
+      const auto& str_vec = get<vector<string>>(attr_buf_[i]);
+      for (const string& val : str_vec) {
+        cat_buf_map[i][val]++;
+      }
+      cardinality[i] = cat_buf_map[i].size();
+    } else {
+      const auto& double_vec = get<vector<double>>(attr_buf_[i]);
+      unordered_set<double> unique_vals;
+      for (double val : double_vec) {
+        unique_vals.insert(val);
+        if (unique_vals.size() >= cardinality_ub) {
+          break; // Optimization: Upper bound 도달 시 탐색 즉시 종료
+        }
+      }
+      cardinality[i] = unique_vals.size();
     }
   }
 
@@ -104,9 +120,9 @@ void SABIBuilder::SetBinningPolicy() {
   while (remaining_budget > 0 && pq.size() > 0) {
     auto [_, idx] = pq.top();
     pq.pop();
-    if (buf_map[idx].size() <= bitmap_index_.bitmap_nums[idx]) {
+    if (cardinality[idx] <= bitmap_index_.bitmap_nums[idx])
       continue;
-    }
+
     bitmap_index_.bitmap_nums[idx]++;
     remaining_budget--;
     total_bitmaps_num++;
@@ -117,14 +133,13 @@ void SABIBuilder::SetBinningPolicy() {
   bitmap_index_.bitmaps.resize(total_bitmaps_num);
 
   // 3. Set binning boundaries for each attr
-
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
     if (options_.attr_types[i] == AttrType::CATEGORICAL) {
       // 3-A. Categorical property Binning
-      SetCategoricalPropertyBinningPolicy(i, buf_map);
+      SetCategoricalPropertyBinningPolicy(i, cat_buf_map);
     } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
       // 3-B. Continuous property Binning
-      SetContinuousPropertyBinningPolicy(i, buf_map);
+      SetContinuousPropertyBinningPolicy(i);
     } else {
       assert(false);
     }
@@ -132,7 +147,7 @@ void SABIBuilder::SetBinningPolicy() {
 }
 
 void SABIBuilder::SetCategoricalPropertyBinningPolicy(
-    uint32_t i, vector<map<string_view, uint32_t>>& buf_map) {
+    uint32_t i, vector<unordered_map<string_view, uint32_t>>& buf_map) {
   priority_queue<pair<uint32_t, uint32_t>, vector<pair<uint32_t, uint32_t>>,
                  greater<pair<uint32_t, uint32_t>>>
       min_bin_pq;
@@ -156,18 +171,13 @@ void SABIBuilder::SetCategoricalPropertyBinningPolicy(
   bitmap_index_.binning_policy[i] = std::move(binning);
 }
 
-void SABIBuilder::SetContinuousPropertyBinningPolicy(
-    uint32_t i, std::vector<std::map<std::string_view, uint32_t>>& buf_map) {
+void SABIBuilder::SetContinuousPropertyBinningPolicy(uint32_t i) {
   folly::TDigest digest(
       1000); // TODO: Make this configurable / driven with some fomular
-  vector<double> v(attr_buf_[i].size());
-  transform(attr_buf_[i].begin(), attr_buf_[i].end(), v.begin(),
-            [](const std::string& s) {
-              double res;
-              std::memcpy(&res, s.data(), sizeof(double));
-              return res;
-            });
+
+  const auto& v = get<vector<double>>(attr_buf_[i]);
   digest = digest.merge(folly::Range<const double*>(v.data(), v.size()));
+
   // N+1 boundary points
   vector<double> boundaries(bitmap_index_.bitmap_nums[i] + 1);
   for (uint32_t j = 0; j <= bitmap_index_.bitmap_nums[i]; ++j) {
@@ -181,17 +191,16 @@ void SABIBuilder::CalculateBitmapIndex() {
   uint32_t bin_idx_offset = 0;
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
     if (options_.attr_types[i] == AttrType::CATEGORICAL) {
+      const vector<string>& cur_attr_buf = get<vector<string>>(attr_buf_[i]);
       vector<pair<string, uint32_t>>& binning =
-          std::get<vector<pair<string, uint32_t>>>(
-              bitmap_index_.binning_policy[i]);
-      for (uint32_t j = 0; j < attr_buf_[i].size(); ++j) {
-        const string& key = attr_buf_[i][j];
+          get<vector<pair<string, uint32_t>>>(bitmap_index_.binning_policy[i]);
+      for (uint32_t j = 0; j < cur_attr_buf.size(); ++j) {
+        const string& key = cur_attr_buf[j];
 
-        auto it = std::lower_bound(
-            binning.begin(), binning.end(), key,
-            [](const pair<string, uint32_t>& element, const string& val) {
-              return element.first < val;
-            });
+        auto it =
+            lower_bound(binning.begin(), binning.end(), key,
+                        [](const pair<string, uint32_t>& element,
+                           const string& val) { return element.first < val; });
         if (it != binning.end() && it->first == key) {
           uint32_t bin_idx = bin_idx_offset + (it->second);
           bitmap_index_.bitmaps[bin_idx].add(j);
@@ -200,14 +209,12 @@ void SABIBuilder::CalculateBitmapIndex() {
         }
       }
     } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
+      const vector<double>& cur_attr_buf = get<vector<double>>(attr_buf_[i]);
       vector<double>& binning =
-          std::get<vector<double>>(bitmap_index_.binning_policy[i]);
-      for (uint32_t j = 0; j < attr_buf_[i].size(); ++j) {
-        const string& key = attr_buf_[i][j];
-        double key_value = 0.0;
-        std::memcpy(&key_value, key.data(), sizeof(double));
-
-        auto it = std::upper_bound(binning.begin(), binning.end(), key_value);
+          get<vector<double>>(bitmap_index_.binning_policy[i]);
+      for (uint32_t j = 0; j < cur_attr_buf.size(); ++j) {
+        auto it =
+            std::upper_bound(binning.begin(), binning.end(), cur_attr_buf[j]);
         uint32_t idx = std::distance(binning.begin(), it);
         uint32_t local_bin_idx =
             (idx == 0) ? 0 : static_cast<uint32_t>(idx - 1);

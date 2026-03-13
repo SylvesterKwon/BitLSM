@@ -11,11 +11,11 @@ using namespace bit_lsm;
 
 int main(const int argc, char* argv[]) {
   // test {# of kvp, payload bytes, rho}
-  string db_path = "/scratch/data/test-1e8-32-0.1-t8";
+  string db_path = "/scratch/data/test-1e8-32-0.01-t4-bufpatched";
 
   // 테스트용 옵션
   BitLSMOptions bit_lsm_options;
-  bit_lsm_options.rho = 0.1;
+  bit_lsm_options.rho = 0.01;
   bit_lsm_options.attr_num = 16;
   for (uint32_t i = 0; i < bit_lsm_options.attr_num; ++i) {
     if (i % 2 == 0)
@@ -27,7 +27,7 @@ int main(const int argc, char* argv[]) {
   BitLSM db(db_path, bit_lsm_options);
 
   // Write test
-  fill_kvp_multi_thread(&db, 8, 1e8, bit_lsm_options, 32, 42, true);
+  fill_kvp_multi_thread(&db, 4, 1e8, bit_lsm_options, 32, 42, true);
   return 0;
 
   chrono::_V2::system_clock::time_point start_time =
