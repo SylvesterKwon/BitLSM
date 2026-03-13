@@ -1,3 +1,5 @@
+#pragma once
+
 #include "bit_lsm_option.h"
 #include <cstdint>
 #include <cstring>

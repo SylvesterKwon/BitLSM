@@ -1,5 +1,9 @@
+#pragma once
 
 #include "bit_lsm.h"
+#include "bit_lsm_option.h"
+#include "bit_lsm_utils.h"
+#include "rocksdb/options.h"
 #include <chrono>
 #include <cstdint>
 #include <iomanip>
@@ -26,6 +30,78 @@ inline string random_string(size_t length) {
   return res;
 }
 
+inline void
+put_thread_worker(bit_lsm::BitLSM* db, uint32_t thread_id, uint64_t n,
+                  uint32_t payload_size, bit_lsm::BitLSMOptions options,
+                  atomic<uint64_t>& global_auto_increment,
+                  chrono::_V2::system_clock::time_point start_time) {
+  rocksdb::WriteOptions wo;
+  mt19937 gen(thread_id);
+  uniform_int_distribution<int> cat_dist(0, 99);
+  uniform_real_distribution<double> cont_dist(0.0, 100.0);
+  uniform_int_distribution<size_t> char_dist(0, max_index);
+  uint64_t local_count = 0;
+
+  while (true) {
+    uint64_t current_pk_val = ++global_auto_increment;
+    if (current_pk_val > n)
+      break;
+
+    vector<Attr> attrs(options.attr_num);
+    for (uint32_t j = 0; j < options.attr_num; ++j) {
+      if (j % 2 == 0)
+        attrs[j] = to_string(cat_dist(gen));
+      else
+        attrs[j] = cont_dist(gen);
+    }
+
+    string payload;
+    payload.reserve(payload_size);
+    for (size_t i = 0; i < payload_size; ++i)
+      payload += char_set[char_dist(gen)];
+    string pk = to_string(current_pk_val);
+
+    db->Put(pk, attrs, payload);
+
+    local_count++;
+    if (current_pk_val % 1000000 == 0) {
+      cout << "putted: " << global_auto_increment << " kvps, elapsed: "
+           << chrono::duration_cast<chrono::milliseconds>(
+                  chrono::high_resolution_clock::now() - start_time)
+                  .count()
+           << "ms \n";
+    }
+  }
+}
+
+inline void fill_kvp_multi_thread(bit_lsm::BitLSM* db, uint32_t num_threads,
+                                  uint64_t n, bit_lsm::BitLSMOptions options,
+                                  uint32_t payload_size = 32,
+                                  uint32_t seed = 42, bool debug = false) {
+  Status s;
+
+  if (debug)
+    cout << "creating " << n << " kvps into BitLSM using Put API...\n";
+  chrono::_V2::system_clock::time_point start_time =
+      chrono::high_resolution_clock::now();
+  vector<thread> workers;
+  atomic<uint64_t> global_auto_increment(0);
+
+  for (int i = 0; i < num_threads; ++i)
+    workers.emplace_back(put_thread_worker, db, i, n, payload_size, options,
+                         std::ref(global_auto_increment), start_time);
+  for (auto& t : workers)
+    t.join();
+  if (debug) {
+    cout << "✅ created " << n << " kvps. (total:"
+         << chrono::duration_cast<chrono::milliseconds>(
+                chrono::high_resolution_clock::now() - start_time)
+                .count()
+         << "ms elapsed)\n";
+  }
+}
+
+// batch fill kvp
 inline void fill_kvp(bit_lsm::BitLSM* db, uint64_t n, uint32_t attr_num,
                      uint32_t payload_size = 32, uint32_t seed = 42,
                      bool debug = false) {
