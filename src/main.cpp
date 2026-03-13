@@ -11,7 +11,7 @@ using namespace bit_lsm;
 
 int main(const int argc, char* argv[]) {
   // test {# of kvp, payload bytes, rho}
-  string db_path = "/scratch/data/test-1e8-32-0.01-t4-bufpatched";
+  string db_path = "/scratch/data/test-1e8-32-0.01-t4-bufpatched-2";
 
   // 테스트용 옵션
   BitLSMOptions bit_lsm_options;

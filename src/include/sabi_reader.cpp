@@ -28,9 +28,13 @@ Status SABIUDIIterator::SeekAndGetResult(const Slice& target,
   return Status::OK();
 };
 
-Status SABIUDIIterator::NextAndGetResult(IterateResult* result) {};
+Status SABIUDIIterator::NextAndGetResult(IterateResult* result) {
+  return Status::OK();
+};
 
-UserDefinedIndexBuilder::BlockHandle SABIUDIIterator::value() {};
+UserDefinedIndexBuilder::BlockHandle SABIUDIIterator::value() {
+  return UserDefinedIndexBuilder::BlockHandle{};
+};
 
 // ========================================================================
 // SABIReader Implementation

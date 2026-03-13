@@ -180,7 +180,7 @@ void vanila_fill_kvp_using_sequential(uint32_t num_threads, int64_t n,
 }
 
 int main(const int argc, char* argv[]) {
-  string db_path = "/scratch/data/vanila-1e8-32-t8";
+  string db_path = "/scratch/data/vanila-1e8-32-t4";
   options.attr_num = 16;
   for (uint32_t i = 0; i < options.attr_num; ++i) {
     if (i % 2 == 0)
@@ -196,7 +196,7 @@ int main(const int argc, char* argv[]) {
   assert(s.ok());
 
   // Write test
-  vanila_fill_kvp_using_sequential(8, 1e8, 32, true);
+  vanila_fill_kvp_using_sequential(4, 1e8, 32, true);
 
   WaitForCompactOptions wait_for_compact_options = WaitForCompactOptions();
   wait_for_compact_options.close_db = true;
