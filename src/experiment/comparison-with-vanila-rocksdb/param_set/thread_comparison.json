@@ -18,7 +18,7 @@
       "name":   "bitlsm",
       "binary": "build/bin/bit-lsm",
       "params": {
-        "rho": [0.01, 0.05, 0.1, 0.2, 0.5]
+        "rho": [0.01, 0.05, 0.1]
       }
     }
   ]

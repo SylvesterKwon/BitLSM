@@ -242,9 +242,10 @@ int main(const int argc, char* argv[]) {
   Options rocksdb_options;
   rocksdb_options.create_if_missing = true;
   Status s = DB::Open(rocksdb_options, db_path, &db);
-  if (!s.ok())
+  if (!s.ok()) {
     cerr << "Failed to open DB: " << s.ToString() << "\n";
-  assert(s.ok());
+    return 1;
+  }
 
   vanila_fill_kvp_using_sequential(n_threads, n, payload, true);
 
