@@ -104,7 +104,8 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
   uint32_t bitmap_offset_cnt =
       DecodeFixed32(index_block.data() + bitmap_indexoffset_offset);
   uint32_t bitmaps_cnt = bitmap_offset_cnt - 1;
-  bitmap_index.bitmaps.resize(bitmaps_cnt);
+  bitmap_index.bitmaps.resize(bitmaps_cnt -
+                              1); // the last bitmap is for tombstone
   vector<uint32_t> bitmap_offsets(bitmap_offset_cnt);
   for (uint32_t i = 0; i < bitmap_offset_cnt; ++i) {
     bitmap_offsets[i] =
@@ -120,8 +121,14 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
     posix_memalign(&aligned_ptr, 32, size);
     AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr), std::free);
     memcpy(managed_aligned_ptr.get(), raw_ptr, size);
-    bitmap_index.bitmaps[i] = Roaring::frozenView(
-        reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
+    if (i < bitmaps_cnt - 1) {
+      bitmap_index.bitmaps[i] = Roaring::frozenView(
+          reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
+    } else {
+      // The last bitmap is the tombstone bitmap
+      bitmap_index.tombstone_bitmap = Roaring::frozenView(
+          reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
+    }
     managed_buffers_.push_back(
         std::move(managed_aligned_ptr)); // move pointer ownership
   }

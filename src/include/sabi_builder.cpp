@@ -1,6 +1,5 @@
 #include "bit_lsm_utils.h"
 #include "util/coding.h"
-#include <charconv>
 #include <folly/Range.h>
 #include <folly/stats/TDigest.h>
 #include <iostream>
@@ -43,22 +42,42 @@ Slice SABIBuilder::AddIndexEntry(const Slice& last_key_in_current_block,
 
 void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
                              const Slice& value) {
-  std::string_view buffer(value.data(), value.size());
-
-  // 1. Buffer original attr data
-  Slice v = value;
-  for (uint32_t i = 0; i < options_.attr_num; ++i) {
-    AttrView attr_val = DecodeAttr(options_.attr_types[i], buffer, i);
-    if (options_.attr_types[i] == AttrType::CONTINUOUS) {
-      double val = get<double>(attr_val);
-      get<vector<double>>(attr_buf_[i]).push_back(val);
-    } else {
-      string_view str_val = get<string_view>(attr_val);
-      get<vector<string>>(attr_buf_[i]).emplace_back(str_val);
-    }
+  // 1. Handle tombstone
+  bool is_value = true;
+  if (type == ValueType::kTypeDeletion ||
+      type == ValueType::kTypeSingleDeletion) {
+    is_value = false;
   }
 
-  // 2. Calculate statistics
+  // 2. Buffer original attr data
+  if (is_value) {
+    std::string_view buffer(value.data(), value.size());
+    Slice v = value;
+    for (uint32_t i = 0; i < options_.attr_num; ++i) {
+      AttrView attr_val = DecodeAttr(options_.attr_types[i], buffer, i);
+      if (options_.attr_types[i] == AttrType::CONTINUOUS) {
+        double val = get<double>(attr_val);
+        get<vector<double>>(attr_buf_[i]).push_back(val);
+      } else {
+        string_view str_val = get<string_view>(attr_val);
+        get<vector<string>>(attr_buf_[i]).emplace_back(str_val);
+      }
+    }
+  } else {
+    // If it's a tombstone, we still need to add a dummy value to the buffer for
+    // the sake of simplicity in binning policy calculation.
+    for (uint32_t i = 0; i < options_.attr_num; ++i) {
+      if (options_.attr_types[i] == AttrType::CONTINUOUS) {
+        get<vector<double>>(attr_buf_[i]).push_back(0.0);
+      } else {
+        get<vector<string>>(attr_buf_[i]).emplace_back("");
+      }
+    }
+    // Also add the entry to the tombstone bitmap
+    bitmap_index_.tombstone_bitmap.add(data_entries_cnt_);
+  }
+
+  // 3. Calculate statistics
   ++data_entries_cnt_;
   total_data_entries_size_uncomp_ += value.size();
   total_data_entries_size_uncomp_ += key.size();
@@ -240,6 +259,8 @@ Status SABIBuilder::Finish(Slice* index_contents) {
 
   // 3. Make final index blob
   // 3-1. Add bitmap indexes
+  // Add tombstone bitmap as the last bitmap
+  bitmap_index_.bitmaps.push_back(bitmap_index_.tombstone_bitmap);
   vector<uint32_t> bitmap_offsets;
   bitmap_offsets.push_back(index_blob_.size());
   for (uint32_t i = 0; i < bitmap_index_.bitmaps.size(); ++i) {

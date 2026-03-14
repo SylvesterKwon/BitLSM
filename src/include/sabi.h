@@ -17,6 +17,7 @@ namespace bit_lsm {
 struct BitmapIndex {
   // Bitmap
   std::vector<roaring::Roaring> bitmaps;
+  roaring::Roaring tombstone_bitmap;
 
   // Binned bitmap index policy
   std::vector<uint32_t> bitmap_nums; // # of bitmaps for each attr

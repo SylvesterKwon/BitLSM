@@ -3,6 +3,7 @@
 #include "table/format.h"
 #include <bit_lsm_query.h>
 #include <cstdint>
+#include <iostream>
 #include <memory>
 #define TEST_CACHE_LINE_SIZE                                                   \
   64 // To avoid compile error when using roaring.hh &
@@ -159,7 +160,7 @@ SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
           sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
       uint32_t num_bins = sabi_reader_->bitmap_index.bitmap_nums[cond.attr_idx];
 
-      // 1. Find bin index by value
+      // Find bin index by value
       // upper_bound: value보다 큰 첫 번째 경계값의 위치
       auto it = std::upper_bound(boundaries.begin(), boundaries.end(), value);
 
@@ -225,16 +226,16 @@ SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
     } else {
       result &= cur_cond_bitmap;
     }
-    // Debug: Print cardinality each step
-    // cout << "cur_cond_bitmap cardinality: " << cur_cond_bitmap.cardinality()
-    //      << "\n";
-    // cout << "result cardinality: " << result.cardinality() << "\n";
 
     // Optimization: If result bitmap is already empty set, return
     // immediately
     if (result.isEmpty())
       return result;
   }
+
+  // 4. Filter tombstone
+  if (!sabi_reader_->bitmap_index.tombstone_bitmap.isEmpty())
+    result -= sabi_reader_->bitmap_index.tombstone_bitmap;
 
   return result;
 }
