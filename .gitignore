@@ -8,4 +8,4 @@ build/
 *.csv
 nohup.out
 log/
-.claude
+.claude/

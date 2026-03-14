@@ -77,8 +77,7 @@ void vanila_fill_kvp_using_batch(uint64_t n, uint32_t payload_size = 32,
       }
 
       string payload = random_string(payload_size);
-      auto_increment++;
-      string pk = to_string(auto_increment);
+      string pk = to_string(auto_increment++);
 
       pks.push_back(std::move(pk));
       attrs_list.push_back(std::move(attrs));
@@ -129,8 +128,8 @@ void put_thread_worker(uint32_t thread_id, uint64_t total_n,
   uniform_int_distribution<size_t> char_dist(0, max_index);
 
   while (true) {
-    uint64_t current_pk_val = ++global_auto_increment;
-    if (current_pk_val > total_n)
+    uint64_t current_pk_val = global_auto_increment++;
+    if (current_pk_val >= total_n)
       break;
 
     vector<Attr> attrs(options.attr_num);
@@ -151,17 +150,17 @@ void put_thread_worker(uint32_t thread_id, uint64_t total_n,
     EncodeValue(options, attrs, payload, serialized_value);
     db->Put(wo, pk, serialized_value);
 
-    if (current_pk_val % 1000000 == 0) {
+    if ((current_pk_val + 1) % 1000000 == 0) {
       auto elapsed_ms = chrono::duration_cast<chrono::milliseconds>(
                             chrono::high_resolution_clock::now() - start_time)
                             .count();
       {
         lock_guard<mutex> lock(progress_log_mutex);
         progress_log.push_back(
-            {static_cast<uint64_t>(elapsed_ms), current_pk_val});
+            {static_cast<uint64_t>(elapsed_ms), current_pk_val + 1});
       }
-      cout << "putted: " << current_pk_val << " kvps, elapsed: " << elapsed_ms
-           << "ms\n";
+      cout << "putted: " << current_pk_val + 1
+           << " kvps, elapsed: " << elapsed_ms << "ms\n";
     }
   }
 }

@@ -43,8 +43,8 @@ put_thread_worker(bit_lsm::BitLSM* db, uint32_t thread_id, uint64_t n,
   uint64_t local_count = 0;
 
   while (true) {
-    uint64_t current_pk_val = ++global_auto_increment;
-    if (current_pk_val > n)
+    uint64_t current_pk_val = global_auto_increment++;
+    if (current_pk_val >= n)
       break;
 
     vector<Attr> attrs(options.attr_num);
@@ -64,8 +64,8 @@ put_thread_worker(bit_lsm::BitLSM* db, uint32_t thread_id, uint64_t n,
     db->Put(pk, attrs, payload);
 
     local_count++;
-    if (current_pk_val % 1000000 == 0) {
-      cout << "putted: " << global_auto_increment << " kvps, elapsed: "
+    if ((current_pk_val + 1) % 1000000 == 0) {
+      cout << "putted: " << current_pk_val + 1 << " kvps, elapsed: "
            << chrono::duration_cast<chrono::milliseconds>(
                   chrono::high_resolution_clock::now() - start_time)
                   .count()
