@@ -43,82 +43,6 @@ struct ProgressLog {
 vector<ProgressLog> progress_log;
 mutex progress_log_mutex;
 
-void vanila_fill_kvp_using_batch(uint64_t n, uint32_t payload_size = 32,
-                                 uint32_t seed = 42, bool debug = false) {
-  Status s;
-  srand(seed);
-  chrono::_V2::system_clock::time_point batch_start =
-      chrono::high_resolution_clock::now();
-
-  if (debug)
-    cout << "creating " << n << " kvps into Vanila using Batch API...\n";
-
-  const uint64_t batch_size = 1e6;
-  uint64_t total_batch = (n + batch_size - 1) / batch_size;
-  uint64_t auto_increment = 0;
-
-  for (uint64_t cur_batch = 0; cur_batch < total_batch; ++cur_batch) {
-    uint64_t current_batch_limit = min(batch_size, n - auto_increment);
-    vector<string> pks;
-    vector<vector<Attr>> attrs_list;
-    vector<string> payloads;
-
-    pks.reserve(current_batch_limit);
-    attrs_list.reserve(current_batch_limit);
-    payloads.reserve(current_batch_limit);
-
-    for (uint64_t i = 0; i < current_batch_limit; ++i) {
-      vector<Attr> attrs(options.attr_num);
-      for (uint32_t j = 0; j < options.attr_num; ++j) {
-        if (j % 2 == 0)
-          attrs[j] = to_string(rand() % 100);
-        else
-          attrs[j] = (double)rand() / RAND_MAX * 100.0;
-      }
-
-      string payload = random_string(payload_size);
-      string pk = to_string(auto_increment++);
-
-      pks.push_back(std::move(pk));
-      attrs_list.push_back(std::move(attrs));
-      payloads.push_back(std::move(payload));
-    }
-
-    WriteBatch batch;
-    for (uint32_t i = 0; i < batch_size; ++i) {
-      string serialized_value;
-      EncodeValue(options, attrs_list[i], payloads[i], serialized_value);
-      batch.Put(pks[i], serialized_value);
-    }
-    rocksdb::WriteOptions wo;
-    s = db->Write(wo, &batch);
-
-    if (!s.ok()) {
-      cerr << "❌ PutBatch failed at batch " << cur_batch + 1 << ": "
-           << s.ToString() << "\n";
-      break;
-    }
-
-    if (debug) {
-      cout << "[BATCH " << setw(6) << cur_batch + 1 << " / " << setw(6)
-           << total_batch << "] ";
-      cout << "putted: " << auto_increment << " kvps, elapsed: "
-           << chrono::duration_cast<chrono::milliseconds>(
-                  chrono::high_resolution_clock::now() - batch_start)
-                  .count()
-           << "ms \n";
-    }
-  }
-
-  if (debug) {
-    cout << "✅ created " << n << " kvps. (total:"
-         << chrono::duration_cast<chrono::milliseconds>(
-                chrono::high_resolution_clock::now() - batch_start)
-                .count()
-         << "ms elapsed)\n";
-  }
-}
-
 void put_thread_worker(uint32_t thread_id, uint64_t total_n,
                        uint32_t payload_size) {
   WriteOptions wo;
@@ -238,10 +162,27 @@ int main(const int argc, char* argv[]) {
       options.attr_types.push_back(AttrType::CONTINUOUS);
   }
 
+  // configure DB
+  // Using recommending options for better performance:
+  // (reference:
+  // https://github.com/facebook/rocksdb/wiki/Setup-Options-and-Basic-Tuning)
   Options rocksdb_options;
   rocksdb_options.create_if_missing = true;
-  rocksdb_options.max_background_jobs = 8;
-  Status s = DB::Open(rocksdb_options, db_path, &db);
+  rocksdb_options.max_background_jobs = 6;
+  rocksdb_options.bytes_per_sync = 1048576;
+  rocksdb_options.compaction_pri = kMinOverlappingRatio;
+  BlockBasedTableOptions table_options;
+  table_options.block_size = 16 * 1024;
+  table_options.cache_index_and_filter_blocks = true;
+  table_options.pin_l0_filter_and_index_blocks_in_cache = true;
+  rocksdb_options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+  ColumnFamilyOptions cf_opts(rocksdb_options);
+  cf_opts.level_compaction_dynamic_level_bytes = true;
+  const vector<ColumnFamilyDescriptor> column_families(
+      {ColumnFamilyDescriptor(kDefaultColumnFamilyName, cf_opts)});
+  std::vector<rocksdb::ColumnFamilyHandle*> cf_handles;
+  Status s =
+      DB::Open(rocksdb_options, db_path, column_families, &cf_handles, &db);
   if (!s.ok()) {
     cerr << "Failed to open DB: " << s.ToString() << "\n";
     return 1;

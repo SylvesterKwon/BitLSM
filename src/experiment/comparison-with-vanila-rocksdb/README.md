@@ -153,7 +153,7 @@ python3 src/experiment/run.py \
   src/experiment/comparison-with-vanila-rocksdb/param_set/thread_comparison.json \
   --dry-run
 
-# full sweep with SSD hardware reset + 5-min cooldown (DB deleted between runs by default)
+# full sweep with SSD hardware reset + 1-min cooldown (DB deleted between runs by default)
 sudo tmux new -d -s sweep 'sudo python3 src/experiment/run.py \
   src/experiment/comparison-with-vanila-rocksdb/param_set/thread_comparison.json \
   --hw-reset --cooldown 60'

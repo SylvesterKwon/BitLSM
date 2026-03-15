@@ -14,15 +14,25 @@ using namespace bit_lsm;
 BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options)
     : db_path_(db_path), bit_lsm_options_(bit_lsm_options) {
   // configure DB
+  // Using recommending options for better performance:
+  // (reference:
+  // https://github.com/facebook/rocksdb/wiki/Setup-Options-and-Basic-Tuning)
   rocksdb_options_.create_if_missing = true;
-  rocksdb_options_.max_background_jobs = 8;
+  rocksdb_options_.max_background_jobs = 6;
+  rocksdb_options_.bytes_per_sync = 1048576;
+  rocksdb_options_.compaction_pri = kMinOverlappingRatio;
   BlockBasedTableOptions table_options;
+  table_options.block_size = 16 * 1024;
+  table_options.cache_index_and_filter_blocks = true;
+  table_options.pin_l0_filter_and_index_blocks_in_cache = true;
   table_options.user_defined_index_factory =
       make_shared<SABIFactory>(bit_lsm_options_);
   rocksdb_options_.table_factory.reset(
       NewBlockBasedTableFactory(table_options));
+  ColumnFamilyOptions cf_opts(rocksdb_options_);
+  cf_opts.level_compaction_dynamic_level_bytes = true;
   const vector<ColumnFamilyDescriptor> column_families(
-      {ColumnFamilyDescriptor(kDefaultColumnFamilyName, rocksdb_options_)});
+      {ColumnFamilyDescriptor(kDefaultColumnFamilyName, cf_opts)});
   Status s =
       DB::Open(rocksdb_options_, db_path, column_families, &cf_handles_, &db_);
   if (!s.ok())
