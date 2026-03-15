@@ -191,8 +191,7 @@ void SABIBuilder::SetCategoricalPropertyBinningPolicy(
 }
 
 void SABIBuilder::SetContinuousPropertyBinningPolicy(uint32_t i) {
-  folly::TDigest digest(
-      1000); // TODO: Make this configurable / driven with some fomular
+  folly::TDigest digest(bitmap_index_.bitmap_nums[i] * 5);
 
   const auto& v = get<vector<double>>(attr_buf_[i]);
   digest = digest.merge(folly::Range<const double*>(v.data(), v.size()));

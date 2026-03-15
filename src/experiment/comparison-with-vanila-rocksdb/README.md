@@ -155,13 +155,13 @@ python3 src/experiment/run.py \
 # full sweep with SSD hardware reset + 5-min cooldown (tmux detached session)
 sudo tmux new -d -s sweep 'sudo python3 src/experiment/run.py \
   src/experiment/comparison-with-vanila-rocksdb/param_set/thread_comparison.json \
-  --hw-reset --cooldown 300'
+  --hw-reset --cooldown 60'
 
 # attach to see live output
 sudo tmux attach -t sweep
 
 # terminate experiment
-tmux kill-session -t sweep
+sudo tmux kill-session -t sweep
 ```
 
 ### Manual sweep

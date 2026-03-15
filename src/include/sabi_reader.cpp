@@ -3,7 +3,6 @@
 #include "util/coding_lean.h"
 #include <cstdint>
 #include <folly/Range.h>
-#include <folly/stats/TDigest.h>
 #include <iostream>
 #include <sabi.h>
 #include <sys/types.h>
