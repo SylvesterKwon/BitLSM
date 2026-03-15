@@ -15,6 +15,7 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options)
     : db_path_(db_path), bit_lsm_options_(bit_lsm_options) {
   // configure DB
   rocksdb_options_.create_if_missing = true;
+  rocksdb_options_.max_background_jobs = 8;
   BlockBasedTableOptions table_options;
   table_options.user_defined_index_factory =
       make_shared<SABIFactory>(bit_lsm_options_);

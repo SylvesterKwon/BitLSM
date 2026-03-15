@@ -240,6 +240,7 @@ int main(const int argc, char* argv[]) {
 
   Options rocksdb_options;
   rocksdb_options.create_if_missing = true;
+  rocksdb_options.max_background_jobs = 8;
   Status s = DB::Open(rocksdb_options, db_path, &db);
   if (!s.ok()) {
     cerr << "Failed to open DB: " << s.ToString() << "\n";
