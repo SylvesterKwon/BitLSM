@@ -1,22 +1,24 @@
 {
-  "exp_type": "seq_write",
+  "exp_type": "seq_write_by_attr_num",
   "output_dir": "src/experiment/comparison-with-vanila-rocksdb/result",
-  "db_path_base": "/scratch/data/comparison-with-vanila-rocksdb",
+  "db_path_base": "/scratch/data/comparison-with-vanila-rocksdb-by-attr-num",
   "common_params": {
     "n": [
       100000000
     ],
     "threads": [
-      1,
-      2,
-      4,
-      8
+      4
     ],
     "payload_size": [
       32
     ],
     "attr_num": [
-      16
+      1,
+      2,
+      4,
+      8,
+      16,
+      32
     ]
   },
   "methods": [
@@ -30,9 +32,9 @@
       "binary": "build/bin/bit-lsm",
       "params": {
         "rho": [
-          0.01,
-          0.05,
-          0.1
+          0.2,
+          0.1,
+          0.05
         ]
       }
     }

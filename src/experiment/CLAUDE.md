@@ -125,7 +125,8 @@ Global runner at `src/experiment/run.py`. One runner for all experiments.
 | `--dry-run` | off | Print commands without executing |
 | `--methods m1,m2` | all | Comma-separated list of methods to run |
 | `--cooldown SECONDS` | `0` | Wait between runs; for SSD SLC cache recovery |
-| `--hw-reset` | off | Reset hardware state between runs (requires sudo): `sync` + `drop_caches` + `fstrim` on `db_path_base` |
+| `--hw-reset` | off | Reset hardware state between runs (requires sudo): DB 삭제 + `sync` + `drop_caches` + `fstrim` on `db_path_base`. **DB 삭제가 기본값**으로 포함됨 |
+| `--keep-db` | off | `--hw-reset` 사용 시 DB 디렉토리 삭제를 건너뜀 |
 
 ```bash
 # run all combinations
@@ -137,11 +138,14 @@ python3 src/experiment/run.py <path/to/params.json> --dry-run
 # run only specific methods
 python3 src/experiment/run.py <path/to/params.json> --methods vanila,bitlsm
 
-# SSD deterministic state: hw-reset + cooldown for GC
+# SSD deterministic state: hw-reset + cooldown for GC (DB is deleted between runs by default)
 python3 src/experiment/run.py <path/to/params.json> --hw-reset --cooldown 300
+
+# hw-reset without deleting DB
+python3 src/experiment/run.py <path/to/params.json> --hw-reset --cooldown 300 --keep-db
 ```
 
-Between-run sequence when enabled: `experiment → [hw-reset: sync, drop_caches, fstrim] → [cooldown: sleep Ns] → next experiment`
+Between-run sequence when enabled: `experiment → [hw-reset: rm -rf db (unless --keep-db), sync, drop_caches, fstrim] → [cooldown: sleep Ns] → next experiment`
 
 ---
 

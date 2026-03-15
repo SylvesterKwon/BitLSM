@@ -9,3 +9,4 @@ build/
 nohup.out
 log/
 .claude/
+*.png

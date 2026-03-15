@@ -144,6 +144,7 @@ time_elapsed_ms,records_written
 ### Using run.py (recommended)
 
 `--hw-reset` uses `sync`, `drop_caches`, and `fstrim`, so the **entire script must be run as root**.
+**`--hw-reset` deletes the previous DB directory between runs by default.** Use `--keep-db` to preserve DB directories.
 Use `tmux` to keep the session alive after terminal disconnect.
 
 ```bash
@@ -152,10 +153,15 @@ python3 src/experiment/run.py \
   src/experiment/comparison-with-vanila-rocksdb/param_set/thread_comparison.json \
   --dry-run
 
-# full sweep with SSD hardware reset + 5-min cooldown (tmux detached session)
+# full sweep with SSD hardware reset + 5-min cooldown (DB deleted between runs by default)
 sudo tmux new -d -s sweep 'sudo python3 src/experiment/run.py \
   src/experiment/comparison-with-vanila-rocksdb/param_set/thread_comparison.json \
   --hw-reset --cooldown 60'
+
+# hw-reset without deleting DB between runs
+sudo tmux new -d -s sweep 'sudo python3 src/experiment/run.py \
+  src/experiment/comparison-with-vanila-rocksdb/param_set/thread_comparison.json \
+  --hw-reset --cooldown 60 --keep-db'
 
 # attach to see live output
 sudo tmux attach -t sweep

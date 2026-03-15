@@ -14,6 +14,7 @@ Options:
     --cooldown SECONDS    Wait between runs (default: 0).
     --hw-reset            Reset hardware state between runs (run script with sudo).
                           Runs: sync, drop_caches, fstrim on db_path_base.
+    --keep-db             Do not delete DB directories between runs.
 """
 
 import argparse
@@ -87,13 +88,25 @@ def build_command(binary: str, exp_type: str, db_path: str,
     return cmd
 
 
-def reset_hardware(db_path_base: str):
-    """Reset hardware state between runs: sync, drop caches, fstrim."""
+def reset_hardware(db_path_base: str, prev_db_path: str = None, keep_db: bool = False):
+    """Reset hardware state between runs."""
+    # 1. Delete previous DB so its blocks become trimmable
+    if not keep_db and prev_db_path and os.path.exists(prev_db_path):
+        print(f"  [hw-reset] rm -rf {prev_db_path} ...")
+        subprocess.run(["rm", "-rf", prev_db_path], check=True)
+
+    # 2. Sync pending writes to disk
     print("  [hw-reset] sync + drop_caches ...")
     subprocess.run(["sync"], check=True)
     subprocess.run(["sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"], check=True)
+
+    # 3. TRIM freed blocks — SSD controller can now reclaim them
     print("  [hw-reset] fstrim ...")
     subprocess.run(["fstrim", "-v", db_path_base], check=True)
+
+    # 4. Wait for SSD controller to process TRIMs and reclaim SLC cache
+    print("  [hw-reset] waiting 10s for SSD GC ...")
+    time.sleep(10)
     print("  [hw-reset] done")
 
 
@@ -105,7 +118,7 @@ def cooldown_sleep(seconds: int):
 
 
 def run(config_path: str, dry_run: bool, method_filter: list,
-        cooldown: int, hw_reset: bool):
+        cooldown: int, hw_reset: bool, keep_db: bool):
     with open(config_path) as f:
         config = json.load(f)
 
@@ -138,6 +151,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
         print(f"total    : {total_runs} run(s) across {len(methods)} method(s)")
         print(f"cooldown : {cooldown}s between runs")
         print(f"hw-reset : {'on (sudo)' if hw_reset else 'off'}")
+        print(f"keep-db  : {'on' if keep_db else 'off'}")
         if dry_run:
             print("mode     : dry-run\n")
         else:
@@ -183,7 +197,8 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                     print()
                     if global_idx < total_runs:
                         if hw_reset:
-                            reset_hardware(db_path_base)
+                            reset_hardware(db_path_base, prev_db_path=db_path,
+                                           keep_db=keep_db)
                         if cooldown > 0:
                             cooldown_sleep(cooldown)
 
@@ -209,11 +224,13 @@ def main():
     parser.add_argument("--hw-reset", action="store_true",
                         help="Reset hardware state between runs: "
                              "sync + drop_caches + fstrim (run script with sudo)")
+    parser.add_argument("--keep-db", action="store_true",
+                        help="Do not delete DB directories between runs")
     args = parser.parse_args()
 
     method_filter = args.methods.split(",") if args.methods else []
     run(args.config, dry_run=args.dry_run, method_filter=method_filter,
-        cooldown=args.cooldown, hw_reset=args.hw_reset)
+        cooldown=args.cooldown, hw_reset=args.hw_reset, keep_db=args.keep_db)
 
 
 if __name__ == "__main__":
