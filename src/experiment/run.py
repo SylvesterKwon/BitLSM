@@ -64,12 +64,22 @@ def fmt(val) -> str:
 
 # Parameters that define a DB identity — used to build deterministic db_path.
 # Keys not present in a given combination are silently skipped.
-DB_PARAMS = ["n", "payload_size", "attr_num", "rho"]
+DB_PARAMS = ["n", "schema", "rho"]
+
+
+def _path_safe(key: str, val) -> str:
+    """Format a single key-value pair for path encoding.
+
+    For 'schema', extracts the filename stem (e.g. 'schema/default_a16.json' -> 'default_a16').
+    """
+    if key == "schema":
+        return f"{key}_{os.path.splitext(os.path.basename(str(val)))[0]}"
+    return f"{key}{fmt(val)}"
 
 
 def encode_params(params: dict) -> str:
-    """Encode a {flag: value} dict into a path-safe string, e.g. n100000000_threads4."""
-    return "_".join(f"{k}{fmt(v)}" for k, v in params.items())
+    """Encode a {flag: value} dict into a path-safe string, e.g. n100000000_schema_default_a16."""
+    return "_".join(_path_safe(k, v) for k, v in params.items())
 
 
 def cartesian_combinations(params: dict) -> list:
@@ -130,11 +140,22 @@ def run(config_path: str, dry_run: bool, method_filter: list,
 
     exp_label    = config["exp_label"]
     exp_type     = config.get("exp_type", "write_seq")
-    output_dir   = config["output_dir"]
     db_path_base = config["db_path_base"]
     common       = config.get("common_params", {})
     methods      = config["methods"]
     is_read_only = (exp_type == "read_seq")
+
+    # Derive exp_dir from config path: param_set's parent directory
+    # e.g. src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write.json
+    #   -> src/experiment/comparison-with-vanila-rocksdb
+    exp_dir    = os.path.dirname(os.path.dirname(os.path.abspath(config_path)))
+    output_dir = os.path.join(exp_dir, "result")
+    schema_dir = os.path.join(exp_dir, "schema")
+
+    # Resolve schema filenames to full paths
+    if "schema" in common:
+        schemas = common["schema"] if isinstance(common["schema"], list) else [common["schema"]]
+        common["schema"] = [os.path.join(schema_dir, s) for s in schemas]
 
     # Setup logging
     log_dir = "logs"

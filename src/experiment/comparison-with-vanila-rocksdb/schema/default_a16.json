@@ -1,0 +1,61 @@
+{
+  "attrs": [
+    {
+      "type": "categorical",
+      "cardinality": 10
+    },
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "categorical",
+      "cardinality": 10
+    },
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "categorical",
+      "cardinality": 10
+    },
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "categorical",
+      "cardinality": 10
+    },
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "categorical",
+      "cardinality": 10
+    },
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "categorical",
+      "cardinality": 10
+    },
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "categorical",
+      "cardinality": 10
+    },
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "categorical",
+      "cardinality": 10
+    },
+    {
+      "type": "continuous"
+    }
+  ],
+  "payload_bytes": 32
+}

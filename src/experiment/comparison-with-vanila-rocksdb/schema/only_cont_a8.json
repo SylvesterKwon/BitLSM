@@ -1,0 +1,29 @@
+{
+  "attrs": [
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "continuous"
+    },
+    {
+      "type": "continuous"
+    }
+  ],
+  "payload_bytes": 32
+}

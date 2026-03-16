@@ -30,9 +30,7 @@ All experiment binaries use `cxxopts` for argument parsing. Include via `<cxxopt
 | `--exp_label` | string | Experiment label; used in output filename |
 | `--exp_type` | string | Experiment type: `write_seq` (default) or `read_seq` |
 | `-n` | uint64 | Total number of records |
-| `-t, --threads` | uint32 | Number of worker threads |
-| `-p, --payload_size` | uint32 | Payload size in bytes |
-| `-a, --attr_num` | uint32 | Number of attributes per record |
+| `--schema` | string | Path to schema JSON file (defines attrs + payload) |
 | `-d, --db_path` | string | DB storage path |
 | `-o, --output_dir` | string | CSV output directory (default: `./result`) |
 
@@ -96,13 +94,10 @@ Values are lists — the runner computes the cartesian product.
 {
   "exp_label": "write_seq_exp_sample",
   "exp_type": "write_seq",
-  "output_dir": "<experiment-dir>/result",
   "db_path_base": "/scratch",
   "common_params": {
     "n":            [100000000],
-    "threads":      [1, 2, 4, 8],
-    "payload_size": [32],
-    "attr_num":     [16]
+    "schema":       ["default_a16.json", "a8_only_cont.json"]
   },
   "methods": [
     {
@@ -125,9 +120,11 @@ Values are lists — the runner computes the cartesian product.
 - `exp_type`: controls runner behavior — `"write_seq"` (default) or `"read_seq"`
   - `write_seq`: creates DB directories, normal execution
   - `read_seq`: skips DB directory creation (DB must already exist), skips DB deletion on `--hw-reset`
+- `output_dir`: auto-derived as `<exp_dir>/result` (not in JSON)
+- `schema` values in `common_params` are **filenames only** — run.py resolves them to `<exp_dir>/schema/<filename>`
 - `common_params` keys map 1:1 to cxxopts long-form flag names (`--key value`)
 - `db_path` is auto-generated as `{db_path_base}/{method_name}/{encoded_params}`
-  - `DB_PARAMS` is hardcoded in `run.py` as `["n", "payload_size", "attr_num", "rho"]` — only these keys are included in the path encoding. Keys not present in a given combination are silently skipped. This ensures write and read experiments produce identical DB paths
+  - `DB_PARAMS` is hardcoded in `run.py` as `["n", "schema", "rho"]` — only these keys are included in the path encoding. For `schema`, the filename stem is used (e.g. `schema/default_a16.json` → `schema_default_a16`). Keys not present in a given combination are silently skipped. This ensures write and read experiments produce identical DB paths
 - Method-specific `params` are merged with `common_params` before computing the product
 
 ### run.py

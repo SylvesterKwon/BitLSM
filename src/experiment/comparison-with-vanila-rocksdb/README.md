@@ -14,12 +14,35 @@ BitLSM integrates a bitmap index into the LSM-Tree. The write experiment measure
 | Vanilla RocksDB | `vanila-rocksdb` | `vanila-rocksdb.cpp` |
 | BitLSM | `bit-lsm` | `bit-lsm.cpp` |
 
-Both methods use the same record format:
+Both methods use the same record format, defined by a **schema JSON file** (`schema/` directory):
 - **PK**: 8-character random alphanumeric string (`[A-Za-z0-9]`)
-- **Attributes**: even-indexed → categorical (integer string in [0, 99]), odd-indexed → continuous (double in [0.0, 100.0])
-- **Payload**: random alphanumeric string of fixed length
+- **Attributes**: type (categorical/continuous), cardinality, range — all defined per-attr in schema
+- **Payload**: random alphanumeric string, size defined by `payload_bytes` in schema
 
 All writes are performed single-threaded. Progress is checkpointed every 1,000,000 records.
+
+---
+
+## Schema
+
+Schema files live in `schema/` and define the DB's physical structure:
+
+```json
+{
+  "attrs": [
+    { "type": "categorical", "cardinality": 100 },
+    { "type": "continuous" },
+    { "type": "continuous", "min": -1.0, "max": 1.0 }
+  ],
+  "payload_bytes": 32
+}
+```
+
+- `categorical`: values `"0"` to `"(cardinality-1)"`. Default cardinality: 100
+- `continuous`: uniform double in `[min, max)`. Default: `[0.0, 100.0)`
+- `payload_bytes`: payload size per record. Default: 32
+
+Shared helper: `schema_loader.h` parses these files into `Schema` structs used by both binaries.
 
 ---
 
@@ -37,9 +60,9 @@ Opens a pre-populated DB (created by `seq_write`) and executes a single range/eq
 - **Vanilla RocksDB**: Full table scan — iterates every record and checks the query condition.
 - **BitLSM**: Bitmap-indexed scan via `BitLSM::NewIterator(query)` — reads only qualifying blocks.
 - **Query generation**: For each attribute index in `--query_attr_indices`:
-  - **Continuous** attribute: range query `[lo, lo + selectivity × 100.0)` with random `lo` (requires `--selectivity`)
-  - **Categorical** attribute: equality query on a random value from `"0"`–`"99"` (`--selectivity` not needed)
-- **Out-of-bound handling**: If any query attribute index ≥ `attr_num`, the binary prints a SKIP message and exits 0 without producing output.
+  - **Continuous** attribute: range query `[lo, lo + selectivity × range)` with random `lo` (requires `--selectivity`)
+  - **Categorical** attribute: equality query on a random value from `"0"`–`"(cardinality-1)"` (`--selectivity` not needed)
+- **Out-of-bound handling**: If any query attribute index ≥ attr count in schema, the binary prints a SKIP message and exits 0 without producing output.
 
 ---
 
@@ -52,8 +75,7 @@ Opens a pre-populated DB (created by `seq_write`) and executes a single range/eq
 | `--exp_label` | string | `seq_write` | Experiment label for output filename |
 | `--exp_type` | string | `write_seq` | Experiment type: `write_seq` or `read_seq` |
 | `-n` | uint64 | (required) | Total number of records |
-| `-p, --payload_size` | uint32 | `32` | Payload size in bytes |
-| `-a, --attr_num` | uint32 | `16` | Number of attributes per record |
+| `--schema` | string | (required) | Path to schema JSON file (defines attrs + payload) |
 | `-d, --db_path` | string | (required) | DB storage path |
 | `-o, --output_dir` | string | `./result` | Directory for CSV output |
 
@@ -90,30 +112,30 @@ Outputs: `build/bin/vanila-rocksdb`, `build/bin/bit-lsm`
 ```bash
 # Write — Vanilla RocksDB
 ./build/bin/vanila-rocksdb \
-  --exp_label seq_write \
-  -n 100000000 -p 32 -a 16 \
+  --exp_label seq_write --exp_type write_seq \
+  -n 100000000 --schema schema/default_a16.json \
   -d /scratch/vanila-exp \
   -o src/experiment/comparison-with-vanila-rocksdb/result
 
 # Write — BitLSM
 ./build/bin/bit-lsm \
-  --exp_label seq_write \
-  -n 100000000 -p 32 -a 16 --rho 0.1 \
+  --exp_label seq_write --exp_type write_seq \
+  -n 100000000 --schema schema/default_a16.json --rho 0.1 \
   -d /scratch/bitlsm-exp \
   -o src/experiment/comparison-with-vanila-rocksdb/result
 
 # Read — Vanilla RocksDB (full scan)
 ./build/bin/vanila-rocksdb \
-  --exp_label seq_read_continuous \
-  -n 100000000 -p 32 -a 16 \
+  --exp_label seq_read_continuous --exp_type read_seq \
+  -n 100000000 --schema schema/default_a16.json \
   --selectivity 0.01 --query_attr_indices 1,3 \
   -d /scratch/vanila-exp \
   -o src/experiment/comparison-with-vanila-rocksdb/result
 
 # Read — BitLSM (bitmap-indexed scan)
 ./build/bin/bit-lsm \
-  --exp_label seq_read_continuous \
-  -n 100000000 -p 32 -a 16 --rho 0.1 \
+  --exp_label seq_read_continuous --exp_type read_seq \
+  -n 100000000 --schema schema/default_a16.json --rho 0.1 \
   --selectivity 0.01 --query_attr_indices 1,3 \
   -d /scratch/bitlsm-exp \
   -o src/experiment/comparison-with-vanila-rocksdb/result
@@ -129,25 +151,19 @@ Outputs: `build/bin/vanila-rocksdb`, `build/bin/bit-lsm`
 src/experiment/comparison-with-vanila-rocksdb/result/
 ```
 
+Auto-created by run.py (derived from experiment directory).
+
 ### Filename Convention
 
 ```
-{exp_type}_{method}_{parameters}.csv
+{exp_label}_{method}_n{N}_schema_{schema_name}[_rho{R}][_selectivity{S}_query_attr_indices{I}].csv
 ```
 
 | Method | Example filename |
 |---|---|
-| Vanilla RocksDB | `seq_write_vanila_n100000000_p32_a16.csv` |
-| BitLSM | `seq_write_bitlsm_n100000000_p32_a16_rho0.1.csv` |
-
-Parameter prefixes in filename:
-
-| Prefix | Meaning |
-|---|---|
-| `n` | Total record count |
-| `p` | Payload size (bytes) |
-| `a` | Number of attributes |
-| `rho` | BitLSM rho value (BitLSM only) |
+| Vanilla (write) | `seq_write_vanila_n100000000_schema_default_a16.csv` |
+| BitLSM (write) | `seq_write_bitlsm_n100000000_schema_default_a16_rho0.1.csv` |
+| Vanilla (read) | `seq_read_continuous_vanila_n100000000_schema_default_a16_selectivity0.01_query_attr_indices1,3.csv` |
 
 ### CSV Schema — Write
 
@@ -187,17 +203,17 @@ Use `tmux` to keep the session alive after terminal disconnect.
 ```bash
 # dry-run to preview all commands
 python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/param_set/attr_num_comparison.json \
+  src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write_default.json \
   --dry-run
 
 # full sweep with SSD hardware reset + 1-min cooldown (DB deleted between runs by default)
 sudo tmux new -d -s sweep 'sudo python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/param_set/attr_num_comparison.json \
+  src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write_default.json \
   --hw-reset --cooldown 60'
 
 # hw-reset without deleting DB between runs (e.g., for preparing read test)
 sudo tmux new -d -s sweep 'sudo python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/param_set/attr_num_comparison.json \
+  src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write_default.json \
   --hw-reset --cooldown 60 --keep-db'
 
 # attach to see live output
@@ -212,10 +228,10 @@ sudo tmux kill-session -t sweep
 ```bash
 # 1. Write with --keep-db to preserve DB
 sudo python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write.json \
+  src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write_default.json \
   --hw-reset --cooldown 60 --keep-db
 
-# 2. Read on the same DB (db_params ensures matching paths)
+# 2. Read on the same DB (DB_PARAMS ensures matching paths)
 sudo python3 src/experiment/run.py \
   src/experiment/comparison-with-vanila-rocksdb/param_set/seq_read_continuous.json \
   --hw-reset --cooldown 60
@@ -226,14 +242,19 @@ sudo python3 src/experiment/run.py \
 ```bash
 # Vary rho for BitLSM
 for rho in 0.05 0.1 0.2 0.5; do
-  ./build/bin/bit-lsm -n 100000000 -p 32 -a 16 --rho $rho \
+  ./build/bin/bit-lsm \
+    --exp_type write_seq -n 100000000 \
+    --schema src/experiment/comparison-with-vanila-rocksdb/schema/default_a16.json \
+    --rho $rho \
     -d /scratch/bitlsm-rho$rho \
     -o src/experiment/comparison-with-vanila-rocksdb/result
 done
 
 # Vary selectivity for read
 for s in 0.1 0.01 0.001; do
-  ./build/bin/vanila-rocksdb -n 100000000 -p 32 -a 16 \
+  ./build/bin/vanila-rocksdb \
+    --exp_type read_seq -n 100000000 \
+    --schema src/experiment/comparison-with-vanila-rocksdb/schema/default_a16.json \
     --selectivity $s --query_attr_indices 1,3 \
     -d /scratch/vanila-a16 \
     -o src/experiment/comparison-with-vanila-rocksdb/result

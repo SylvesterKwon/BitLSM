@@ -1,5 +1,6 @@
 #include "bit_lsm.h"
 #include "bit_lsm_utils.h"
+#include "schema_loader.h"
 #include <chrono>
 #include <cstdint>
 #include <cxxopts.hpp>
@@ -40,20 +41,35 @@ static vector<uint32_t> parse_indices(const string& s) {
   return result;
 }
 
-static BitLSMQuery build_read_query(const BitLSMOptions& options,
+static string format_double(double v) {
+  ostringstream oss;
+  oss << v;
+  return oss.str();
+}
+
+static string schema_stem(const string& path) {
+  auto pos = path.find_last_of('/');
+  string fname = (pos == string::npos) ? path : path.substr(pos + 1);
+  auto dot = fname.find_last_of('.');
+  return (dot == string::npos) ? fname : fname.substr(0, dot);
+}
+
+static BitLSMQuery build_read_query(const Schema& schema,
                                     const vector<uint32_t>& query_indices,
                                     double selectivity) {
   mt19937 gen(42);
   BitLSMQuery query;
   for (uint32_t idx : query_indices) {
-    if (options.attr_types[idx] == AttrType::CONTINUOUS) {
-      double width = selectivity * 100.0;
-      uniform_real_distribution<double> dist(0.0, 100.0 - width);
+    if (schema.options.attr_types[idx] == AttrType::CONTINUOUS) {
+      double range = schema.range_max[idx] - schema.range_min[idx];
+      double width = selectivity * range;
+      uniform_real_distribution<double> dist(schema.range_min[idx],
+                                             schema.range_max[idx] - width);
       double lo = dist(gen);
       query.conditions.push_back({idx, CompareOp::GREATER_EQUAL, lo});
       query.conditions.push_back({idx, CompareOp::LESS, lo + width});
     } else {
-      uniform_int_distribution<int> dist(0, 99);
+      uniform_int_distribution<int> dist(0, schema.cardinalities[idx] - 1);
       query.conditions.push_back({idx, CompareOp::EQUAL, to_string(dist(gen))});
     }
   }
@@ -76,32 +92,43 @@ static ReadResult bitlsm_scan(BitLSM& db, BitLSMQuery& query, uint64_t n) {
 }
 
 static void fill_kvp_with_log(bit_lsm::BitLSM* db, uint64_t n,
-                              bit_lsm::BitLSMOptions opts,
-                              uint32_t payload_size,
+                              const Schema& schema,
                               vector<ProgressLog>& progress_log,
                               bool debug = false) {
   if (debug)
     cout << "creating " << n << " kvps into BitLSM using Put API...\n";
 
   mt19937 gen(42);
-  uniform_int_distribution<int> cat_dist(0, 99);
-  uniform_real_distribution<double> cont_dist(0.0, 100.0);
   uniform_int_distribution<size_t> char_dist(0, max_index);
+
+  // Per-attr distributions
+  vector<uniform_int_distribution<int>> cat_dists;
+  vector<uniform_real_distribution<double>> cont_dists;
+  for (uint32_t j = 0; j < schema.options.attr_num; ++j) {
+    if (schema.options.attr_types[j] == AttrType::CATEGORICAL)
+      cat_dists.emplace_back(0, schema.cardinalities[j] - 1);
+    else
+      cat_dists.emplace_back(0, 0);
+    if (schema.options.attr_types[j] == AttrType::CONTINUOUS)
+      cont_dists.emplace_back(schema.range_min[j], schema.range_max[j]);
+    else
+      cont_dists.emplace_back(0.0, 0.0);
+  }
 
   auto start_time = chrono::high_resolution_clock::now();
 
   for (uint64_t i = 1; i <= n; ++i) {
-    vector<Attr> attrs(opts.attr_num);
-    for (uint32_t j = 0; j < opts.attr_num; ++j) {
-      if (j % 2 == 0)
-        attrs[j] = to_string(cat_dist(gen));
+    vector<Attr> attrs(schema.options.attr_num);
+    for (uint32_t j = 0; j < schema.options.attr_num; ++j) {
+      if (schema.options.attr_types[j] == AttrType::CATEGORICAL)
+        attrs[j] = to_string(cat_dists[j](gen));
       else
-        attrs[j] = cont_dist(gen);
+        attrs[j] = cont_dists[j](gen);
     }
 
     string payload;
-    payload.reserve(payload_size);
-    for (size_t k = 0; k < payload_size; ++k)
+    payload.reserve(schema.payload_bytes);
+    for (size_t k = 0; k < schema.payload_bytes; ++k)
       payload += char_set[char_dist(gen)];
 
     string pk;
@@ -121,7 +148,7 @@ static void fill_kvp_with_log(bit_lsm::BitLSM* db, uint64_t n,
   }
 
   if (debug) {
-    cout << "✅ created " << n << " kvps. (total:"
+    cout << "created " << n << " kvps. (total:"
          << chrono::duration_cast<chrono::milliseconds>(
                 chrono::high_resolution_clock::now() - start_time)
                 .count()
@@ -129,19 +156,12 @@ static void fill_kvp_with_log(bit_lsm::BitLSM* db, uint64_t n,
   }
 }
 
-static string format_double(double v) {
-  ostringstream oss;
-  oss << v;
-  return oss.str();
-}
-
 static void save_csv(const string& output_dir, const string& exp_label,
-                     uint64_t n, uint32_t payload_size, uint32_t attr_num,
-                     double rho, const vector<ProgressLog>& progress_log) {
+                     uint64_t n, const string& schema_name, double rho,
+                     const vector<ProgressLog>& progress_log) {
   filesystem::create_directories(output_dir);
-  string filename = exp_label + "_bitlsm_n" + to_string(n) + "_p" +
-                    to_string(payload_size) + "_a" + to_string(attr_num) +
-                    "_rho" + format_double(rho) + ".csv";
+  string filename = exp_label + "_bitlsm_n" + to_string(n) + "_schema_" +
+                    schema_name + "_rho" + format_double(rho) + ".csv";
   string full_path = output_dir + "/" + filename;
   ofstream f(full_path);
   f << "time_elapsed_ms,records_written\n";
@@ -152,16 +172,15 @@ static void save_csv(const string& output_dir, const string& exp_label,
 }
 
 static void save_read_csv(const string& output_dir, const string& exp_label,
-                          uint64_t n, uint32_t payload_size, uint32_t attr_num,
-                          double rho, double selectivity,
+                          uint64_t n, const string& schema_name, double rho,
+                          double selectivity,
                           const string& query_attr_indices_str,
                           const ReadResult& result) {
   filesystem::create_directories(output_dir);
-  string filename = exp_label + "_bitlsm_n" + to_string(n) + "_p" +
-                    to_string(payload_size) + "_a" + to_string(attr_num) +
-                    "_rho" + format_double(rho) + "_selectivity" +
-                    format_double(selectivity) + "_query_attr_indices" +
-                    query_attr_indices_str + ".csv";
+  string filename = exp_label + "_bitlsm_n" + to_string(n) + "_schema_" +
+                    schema_name + "_rho" + format_double(rho) +
+                    "_selectivity" + format_double(selectivity) +
+                    "_query_attr_indices" + query_attr_indices_str + ".csv";
   string full_path = output_dir + "/" + filename;
   ofstream f(full_path);
   f << "time_elapsed_ms,records_matched,selectivity_actual\n";
@@ -172,15 +191,14 @@ static void save_read_csv(const string& output_dir, const string& exp_label,
 }
 
 int main(const int argc, char* argv[]) {
-  cxxopts::Options opts("bit-lsm", "BitLSM sequential write experiment");
+  cxxopts::Options opts("bit-lsm", "BitLSM sequential write/read experiment");
   // clang-format off
   opts.add_options()
     ("h,help", "Print usage")
     ("exp_label", "Experiment label for output filename", cxxopts::value<string>()->default_value("seq_write"))
     ("exp_type", "Experiment type: write_seq or read_seq", cxxopts::value<string>()->default_value("write_seq"))
     ("n", "Total records to write", cxxopts::value<uint64_t>())
-    ("p,payload_size", "Payload size in bytes", cxxopts::value<uint32_t>()->default_value("32"))
-    ("a,attr_num", "Number of attributes per record", cxxopts::value<uint32_t>()->default_value("16"))
+    ("schema", "Path to schema JSON file", cxxopts::value<string>())
     ("rho", "BitLSM rho threshold", cxxopts::value<double>()->default_value("0.1"))
     ("d,db_path", "BitLSM storage path", cxxopts::value<string>())
     ("o,output_dir", "Result output directory", cxxopts::value<string>()->default_value("./result"))
@@ -197,21 +215,14 @@ int main(const int argc, char* argv[]) {
   string exp_label = result["exp_label"].as<string>();
   string exp_type = result["exp_type"].as<string>();
   uint64_t n = result["n"].as<uint64_t>();
-  uint32_t payload = result["payload_size"].as<uint32_t>();
-  uint32_t attr_num = result["attr_num"].as<uint32_t>();
+  string schema_path = result["schema"].as<string>();
   double rho = result["rho"].as<double>();
   string db_path = result["db_path"].as<string>();
   string output_dir = result["output_dir"].as<string>();
 
-  BitLSMOptions bit_lsm_options;
-  bit_lsm_options.rho = rho;
-  bit_lsm_options.attr_num = attr_num;
-  for (uint32_t i = 0; i < bit_lsm_options.attr_num; ++i) {
-    if (i % 2 == 0)
-      bit_lsm_options.attr_types.push_back(AttrType::CATEGORICAL);
-    else
-      bit_lsm_options.attr_types.push_back(AttrType::CONTINUOUS);
-  }
+  Schema schema = load_schema(schema_path);
+  string s_name = schema_stem(schema_path);
+  schema.options.rho = rho;
 
   bool read_mode = (exp_type == "read_seq");
 
@@ -221,9 +232,9 @@ int main(const int argc, char* argv[]) {
     vector<uint32_t> query_indices = parse_indices(qi_str);
 
     for (uint32_t idx : query_indices) {
-      if (idx >= attr_num) {
-        cout << "SKIP: query attr index " << idx << " >= attr_num " << attr_num
-             << ", skipping experiment.\n";
+      if (idx >= schema.options.attr_num) {
+        cout << "SKIP: query attr index " << idx << " >= attr_num "
+             << schema.options.attr_num << ", skipping experiment.\n";
         return 0;
       }
     }
@@ -232,7 +243,7 @@ int main(const int argc, char* argv[]) {
     double selectivity = 0.0;
     bool has_continuous = false;
     for (uint32_t idx : query_indices) {
-      if (bit_lsm_options.attr_types[idx] == AttrType::CONTINUOUS) {
+      if (schema.options.attr_types[idx] == AttrType::CONTINUOUS) {
         has_continuous = true;
         break;
       }
@@ -245,18 +256,17 @@ int main(const int argc, char* argv[]) {
       selectivity = result["selectivity"].as<double>();
     }
 
-    BitLSM db(db_path, bit_lsm_options);
-    BitLSMQuery query =
-        build_read_query(bit_lsm_options, query_indices, selectivity);
+    BitLSM db(db_path, schema.options);
+    BitLSMQuery query = build_read_query(schema, query_indices, selectivity);
     ReadResult rr = bitlsm_scan(db, query, n);
-    save_read_csv(output_dir, exp_label, n, payload, attr_num, rho, selectivity,
-                  qi_str, rr);
+    save_read_csv(output_dir, exp_label, n, s_name, rho, selectivity, qi_str,
+                  rr);
   } else {
     // --- Write mode ---
-    BitLSM db(db_path, bit_lsm_options);
+    BitLSM db(db_path, schema.options);
     vector<ProgressLog> progress_log;
-    fill_kvp_with_log(&db, n, bit_lsm_options, payload, progress_log, true);
-    save_csv(output_dir, exp_label, n, payload, attr_num, rho, progress_log);
+    fill_kvp_with_log(&db, n, schema, progress_log, true);
+    save_csv(output_dir, exp_label, n, s_name, rho, progress_log);
   }
 
   return 0;

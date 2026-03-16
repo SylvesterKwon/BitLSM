@@ -75,6 +75,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(cxxopts)
 
+## nlohmann/json (header-only)
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG        v3.11.3
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 # MAIN_SOURCE, LIB_SOURCES 설정
 set(MAIN_SOURCE "src/main.cpp")
 file(GLOB_RECURSE LIB_SOURCES "src/include/*.cpp")
@@ -98,6 +106,7 @@ roaring
 rocksdb
 Folly::folly
 cxxopts::cxxopts
+nlohmann_json::nlohmann_json
 )
 
 # 실행 파일 타겟을 생성

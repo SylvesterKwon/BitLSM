@@ -1,7 +1,10 @@
-#include "bit_lsm.h"
 #include "bit_lsm_option.h"
 #include "bit_lsm_query.h"
 #include "bit_lsm_utils.h"
+#include "schema_loader.h"
+#include <rocksdb/db.h>
+#include <rocksdb/options.h>
+#include <rocksdb/table.h>
 #include <chrono>
 #include <cstdint>
 #include <cxxopts.hpp>
@@ -18,7 +21,6 @@ using namespace rocksdb;
 using namespace bit_lsm;
 
 rocksdb::DB* db;
-bit_lsm::BitLSMOptions options;
 
 inline const char* char_set =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -50,20 +52,29 @@ static string format_double(double v) {
   return oss.str();
 }
 
-static BitLSMQuery build_read_query(const BitLSMOptions& options,
+static string schema_stem(const string& path) {
+  auto pos = path.find_last_of('/');
+  string fname = (pos == string::npos) ? path : path.substr(pos + 1);
+  auto dot = fname.find_last_of('.');
+  return (dot == string::npos) ? fname : fname.substr(0, dot);
+}
+
+static BitLSMQuery build_read_query(const Schema& schema,
                                     const vector<uint32_t>& query_indices,
                                     double selectivity) {
   mt19937 gen(42);
   BitLSMQuery query;
   for (uint32_t idx : query_indices) {
-    if (options.attr_types[idx] == AttrType::CONTINUOUS) {
-      double width = selectivity * 100.0;
-      uniform_real_distribution<double> dist(0.0, 100.0 - width);
+    if (schema.options.attr_types[idx] == AttrType::CONTINUOUS) {
+      double range = schema.range_max[idx] - schema.range_min[idx];
+      double width = selectivity * range;
+      uniform_real_distribution<double> dist(schema.range_min[idx],
+                                             schema.range_max[idx] - width);
       double lo = dist(gen);
       query.conditions.push_back({idx, CompareOp::GREATER_EQUAL, lo});
       query.conditions.push_back({idx, CompareOp::LESS, lo + width});
     } else {
-      uniform_int_distribution<int> dist(0, 99);
+      uniform_int_distribution<int> dist(0, schema.cardinalities[idx] - 1);
       query.conditions.push_back({idx, CompareOp::EQUAL, to_string(dist(gen))});
     }
   }
@@ -94,15 +105,15 @@ static ReadResult vanila_full_scan(rocksdb::DB* db,
 }
 
 static void save_read_csv(const string& output_dir, const string& exp_label,
-                          uint64_t n, uint32_t payload_size, uint32_t attr_num,
+                          uint64_t n, const string& schema_name,
                           double selectivity,
                           const string& query_attr_indices_str,
                           const ReadResult& result) {
   filesystem::create_directories(output_dir);
-  string filename = exp_label + "_vanila_n" + to_string(n) + "_p" +
-                    to_string(payload_size) + "_a" + to_string(attr_num) +
-                    "_selectivity" + format_double(selectivity) +
-                    "_query_attr_indices" + query_attr_indices_str + ".csv";
+  string filename = exp_label + "_vanila_n" + to_string(n) + "_schema_" +
+                    schema_name + "_selectivity" +
+                    format_double(selectivity) + "_query_attr_indices" +
+                    query_attr_indices_str + ".csv";
   string full_path = output_dir + "/" + filename;
   ofstream f(full_path);
   f << "time_elapsed_ms,records_matched,selectivity_actual\n";
@@ -112,7 +123,7 @@ static void save_read_csv(const string& output_dir, const string& exp_label,
   cout << "Result saved to: " << full_path << "\n";
 }
 
-static void vanila_fill_kvp(uint64_t n, uint32_t payload_size,
+static void vanila_fill_kvp(const Schema& schema, uint64_t n,
                             vector<ProgressLog>& progress_log,
                             bool debug = false) {
   if (debug)
@@ -120,24 +131,36 @@ static void vanila_fill_kvp(uint64_t n, uint32_t payload_size,
 
   WriteOptions wo;
   mt19937 gen(42);
-  uniform_int_distribution<int> cat_dist(0, 99);
-  uniform_real_distribution<double> cont_dist(0.0, 100.0);
   uniform_int_distribution<size_t> char_dist(0, max_index);
+
+  // Per-attr distributions
+  vector<uniform_int_distribution<int>> cat_dists;
+  vector<uniform_real_distribution<double>> cont_dists;
+  for (uint32_t j = 0; j < schema.options.attr_num; ++j) {
+    if (schema.options.attr_types[j] == AttrType::CATEGORICAL)
+      cat_dists.emplace_back(0, schema.cardinalities[j] - 1);
+    else
+      cat_dists.emplace_back(0, 0); // placeholder
+    if (schema.options.attr_types[j] == AttrType::CONTINUOUS)
+      cont_dists.emplace_back(schema.range_min[j], schema.range_max[j]);
+    else
+      cont_dists.emplace_back(0.0, 0.0); // placeholder
+  }
 
   auto start_time = chrono::high_resolution_clock::now();
 
   for (uint64_t i = 0; i < n; ++i) {
-    vector<Attr> attrs(options.attr_num);
-    for (uint32_t j = 0; j < options.attr_num; ++j) {
-      if (j % 2 == 0)
-        attrs[j] = to_string(cat_dist(gen));
+    vector<Attr> attrs(schema.options.attr_num);
+    for (uint32_t j = 0; j < schema.options.attr_num; ++j) {
+      if (schema.options.attr_types[j] == AttrType::CATEGORICAL)
+        attrs[j] = to_string(cat_dists[j](gen));
       else
-        attrs[j] = cont_dist(gen);
+        attrs[j] = cont_dists[j](gen);
     }
 
     string payload;
-    payload.reserve(payload_size);
-    for (size_t k = 0; k < payload_size; ++k)
+    payload.reserve(schema.payload_bytes);
+    for (size_t k = 0; k < schema.payload_bytes; ++k)
       payload += char_set[char_dist(gen)];
 
     string pk;
@@ -146,7 +169,7 @@ static void vanila_fill_kvp(uint64_t n, uint32_t payload_size,
       pk += char_set[char_dist(gen)];
 
     string serialized_value;
-    EncodeValue(options, attrs, payload, serialized_value);
+    EncodeValue(schema.options, attrs, payload, serialized_value);
     db->Put(wo, pk, serialized_value);
 
     if ((i + 1) % 1000000 == 0) {
@@ -159,7 +182,7 @@ static void vanila_fill_kvp(uint64_t n, uint32_t payload_size,
   }
 
   if (debug) {
-    cout << "✅ created " << n << " kvps. (total:"
+    cout << "created " << n << " kvps. (total:"
          << chrono::duration_cast<chrono::milliseconds>(
                 chrono::high_resolution_clock::now() - start_time)
                 .count()
@@ -168,12 +191,11 @@ static void vanila_fill_kvp(uint64_t n, uint32_t payload_size,
 }
 
 static void save_csv(const string& output_dir, const string& exp_label,
-                     uint64_t n, uint32_t payload_size, uint32_t attr_num,
+                     uint64_t n, const string& schema_name,
                      const vector<ProgressLog>& progress_log) {
   filesystem::create_directories(output_dir);
-  string filename = exp_label + "_vanila_n" + to_string(n) + "_p" +
-                    to_string(payload_size) + "_a" + to_string(attr_num) +
-                    ".csv";
+  string filename =
+      exp_label + "_vanila_n" + to_string(n) + "_schema_" + schema_name + ".csv";
   string full_path = output_dir + "/" + filename;
   ofstream f(full_path);
   f << "time_elapsed_ms,records_written\n";
@@ -192,8 +214,7 @@ int main(const int argc, char* argv[]) {
     ("exp_label", "Experiment label for output filename", cxxopts::value<string>()->default_value("seq_write"))
     ("exp_type", "Experiment type: write_seq or read_seq", cxxopts::value<string>()->default_value("write_seq"))
     ("n", "Total records to write", cxxopts::value<uint64_t>())
-    ("p,payload_size", "Payload size in bytes", cxxopts::value<uint32_t>()->default_value("32"))
-    ("a,attr_num", "Number of attributes per record", cxxopts::value<uint32_t>()->default_value("16"))
+    ("schema", "Path to schema JSON file", cxxopts::value<string>())
     ("d,db_path", "RocksDB storage path", cxxopts::value<string>())
     ("o,output_dir", "Result output directory", cxxopts::value<string>()->default_value("./result"))
     ("selectivity", "Per-attr selectivity (for continuous attrs in read mode)", cxxopts::value<double>())
@@ -209,18 +230,12 @@ int main(const int argc, char* argv[]) {
   string exp_label = result["exp_label"].as<string>();
   string exp_type = result["exp_type"].as<string>();
   uint64_t n = result["n"].as<uint64_t>();
-  uint32_t payload = result["payload_size"].as<uint32_t>();
-  uint32_t attr_num = result["attr_num"].as<uint32_t>();
+  string schema_path = result["schema"].as<string>();
   string db_path = result["db_path"].as<string>();
   string output_dir = result["output_dir"].as<string>();
 
-  options.attr_num = attr_num;
-  for (uint32_t i = 0; i < options.attr_num; ++i) {
-    if (i % 2 == 0)
-      options.attr_types.push_back(AttrType::CATEGORICAL);
-    else
-      options.attr_types.push_back(AttrType::CONTINUOUS);
-  }
+  Schema schema = load_schema(schema_path);
+  string s_name = schema_stem(schema_path);
 
   bool read_mode = (exp_type == "read_seq");
 
@@ -230,9 +245,9 @@ int main(const int argc, char* argv[]) {
     vector<uint32_t> query_indices = parse_indices(qi_str);
 
     for (uint32_t idx : query_indices) {
-      if (idx >= attr_num) {
-        cout << "SKIP: query attr index " << idx << " >= attr_num " << attr_num
-             << ", skipping experiment.\n";
+      if (idx >= schema.options.attr_num) {
+        cout << "SKIP: query attr index " << idx << " >= attr_num "
+             << schema.options.attr_num << ", skipping experiment.\n";
         return 0;
       }
     }
@@ -241,7 +256,7 @@ int main(const int argc, char* argv[]) {
     double selectivity = 0.0;
     bool has_continuous = false;
     for (uint32_t idx : query_indices) {
-      if (options.attr_types[idx] == AttrType::CONTINUOUS) {
+      if (schema.options.attr_types[idx] == AttrType::CONTINUOUS) {
         has_continuous = true;
         break;
       }
@@ -272,16 +287,15 @@ int main(const int argc, char* argv[]) {
       return 1;
     }
 
-    BitLSMQuery query = build_read_query(options, query_indices, selectivity);
-    ReadResult rr = vanila_full_scan(db, options, query);
+    BitLSMQuery query = build_read_query(schema, query_indices, selectivity);
+    ReadResult rr = vanila_full_scan(db, schema.options, query);
 
     for (auto* h : cf_handles)
       db->DestroyColumnFamilyHandle(h);
     delete db;
     cout << "DB successfully closed\n";
 
-    save_read_csv(output_dir, exp_label, n, payload, attr_num, selectivity,
-                  qi_str, rr);
+    save_read_csv(output_dir, exp_label, n, s_name, selectivity, qi_str, rr);
   } else {
     // --- Write mode ---
     Options rocksdb_options;
@@ -307,7 +321,7 @@ int main(const int argc, char* argv[]) {
     }
 
     vector<ProgressLog> progress_log;
-    vanila_fill_kvp(n, payload, progress_log, true);
+    vanila_fill_kvp(schema, n, progress_log, true);
 
     WaitForCompactOptions wait_for_compact_options = WaitForCompactOptions();
     wait_for_compact_options.close_db = true;
@@ -316,7 +330,7 @@ int main(const int argc, char* argv[]) {
     delete db;
     cout << "DB successfully closed\n";
 
-    save_csv(output_dir, exp_label, n, payload, attr_num, progress_log);
+    save_csv(output_dir, exp_label, n, s_name, progress_log);
   }
 
   return 0;
