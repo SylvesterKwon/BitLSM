@@ -1,0 +1,47 @@
+{
+  "exp_label": "seq_read_categorical",
+  "exp_type": "read_seq",
+  "output_dir": "src/experiment/comparison-with-vanila-rocksdb/result",
+  "db_path_base": "/scratch/comparison-with-vanila-rocksdb",
+  "common_params": {
+    "n": [
+      100000000
+    ],
+    "payload_size": [
+      32
+    ],
+    "attr_num": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      32
+    ],
+    "query_attr_num": [],
+    "selectivity": [
+      0.01,
+      0.0001,
+      0.000001
+    ],
+    "attr_type": []
+  },
+  "methods": [
+    {
+      "name": "vanila",
+      "binary": "build/bin/vanila-rocksdb",
+      "params": {}
+    },
+    {
+      "name": "bitlsm",
+      "binary": "build/bin/bit-lsm",
+      "params": {
+        "rho": [
+          0.2,
+          0.1,
+          0.05
+        ]
+      }
+    }
+  ]
+}

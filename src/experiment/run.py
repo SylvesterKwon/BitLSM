@@ -123,12 +123,12 @@ def run(config_path: str, dry_run: bool, method_filter: list,
         config = json.load(f)
 
     exp_label    = config["exp_label"]
-    exp_type     = config.get("exp_type", "write_only")
+    exp_type     = config.get("exp_type", "write_seq")
     output_dir   = config["output_dir"]
     db_path_base = config["db_path_base"]
     common       = config.get("common_params", {})
     methods      = config["methods"]
-    is_read_only = (exp_type == "read_only")
+    is_read_only = (exp_type == "read_seq")
 
     # Setup logging
     log_dir = "logs"
@@ -179,7 +179,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                 if not dry_run:
                     if is_read_only:
                         if not os.path.exists(db_path):
-                            sys.exit(f"DB path does not exist (required for read_only): {db_path}")
+                            sys.exit(f"DB path does not exist (required for read_seq): {db_path}")
                     else:
                         os.makedirs(db_path, exist_ok=True)
                     os.makedirs(output_dir, exist_ok=True)

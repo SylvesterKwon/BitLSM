@@ -98,8 +98,6 @@ Outputs: `build/bin/vanila-rocksdb`, `build/bin/bit-lsm`
 src/experiment/comparison-with-vanila-rocksdb/result/
 ```
 
-Created automatically if it does not exist.
-
 ### Filename Convention
 
 ```

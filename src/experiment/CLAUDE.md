@@ -86,8 +86,8 @@ Values are lists — the runner computes the cartesian product.
 
 ```json
 {
-  "exp_label": "seq_write",
-  "exp_type": "write_only",
+  "exp_label": "write_seq_exp_sample",
+  "exp_type": "write_seq",
   "output_dir": "<experiment-dir>/result",
   "db_path_base": "/scratch",
   "common_params": {
@@ -114,9 +114,9 @@ Values are lists — the runner computes the cartesian product.
 ```
 
 - `exp_label`: human-readable label used in output filenames and log files (passed to binary as `--exp_label`)
-- `exp_type`: controls runner behavior — `"write_only"` (default) or `"read_only"`
-  - `write_only`: creates DB directories, normal execution
-  - `read_only`: skips DB directory creation (DB must already exist), skips DB deletion on `--hw-reset`
+- `exp_type`: controls runner behavior — `"write_seq"` (default) or `"read_seq"`
+  - `write_seq`: creates DB directories, normal execution
+  - `read_seq`: skips DB directory creation (DB must already exist), skips DB deletion on `--hw-reset`
 - `common_params` keys map 1:1 to cxxopts long-form flag names (`--key value`)
 - `db_path` is auto-generated as `{db_path_base}/{method_name}/{encoded_params}`
 - Method-specific `params` are merged with `common_params` before computing the product
@@ -155,7 +155,7 @@ python3 src/experiment/run.py <path/to/write_params.json> --keep-db
 python3 src/experiment/run.py <path/to/read_params.json>
 ```
 
-Between-run sequence when enabled: `experiment → [hw-reset: rm -rf db (unless --keep-db or read_only), sync, drop_caches, fstrim] → [cooldown: sleep Ns] → next experiment`
+Between-run sequence when enabled: `experiment → [hw-reset: rm -rf db (unless --keep-db or read_seq), sync, drop_caches, fstrim] → [cooldown: sleep Ns] → next experiment`
 
 ---
 
