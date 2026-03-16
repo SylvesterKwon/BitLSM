@@ -76,10 +76,10 @@ def cartesian_combinations(params: dict) -> list:
     return [dict(zip(keys, combo)) for combo in product(*values)]
 
 
-def build_command(binary: str, exp_type: str, db_path: str,
+def build_command(binary: str, exp_label: str, db_path: str,
                   output_dir: str, combo: dict) -> list:
     cmd = [binary,
-           "--exp_type", exp_type,
+           "--exp_label", exp_label,
            "--db_path",  db_path,
            "--output_dir", output_dir]
     for key, val in combo.items():
@@ -122,17 +122,19 @@ def run(config_path: str, dry_run: bool, method_filter: list,
     with open(config_path) as f:
         config = json.load(f)
 
-    exp_type     = config["exp_type"]
+    exp_label    = config["exp_label"]
+    exp_type     = config.get("exp_type", "write_only")
     output_dir   = config["output_dir"]
     db_path_base = config["db_path_base"]
     common       = config.get("common_params", {})
     methods      = config["methods"]
+    is_read_only = (exp_type == "read_only")
 
     # Setup logging
     log_dir = "logs"
     os.makedirs(log_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file_path = os.path.join(log_dir, f"{exp_type}_{timestamp}.log")
+    log_file_path = os.path.join(log_dir, f"{timestamp}_{exp_label}.log")
     log_file = open(log_file_path, "w")
     sys.stdout = TeeOutput(log_file)
 
@@ -147,7 +149,8 @@ def run(config_path: str, dry_run: bool, method_filter: list,
             for m in methods
         )
         print(f"config   : {config_path}")
-        print(f"exp      : {exp_type}")
+        print(f"label    : {exp_label}")
+        print(f"type     : {exp_type}")
         print(f"total    : {total_runs} run(s) across {len(methods)} method(s)")
         print(f"cooldown : {cooldown}s between runs")
         print(f"hw-reset : {'on (sudo)' if hw_reset else 'off'}")
@@ -169,12 +172,16 @@ def run(config_path: str, dry_run: bool, method_filter: list,
             for combo in combos:
                 global_idx += 1
                 db_path = f"{db_path_base}/{name}/{encode_params(combo)}"
-                cmd     = build_command(binary, exp_type, db_path, output_dir, combo)
+                cmd     = build_command(binary, exp_label, db_path, output_dir, combo)
 
                 print(f"[{global_idx}/{total_runs}] [{name}] {' '.join(cmd)}")
 
                 if not dry_run:
-                    os.makedirs(db_path, exist_ok=True)
+                    if is_read_only:
+                        if not os.path.exists(db_path):
+                            sys.exit(f"DB path does not exist (required for read_only): {db_path}")
+                    else:
+                        os.makedirs(db_path, exist_ok=True)
                     os.makedirs(output_dir, exist_ok=True)
                     master_fd, slave_fd = pty.openpty()
                     proc = subprocess.Popen(
@@ -198,7 +205,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                     if global_idx < total_runs:
                         if hw_reset:
                             reset_hardware(db_path_base, prev_db_path=db_path,
-                                           keep_db=keep_db)
+                                           keep_db=(keep_db or is_read_only))
                         if cooldown > 0:
                             cooldown_sleep(cooldown)
 

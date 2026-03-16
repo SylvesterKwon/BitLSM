@@ -74,7 +74,7 @@ Outputs: `build/bin/vanila-rocksdb`, `build/bin/bit-lsm`
   -n 100000000 \
   -p 32 \
   -a 16 \
-  -d /scratch/data/vanila-exp \
+  -d /scratch/vanila-exp \
   -o src/experiment/comparison-with-vanila-rocksdb/result
 
 # BitLSM
@@ -84,7 +84,7 @@ Outputs: `build/bin/vanila-rocksdb`, `build/bin/bit-lsm`
   -p 32 \
   -a 16 \
   --rho 0.1 \
-  -d /scratch/data/bitlsm-exp \
+  -d /scratch/bitlsm-exp \
   -o src/experiment/comparison-with-vanila-rocksdb/result
 ```
 
@@ -172,18 +172,18 @@ sudo tmux kill-session -t sweep
 # Vary rho for BitLSM
 for rho in 0.05 0.1 0.2 0.5; do
   ./build/bin/bit-lsm -n 100000000 -p 32 -a 16 --rho $rho \
-    -d /scratch/data/bitlsm-rho$rho \
+    -d /scratch/bitlsm-rho$rho \
     -o src/experiment/comparison-with-vanila-rocksdb/result
 done
 
 # Vary attribute count
 for a in 1 2 4 8 16 32 64; do
   ./build/bin/vanila-rocksdb -n 100000000 -p 32 -a $a \
-    -d /scratch/data/vanila-a$a \
+    -d /scratch/vanila-a$a \
     -o src/experiment/comparison-with-vanila-rocksdb/result
 
   ./build/bin/bit-lsm -n 100000000 -p 32 -a $a --rho 0.1 \
-    -d /scratch/data/bitlsm-a$a \
+    -d /scratch/bitlsm-a$a \
     -o src/experiment/comparison-with-vanila-rocksdb/result
 done
 ```

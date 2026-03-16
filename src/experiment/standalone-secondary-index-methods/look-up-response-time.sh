@@ -2,9 +2,9 @@
 
 # 1. 실행 파일 및 경로 설정
 BIN_PATH="$HOME/workspace/lsm-bitmap-index/build/bin/test"
-NO_SI_DATA_DIR="/scratch/data/no-si"
-LU_DATA_DIR="/scratch/data/lu"
-CK_DATA_DIR="/scratch/data/ck"
+NO_SI_DATA_DIR="/scratch/no-si"
+LU_DATA_DIR="/scratch/lu"
+CK_DATA_DIR="/scratch/ck"
 
 NO_SI_RESULT_DIR="$HOME/workspace/lsm-bitmap-index/experiment_results/no-si"
 LU_RESULT_DIR="$HOME/workspace/lsm-bitmap-index/experiment_results/lu"

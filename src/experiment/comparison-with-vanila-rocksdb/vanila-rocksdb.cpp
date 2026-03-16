@@ -83,11 +83,11 @@ static void vanila_fill_kvp(uint64_t n, uint32_t payload_size,
   }
 }
 
-static void save_csv(const string& output_dir, const string& exp_type,
+static void save_csv(const string& output_dir, const string& exp_label,
                      uint64_t n, uint32_t payload_size, uint32_t attr_num,
                      const vector<ProgressLog>& progress_log) {
   filesystem::create_directories(output_dir);
-  string filename = exp_type + "_vanila_n" + to_string(n) + "_p" +
+  string filename = exp_label + "_vanila_n" + to_string(n) + "_p" +
                     to_string(payload_size) + "_a" + to_string(attr_num) +
                     ".csv";
   string full_path = output_dir + "/" + filename;
@@ -105,7 +105,7 @@ int main(const int argc, char* argv[]) {
   // clang-format off
   opts.add_options()
     ("h,help", "Print usage")
-    ("exp_type", "Experiment type", cxxopts::value<string>()->default_value("seq_write"))
+    ("exp_label", "Experiment label for output filename", cxxopts::value<string>()->default_value("seq_write"))
     ("n", "Total records to write", cxxopts::value<uint64_t>())
     ("p,payload_size", "Payload size in bytes", cxxopts::value<uint32_t>()->default_value("32"))
     ("a,attr_num", "Number of attributes per record", cxxopts::value<uint32_t>()->default_value("16"))
@@ -119,7 +119,7 @@ int main(const int argc, char* argv[]) {
     return 0;
   }
 
-  string exp_type = result["exp_type"].as<string>();
+  string exp_label = result["exp_label"].as<string>();
   uint64_t n = result["n"].as<uint64_t>();
   uint32_t payload = result["payload_size"].as<uint32_t>();
   uint32_t attr_num = result["attr_num"].as<uint32_t>();
@@ -173,7 +173,7 @@ int main(const int argc, char* argv[]) {
   delete db;
   cout << "DB successfully closed\n";
 
-  save_csv(output_dir, exp_type, n, payload, attr_num, progress_log);
+  save_csv(output_dir, exp_label, n, payload, attr_num, progress_log);
 
   return 0;
 }

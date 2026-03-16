@@ -73,5 +73,5 @@ WIP
 - SST dump
 예시:
 ```
-./build/bin/sst_dump /scratch/data/random_bit_props_test/000304.sst --command=scan --show_properties
+./build/bin/sst_dump /scratch/random_bit_props_test/000304.sst --command=scan --show_properties
 ```

@@ -27,7 +27,7 @@ All experiment binaries use `cxxopts` for argument parsing. Include via `<cxxopt
 
 | Flag | Type | Description |
 |---|---|---|
-| `--exp_type` | string | Experiment type label; used in output filename |
+| `--exp_label` | string | Experiment label; used in output filename |
 | `-n` | uint64 | Total number of records |
 | `-t, --threads` | uint32 | Number of worker threads |
 | `-p, --payload_size` | uint32 | Payload size in bytes |
@@ -49,10 +49,10 @@ Created automatically at runtime via `std::filesystem::create_directories`.
 ### Filename convention
 
 ```
-{exp_type}_{method}_{param1}{val1}_{param2}{val2}_...csv
+{exp_label}_{method}_{param1}{val1}_{param2}{val2}_...csv
 ```
 
-- `exp_type` first, then method name, then parameters in order
+- `exp_label` first, then method name, then parameters in order
 - Method name is a short identifier for the binary (e.g., `vanila`, `bitlsm`)
 - Parameter encoding order: common params first (`n`, `p`, `t`, `a`), then method-specific
 
@@ -86,9 +86,10 @@ Values are lists — the runner computes the cartesian product.
 
 ```json
 {
-  "exp_type": "seq_write",
+  "exp_label": "seq_write",
+  "exp_type": "write_only",
   "output_dir": "<experiment-dir>/result",
-  "db_path_base": "/scratch/data",
+  "db_path_base": "/scratch",
   "common_params": {
     "n":            [100000000],
     "threads":      [1, 2, 4, 8],
@@ -112,9 +113,14 @@ Values are lists — the runner computes the cartesian product.
 }
 ```
 
+- `exp_label`: human-readable label used in output filenames and log files (passed to binary as `--exp_label`)
+- `exp_type`: controls runner behavior — `"write_only"` (default) or `"read_only"`
+  - `write_only`: creates DB directories, normal execution
+  - `read_only`: skips DB directory creation (DB must already exist), skips DB deletion on `--hw-reset`
 - `common_params` keys map 1:1 to cxxopts long-form flag names (`--key value`)
 - `db_path` is auto-generated as `{db_path_base}/{method_name}/{encoded_params}`
 - Method-specific `params` are merged with `common_params` before computing the product
+- For read experiments, use the same `db_path_base` and parameters as the corresponding write experiment so that `db_path` resolves to the same directory
 
 ### run.py
 
@@ -143,9 +149,13 @@ python3 src/experiment/run.py <path/to/params.json> --hw-reset --cooldown 300
 
 # hw-reset without deleting DB
 python3 src/experiment/run.py <path/to/params.json> --hw-reset --cooldown 300 --keep-db
+
+# write then read workflow: write with --keep-db, then run read on the same DB
+python3 src/experiment/run.py <path/to/write_params.json> --keep-db
+python3 src/experiment/run.py <path/to/read_params.json>
 ```
 
-Between-run sequence when enabled: `experiment → [hw-reset: rm -rf db (unless --keep-db), sync, drop_caches, fstrim] → [cooldown: sleep Ns] → next experiment`
+Between-run sequence when enabled: `experiment → [hw-reset: rm -rf db (unless --keep-db or read_only), sync, drop_caches, fstrim] → [cooldown: sleep Ns] → next experiment`
 
 ---
 
@@ -159,7 +169,7 @@ Write in **English**. Required sections:
 |---|---|
 | **Objective** | What is being measured and why |
 | **Subjects** | Methods/binaries being compared, with source filenames |
-| **Experiment Types** | Each `exp_type` value: what workload it runs and how |
+| **Experiment Types** | Each `exp_label` value: what workload it runs and how |
 | **Parameters** | Full table of flags — common and method-specific — with types, defaults, descriptions |
 | **Build** | CMake commands to build the relevant binaries |
 | **Running** | Concrete invocation example with all flags filled in |

@@ -10,7 +10,7 @@ using namespace rocksdb;
 using namespace roaring;
 using namespace bit_lsm;
 
-string db_path = "/scratch/data/comparison-with-vanila-rocksdb-by-attr-num/"
+string db_path = "/scratch/comparison-with-vanila-rocksdb-by-attr-num/"
                  "bitlsm/n100000000_threads8_payload_size32_attr_num16_rho0.05";
 uint32_t num_threads = 4;
 int main(const int argc, char* argv[]) {

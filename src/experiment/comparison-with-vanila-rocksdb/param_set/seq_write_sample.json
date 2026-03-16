@@ -1,7 +1,8 @@
 {
-  "exp_type": "seq_write_by_attr_num",
+  "exp_label": "seq_write_sample",
+  "exp_type": "write_only",
   "output_dir": "src/experiment/comparison-with-vanila-rocksdb/result",
-  "db_path_base": "/scratch/data/comparison-with-vanila-rocksdb-by-attr-num",
+  "db_path_base": "/scratch/comparison-with-vanila-rocksdb-by-attr-num",
   "common_params": {
     "n": [
       100000000
