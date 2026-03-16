@@ -44,7 +44,7 @@ vector<ProgressLog> progress_log;
 mutex progress_log_mutex;
 
 void put_thread_worker(uint32_t thread_id, uint64_t total_n,
-                       uint32_t payload_size) {
+                       uint32_t payload_size, const string& pk_type) {
   WriteOptions wo;
   mt19937 gen(thread_id);
   uniform_int_distribution<int> cat_dist(0, 99);
@@ -68,7 +68,14 @@ void put_thread_worker(uint32_t thread_id, uint64_t total_n,
     payload.reserve(payload_size);
     for (size_t i = 0; i < payload_size; ++i)
       payload += char_set[char_dist(gen)];
-    string pk = to_string(current_pk_val);
+    string pk;
+    if (pk_type == "random_string") {
+      pk.reserve(8);
+      for (size_t i = 0; i < 8; ++i)
+        pk += char_set[char_dist(gen)];
+    } else {
+      pk = to_string(current_pk_val);
+    }
 
     string serialized_value;
     EncodeValue(options, attrs, payload, serialized_value);
@@ -90,7 +97,8 @@ void put_thread_worker(uint32_t thread_id, uint64_t total_n,
 }
 
 void vanila_fill_kvp_using_sequential(uint32_t num_threads, uint64_t n,
-                                      uint32_t payload_size = 32,
+                                      uint32_t payload_size,
+                                      const string& pk_type,
                                       bool debug = false) {
   if (debug)
     cout << "creating " << n << " kvps into Vanila using Put API...\n";
@@ -98,7 +106,7 @@ void vanila_fill_kvp_using_sequential(uint32_t num_threads, uint64_t n,
   start_time = chrono::high_resolution_clock::now();
   vector<thread> workers;
   for (int i = 0; i < num_threads; ++i)
-    workers.emplace_back(put_thread_worker, i, n, payload_size);
+    workers.emplace_back(put_thread_worker, i, n, payload_size, std::cref(pk_type));
   for (auto& t : workers)
     t.join();
   if (debug) {
@@ -111,11 +119,12 @@ void vanila_fill_kvp_using_sequential(uint32_t num_threads, uint64_t n,
 }
 
 void save_csv(const string& output_dir, const string& exp_type, uint64_t n,
-              uint32_t payload_size, uint32_t num_threads, uint32_t attr_num) {
+              uint32_t payload_size, uint32_t num_threads, uint32_t attr_num,
+              const string& pk_type) {
   filesystem::create_directories(output_dir);
   string filename = exp_type + "_vanila_n" + to_string(n) + "_p" +
                     to_string(payload_size) + "_t" + to_string(num_threads) +
-                    "_a" + to_string(attr_num) + ".csv";
+                    "_a" + to_string(attr_num) + "_pk" + pk_type + ".csv";
   string full_path = output_dir + "/" + filename;
   ofstream f(full_path);
   f << "time_elapsed_ms,records_written\n";
@@ -137,7 +146,8 @@ int main(const int argc, char* argv[]) {
     ("p,payload_size", "Payload size in bytes", cxxopts::value<uint32_t>()->default_value("32"))
     ("a,attr_num", "Number of attributes per record", cxxopts::value<uint32_t>()->default_value("16"))
     ("d,db_path", "RocksDB storage path", cxxopts::value<string>())
-    ("o,output_dir", "Result output directory", cxxopts::value<string>()->default_value("./result"));
+    ("o,output_dir", "Result output directory", cxxopts::value<string>()->default_value("./result"))
+    ("pk_type", "Primary key type: auto_increment or random_string", cxxopts::value<string>()->default_value("random_string"));
   // clang-format on
 
   auto result = opts.parse(argc, argv);
@@ -153,6 +163,7 @@ int main(const int argc, char* argv[]) {
   uint32_t attr_num = result["attr_num"].as<uint32_t>();
   string db_path = result["db_path"].as<string>();
   string output_dir = result["output_dir"].as<string>();
+  string pk_type = result["pk_type"].as<string>();
 
   options.attr_num = attr_num;
   for (uint32_t i = 0; i < options.attr_num; ++i) {
@@ -171,10 +182,13 @@ int main(const int argc, char* argv[]) {
   rocksdb_options.max_background_jobs = 6;
   rocksdb_options.bytes_per_sync = 1048576;
   rocksdb_options.compaction_pri = kMinOverlappingRatio;
+  // reference:
+  // https://github.com/facebook/rocksdb/wiki/RocksDB-Tuning-Guide#flushing-options
+  // rocksdb_options.write_buffer_size = 64 << 20; // Default: 64MB
+  rocksdb_options.max_write_buffer_number = 5;
+  // rocksdb_options.min_write_buffer_number_to_merge = 2;
   BlockBasedTableOptions table_options;
   table_options.block_size = 16 * 1024;
-  table_options.cache_index_and_filter_blocks = true;
-  table_options.pin_l0_filter_and_index_blocks_in_cache = true;
   rocksdb_options.table_factory.reset(NewBlockBasedTableFactory(table_options));
   ColumnFamilyOptions cf_opts(rocksdb_options);
   cf_opts.level_compaction_dynamic_level_bytes = true;
@@ -188,7 +202,7 @@ int main(const int argc, char* argv[]) {
     return 1;
   }
 
-  vanila_fill_kvp_using_sequential(n_threads, n, payload, true);
+  vanila_fill_kvp_using_sequential(n_threads, n, payload, pk_type, true);
 
   WaitForCompactOptions wait_for_compact_options = WaitForCompactOptions();
   wait_for_compact_options.close_db = true;
@@ -197,7 +211,7 @@ int main(const int argc, char* argv[]) {
   delete db;
   cout << "DB successfully closed\n";
 
-  save_csv(output_dir, exp_type, n, payload, n_threads, attr_num);
+  save_csv(output_dir, exp_type, n, payload, n_threads, attr_num, pk_type);
 
   return 0;
 }

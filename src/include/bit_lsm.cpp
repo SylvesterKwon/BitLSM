@@ -21,10 +21,13 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options)
   rocksdb_options_.max_background_jobs = 6;
   rocksdb_options_.bytes_per_sync = 1048576;
   rocksdb_options_.compaction_pri = kMinOverlappingRatio;
+  // reference:
+  // https://github.com/facebook/rocksdb/wiki/RocksDB-Tuning-Guide#flushing-options
+  // rocksdb_options.write_buffer_size = 64 << 20; // Default: 64MB
+  rocksdb_options_.max_write_buffer_number = 5;
+  // rocksdb_options_.min_write_buffer_number_to_merge = 2;
   BlockBasedTableOptions table_options;
   table_options.block_size = 16 * 1024;
-  table_options.cache_index_and_filter_blocks = true;
-  table_options.pin_l0_filter_and_index_blocks_in_cache = true;
   table_options.user_defined_index_factory =
       make_shared<SABIFactory>(bit_lsm_options_);
   rocksdb_options_.table_factory.reset(

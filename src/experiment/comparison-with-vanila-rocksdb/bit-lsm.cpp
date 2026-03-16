@@ -29,6 +29,7 @@ struct ProgressLog {
 
 static void seq_put_worker(bit_lsm::BitLSM* db, uint32_t thread_id, uint64_t n,
                            uint32_t payload_size, bit_lsm::BitLSMOptions opts,
+                           const string& pk_type,
                            atomic<uint64_t>& global_auto_increment,
                            chrono::_V2::system_clock::time_point start_time,
                            vector<ProgressLog>& progress_log,
@@ -55,7 +56,14 @@ static void seq_put_worker(bit_lsm::BitLSM* db, uint32_t thread_id, uint64_t n,
     payload.reserve(payload_size);
     for (size_t i = 0; i < payload_size; ++i)
       payload += char_set[char_dist(gen)];
-    string pk = to_string(current_pk_val);
+    string pk;
+    if (pk_type == "random_string") {
+      pk.reserve(8);
+      for (size_t i = 0; i < 8; ++i)
+        pk += char_set[char_dist(gen)];
+    } else {
+      pk = to_string(current_pk_val);
+    }
 
     db->Put(pk, attrs, payload);
 
@@ -76,7 +84,7 @@ static void seq_put_worker(bit_lsm::BitLSM* db, uint32_t thread_id, uint64_t n,
 
 static void fill_kvp_with_log(bit_lsm::BitLSM* db, uint32_t num_threads,
                               uint64_t n, bit_lsm::BitLSMOptions opts,
-                              uint32_t payload_size,
+                              uint32_t payload_size, const string& pk_type,
                               vector<ProgressLog>& progress_log,
                               bool debug = false) {
   if (debug)
@@ -89,8 +97,9 @@ static void fill_kvp_with_log(bit_lsm::BitLSM* db, uint32_t num_threads,
   vector<thread> workers;
   for (int i = 0; i < num_threads; ++i)
     workers.emplace_back(seq_put_worker, db, i, n, payload_size, opts,
-                         std::ref(global_auto_increment), start_time,
-                         std::ref(progress_log), std::ref(log_mutex));
+                         std::cref(pk_type), std::ref(global_auto_increment),
+                         start_time, std::ref(progress_log),
+                         std::ref(log_mutex));
   for (auto& t : workers)
     t.join();
 
@@ -111,13 +120,13 @@ static string format_double(double v) {
 
 static void save_csv(const string& output_dir, const string& exp_type,
                      uint64_t n, uint32_t payload_size, uint32_t num_threads,
-                     uint32_t attr_num, double rho,
+                     uint32_t attr_num, double rho, const string& pk_type,
                      const vector<ProgressLog>& progress_log) {
   filesystem::create_directories(output_dir);
   string filename = exp_type + "_bitlsm_n" + to_string(n) + "_p" +
                     to_string(payload_size) + "_t" + to_string(num_threads) +
                     "_a" + to_string(attr_num) + "_rho" + format_double(rho) +
-                    ".csv";
+                    "_pk" + pk_type + ".csv";
   string full_path = output_dir + "/" + filename;
   ofstream f(full_path);
   f << "time_elapsed_ms,records_written\n";
@@ -139,7 +148,8 @@ int main(const int argc, char* argv[]) {
     ("a,attr_num", "Number of attributes per record", cxxopts::value<uint32_t>()->default_value("16"))
     ("rho", "BitLSM rho threshold", cxxopts::value<double>()->default_value("0.1"))
     ("d,db_path", "BitLSM storage path", cxxopts::value<string>())
-    ("o,output_dir", "Result output directory", cxxopts::value<string>()->default_value("./result"));
+    ("o,output_dir", "Result output directory", cxxopts::value<string>()->default_value("./result"))
+    ("pk_type", "Primary key type: auto_increment or random_string", cxxopts::value<string>()->default_value("random_string"));
   // clang-format on
 
   auto result = opts.parse(argc, argv);
@@ -156,6 +166,7 @@ int main(const int argc, char* argv[]) {
   double rho = result["rho"].as<double>();
   string db_path = result["db_path"].as<string>();
   string output_dir = result["output_dir"].as<string>();
+  string pk_type = result["pk_type"].as<string>();
 
   BitLSMOptions bit_lsm_options;
   bit_lsm_options.rho = rho;
@@ -170,10 +181,10 @@ int main(const int argc, char* argv[]) {
   BitLSM db(db_path, bit_lsm_options);
 
   vector<ProgressLog> progress_log;
-  fill_kvp_with_log(&db, n_threads, n, bit_lsm_options, payload, progress_log,
-                    true);
+  fill_kvp_with_log(&db, n_threads, n, bit_lsm_options, payload, pk_type,
+                    progress_log, true);
 
-  save_csv(output_dir, exp_type, n, payload, n_threads, attr_num, rho,
+  save_csv(output_dir, exp_type, n, payload, n_threads, attr_num, rho, pk_type,
            progress_log);
 
   return 0;

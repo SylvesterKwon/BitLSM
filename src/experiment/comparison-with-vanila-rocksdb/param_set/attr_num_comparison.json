@@ -7,7 +7,7 @@
       100000000
     ],
     "threads": [
-      8
+      1
     ],
     "payload_size": [
       32
@@ -18,7 +18,11 @@
       4,
       8,
       16,
-      32
+      32,
+      64
+    ],
+    "pk_type": [
+      "random_string"
     ]
   },
   "methods": [
@@ -32,7 +36,7 @@
       "binary": "build/bin/bit-lsm",
       "params": {
         "rho": [
-          0.05
+          0.1
         ]
       }
     }

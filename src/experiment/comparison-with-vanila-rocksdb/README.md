@@ -15,7 +15,9 @@ BitLSM integrates a bitmap index into the LSM-Tree. This experiment measures the
 | BitLSM | `bit-lsm` | `bit-lsm.cpp` |
 
 Both methods use the same record format:
-- **PK**: auto-increment integer (stored as string)
+- **PK**: configurable via `--pk_type`
+  - `auto_increment`: sequential integer converted to string (`"0"`, `"1"`, ...)
+  - `random_string` (default): 8-character random alphanumeric string (`[A-Za-z0-9]`)
 - **Attributes**: even-indexed → categorical (integer string in [0, 99]), odd-indexed → continuous (double in [0.0, 100.0])
 - **Payload**: random alphanumeric string of fixed length
 
@@ -44,6 +46,7 @@ Progress is checkpointed every 1,000,000 records.
 | `-a, --attr_num` | uint32 | `16` | Number of attributes per record |
 | `-d, --db_path` | string | (required) | DB storage path |
 | `-o, --output_dir` | string | `./result` | Directory for CSV output |
+| `--pk_type` | string | `random_string` | PK generation strategy: `auto_increment` or `random_string` |
 
 ### BitLSM-specific
 
@@ -76,6 +79,7 @@ Outputs: `build/bin/vanila-rocksdb`, `build/bin/bit-lsm`
   -t 4 \
   -p 32 \
   -a 16 \
+  --pk_type random_string \
   -d /scratch/data/vanila-exp \
   -o src/experiment/comparison-with-vanila-rocksdb/result
 
@@ -87,6 +91,7 @@ Outputs: `build/bin/vanila-rocksdb`, `build/bin/bit-lsm`
   -p 32 \
   -a 16 \
   --rho 0.1 \
+  --pk_type random_string \
   -d /scratch/data/bitlsm-exp \
   -o src/experiment/comparison-with-vanila-rocksdb/result
 ```
@@ -111,8 +116,8 @@ Created automatically if it does not exist.
 
 | Method | Example filename |
 |---|---|
-| Vanilla RocksDB | `seq_write_vanila_n100000000_p32_t4_a16.csv` |
-| BitLSM | `seq_write_bitlsm_n100000000_p32_t4_a16_rho0.1.csv` |
+| Vanilla RocksDB | `seq_write_vanila_n100000000_p32_t4_a16_pkrandom_string.csv` |
+| BitLSM | `seq_write_bitlsm_n100000000_p32_t4_a16_rho0.1_pkrandom_string.csv` |
 
 Parameter prefixes in filename:
 
@@ -123,6 +128,7 @@ Parameter prefixes in filename:
 | `t` | Number of writer threads |
 | `a` | Number of attributes |
 | `rho` | BitLSM rho value (BitLSM only) |
+| `pk` | PK type (`auto_increment` or `random_string`) |
 
 ### CSV Schema
 
