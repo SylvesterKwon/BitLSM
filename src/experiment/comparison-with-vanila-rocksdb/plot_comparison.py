@@ -14,7 +14,7 @@ RESULT_DIR = Path(__file__).parent / "result"
 
 FILENAME_PATTERN = re.compile(
     r"^(?P<workload>.+?)_(?P<engine>bitlsm|vanila)"
-    r"_n(?P<n>\d+)_p(?P<p>\d+)_t(?P<t>\d+)_a(?P<a>\d+)"
+    r"_n(?P<n>\d+)_p(?P<p>\d+)_a(?P<a>\d+)"
     r"(?:_rho(?P<rho>[\d.]+))?"
     r"\.csv$"
 )
@@ -27,7 +27,6 @@ def parse_filename(filename: str) -> dict | None:
     d = m.groupdict()
     d["n"] = int(d["n"])
     d["p"] = int(d["p"])
-    d["t"] = int(d["t"])
     d["a"] = int(d["a"])
     if d["rho"] is not None:
         d["rho"] = float(d["rho"])

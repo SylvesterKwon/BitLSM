@@ -6,9 +6,6 @@
     "n": [
       100000000
     ],
-    "threads": [
-      1
-    ],
     "payload_size": [
       32
     ],
@@ -20,9 +17,6 @@
       16,
       32,
       64
-    ],
-    "pk_type": [
-      "random_string"
     ]
   },
   "methods": [
