@@ -27,7 +27,7 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options)
   rocksdb_options_.max_write_buffer_number = 5;
   // rocksdb_options_.min_write_buffer_number_to_merge = 2;
   BlockBasedTableOptions table_options;
-  table_options.block_size = 16 * 1024;
+  table_options.block_size = 4 * 1024; // default, 4kb
   table_options.user_defined_index_factory =
       make_shared<SABIFactory>(bit_lsm_options_);
   rocksdb_options_.table_factory.reset(

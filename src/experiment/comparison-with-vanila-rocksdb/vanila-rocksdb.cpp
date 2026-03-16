@@ -28,8 +28,8 @@ struct ProgressLog {
 };
 
 static void vanila_fill_kvp(uint64_t n, uint32_t payload_size,
-                             vector<ProgressLog>& progress_log,
-                             bool debug = false) {
+                            vector<ProgressLog>& progress_log,
+                            bool debug = false) {
   if (debug)
     cout << "creating " << n << " kvps into Vanila using Put API...\n";
 
@@ -69,8 +69,7 @@ static void vanila_fill_kvp(uint64_t n, uint32_t payload_size,
                             chrono::high_resolution_clock::now() - start_time)
                             .count();
       progress_log.push_back({static_cast<uint64_t>(elapsed_ms), i + 1});
-      cout << "putted: " << i + 1
-           << " kvps, elapsed: " << elapsed_ms << "ms\n";
+      cout << "putted: " << i + 1 << " kvps, elapsed: " << elapsed_ms << "ms\n";
     }
   }
 
@@ -149,7 +148,7 @@ int main(const int argc, char* argv[]) {
   rocksdb_options.max_write_buffer_number = 5;
   // rocksdb_options.min_write_buffer_number_to_merge = 2;
   BlockBasedTableOptions table_options;
-  table_options.block_size = 16 * 1024;
+  table_options.block_size = 4 * 1024; // default, 4kb
   rocksdb_options.table_factory.reset(NewBlockBasedTableFactory(table_options));
   ColumnFamilyOptions cf_opts(rocksdb_options);
   cf_opts.level_compaction_dynamic_level_bytes = true;
