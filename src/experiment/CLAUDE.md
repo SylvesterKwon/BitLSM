@@ -28,12 +28,20 @@ All experiment binaries use `cxxopts` for argument parsing. Include via `<cxxopt
 | Flag | Type | Description |
 |---|---|---|
 | `--exp_label` | string | Experiment label; used in output filename |
+| `--exp_type` | string | Experiment type: `write_seq` (default) or `read_seq` |
 | `-n` | uint64 | Total number of records |
 | `-t, --threads` | uint32 | Number of worker threads |
 | `-p, --payload_size` | uint32 | Payload size in bytes |
 | `-a, --attr_num` | uint32 | Number of attributes per record |
 | `-d, --db_path` | string | DB storage path |
 | `-o, --output_dir` | string | CSV output directory (default: `./result`) |
+
+### Read-specific flags (`read_seq`)
+
+| Flag | Type | Description |
+|---|---|---|
+| `--query_attr_indices` | string | Comma-separated attribute indices for query (e.g. `0,1,3`) |
+| `--selectivity` | double | Per-attribute selectivity; required only when querying continuous attrs |
 
 Method-specific flags are defined per experiment and documented in the experiment's README.md.
 
@@ -119,8 +127,8 @@ Values are lists — the runner computes the cartesian product.
   - `read_seq`: skips DB directory creation (DB must already exist), skips DB deletion on `--hw-reset`
 - `common_params` keys map 1:1 to cxxopts long-form flag names (`--key value`)
 - `db_path` is auto-generated as `{db_path_base}/{method_name}/{encoded_params}`
+  - `DB_PARAMS` is hardcoded in `run.py` as `["n", "payload_size", "attr_num", "rho"]` — only these keys are included in the path encoding. Keys not present in a given combination are silently skipped. This ensures write and read experiments produce identical DB paths
 - Method-specific `params` are merged with `common_params` before computing the product
-- For read experiments, use the same `db_path_base` and parameters as the corresponding write experiment so that `db_path` resolves to the same directory
 
 ### run.py
 

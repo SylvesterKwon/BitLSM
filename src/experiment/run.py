@@ -62,6 +62,11 @@ def fmt(val) -> str:
     return str(val)
 
 
+# Parameters that define a DB identity — used to build deterministic db_path.
+# Keys not present in a given combination are silently skipped.
+DB_PARAMS = ["n", "payload_size", "attr_num", "rho"]
+
+
 def encode_params(params: dict) -> str:
     """Encode a {flag: value} dict into a path-safe string, e.g. n100000000_threads4."""
     return "_".join(f"{k}{fmt(v)}" for k, v in params.items())
@@ -76,10 +81,11 @@ def cartesian_combinations(params: dict) -> list:
     return [dict(zip(keys, combo)) for combo in product(*values)]
 
 
-def build_command(binary: str, exp_label: str, db_path: str,
-                  output_dir: str, combo: dict) -> list:
+def build_command(binary: str, exp_label: str, exp_type: str,
+                  db_path: str, output_dir: str, combo: dict) -> list:
     cmd = [binary,
            "--exp_label", exp_label,
+           "--exp_type",  exp_type,
            "--db_path",  db_path,
            "--output_dir", output_dir]
     for key, val in combo.items():
@@ -171,8 +177,9 @@ def run(config_path: str, dry_run: bool, method_filter: list,
 
             for combo in combos:
                 global_idx += 1
-                db_path = f"{db_path_base}/{name}/{encode_params(combo)}"
-                cmd     = build_command(binary, exp_label, db_path, output_dir, combo)
+                db_combo = {k: v for k, v in combo.items() if k in DB_PARAMS}
+                db_path = f"{db_path_base}/{name}/{encode_params(db_combo)}"
+                cmd     = build_command(binary, exp_label, exp_type, db_path, output_dir, combo)
 
                 print(f"[{global_idx}/{total_runs}] [{name}] {' '.join(cmd)}")
 

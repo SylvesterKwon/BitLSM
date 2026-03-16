@@ -18,13 +18,11 @@
       16,
       32
     ],
-    "query_attr_num": [],
-    "selectivity": [
-      0.01,
-      0.0001,
-      0.000001
-    ],
-    "attr_type": []
+    "query_attr_indices": [
+      "0",
+      "0,2",
+      "0,2,4"
+    ]
   },
   "methods": [
     {
