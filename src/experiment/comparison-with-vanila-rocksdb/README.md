@@ -84,7 +84,8 @@ Opens a pre-populated DB (created by `seq_write`) and executes a single range/eq
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--query_attr_indices` | string | (none) | Comma-separated attribute indices for query (e.g. `0,1,3`) |
-| `--selectivity` | double | (none) | Per-attribute selectivity; required only when querying continuous attrs |
+| `--selectivity` | double | (none) | Per-attribute selectivity; auto-computed by runner from `expected_selectivity^(1/k)` where k = number of query attributes |
+| `--expected_selectivity` | double | (none) | Overall expected selectivity (= per-attr selectivity^k); use this in exp_set JSON instead of `selectivity` |
 
 ### BitLSM-specific
 
@@ -181,10 +182,16 @@ time_elapsed_ms,records_written
 ### CSV Schema — Read
 
 ```csv
-time_elapsed_ms,records_matched,selectivity_actual
-4523,1000000,0.01
+method,n,schema,selectivity,query_attr_num,rho,time_elapsed_ms,records_matched,selectivity_actual
+bitlsm,100000000,default_a2,0.5,1,0.2,134043,50000599,0.500006
 ```
 
+- `method`: method name (`vanila` or `bitlsm`)
+- `n`: total number of records in DB
+- `schema`: schema name used
+- `selectivity`: requested selectivity
+- `query_attr_num`: number of query attributes
+- `rho`: BitLSM rho parameter (empty for vanilla)
 - `time_elapsed_ms`: total query execution time (ms)
 - `records_matched`: number of records matching the query
 - `selectivity_actual`: `records_matched / n`
@@ -198,34 +205,32 @@ time_elapsed_ms,records_matched,selectivity_actual
 
 `--hw-reset` uses `sync`, `drop_caches`, and `fstrim`, so the **entire script must be run as root**.
 **`--hw-reset` deletes the previous DB directory between runs by default.** Use `--keep-db` to preserve DB directories.
-Use `--daemon` to run in the background without tmux, or use `tmux` to keep the session alive after terminal disconnect.
+Use `--daemon` to run in the background.
 
 ```bash
 # dry-run to preview all commands
 python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write_default.json \
+  src/experiment/comparison-with-vanila-rocksdb/exp_set/seq_write_default.json \
   --dry-run
 
-# background run with --daemon (no tmux needed)
+# full sweep with SSD hardware reset + 1-min cooldown (DB deleted between runs by default)
 sudo python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write_default.json \
+  src/experiment/comparison-with-vanila-rocksdb/exp_set/seq_write_default.json \
   --hw-reset --cooldown 60 --daemon
 
-# full sweep with SSD hardware reset + 1-min cooldown (DB deleted between runs by default)
-sudo tmux new -d -s sweep 'sudo python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write_default.json \
-  --hw-reset --cooldown 60'
-
 # hw-reset without deleting DB between runs (e.g., for preparing read test)
-sudo tmux new -d -s sweep 'sudo python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write_default.json \
-  --hw-reset --cooldown 60 --keep-db'
+sudo python3 src/experiment/run.py \
+  src/experiment/comparison-with-vanila-rocksdb/exp_set/seq_write_default.json \
+  --hw-reset --cooldown 60 --keep-db --daemon
 
-# attach to see live output (tmux only)
-sudo tmux attach -t sweep
+# check daemon status (PID is printed at launch)
+ps -p <PID>
 
-# terminate experiment (tmux only)
-sudo tmux kill-session -t sweep
+# view live output
+tail -f logs/<timestamp>_*.log
+
+# terminate experiment
+kill <PID>
 ```
 
 ### Write then read workflow (recommended)
@@ -233,13 +238,14 @@ sudo tmux kill-session -t sweep
 ```bash
 # 1. Write with --keep-db to preserve DB
 sudo python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write_default.json \
-  --hw-reset --cooldown 60 --keep-db
+  src/experiment/comparison-with-vanila-rocksdb/exp_set/seq_write_default.json \
+  --hw-reset --cooldown 60 --keep-db --daemon
 
 # 2. Read on the same DB (DB_PARAMS ensures matching paths)
+#    --warmup runs one dummy query per DB to populate OS page cache before measuring
 sudo python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/param_set/seq_read_continuous.json \
-  --hw-reset --cooldown 60
+  src/experiment/comparison-with-vanila-rocksdb/exp_set/seq_read_continuous.json \
+  --warmup --daemon
 ```
 
 ### Manual sweep

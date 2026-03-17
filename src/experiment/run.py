@@ -22,6 +22,7 @@ import argparse
 import csv
 import ctypes
 import json
+import math
 import os
 import pty
 import signal
@@ -93,6 +94,23 @@ def cartesian_combinations(params: dict) -> list:
     return [dict(zip(keys, combo)) for combo in product(*values)]
 
 
+def resolve_expected_selectivity(combo: dict) -> dict:
+    """Convert expected_selectivity (overall) to per-attr selectivity for the binary.
+
+    If 'expected_selectivity' is present, compute per-attr selectivity as
+    expected_selectivity^(1/k) where k = number of query attributes.
+    Returns a new combo dict with 'selectivity' replacing 'expected_selectivity'.
+    """
+    if "expected_selectivity" not in combo:
+        return combo
+    resolved = dict(combo)
+    expected_sel = resolved.pop("expected_selectivity")
+    k = len(str(resolved.get("query_attr_indices", "0")).split(","))
+    per_attr_sel = expected_sel ** (1.0 / k)
+    resolved["selectivity"] = per_attr_sel
+    return resolved
+
+
 def build_command(binary: str, exp_label: str, exp_type: str,
                   db_path: str, output_dir: str, combo: dict) -> list:
     cmd = [binary,
@@ -145,8 +163,22 @@ def _parse_result_line(output: str) -> dict | None:
     return None
 
 
+def _build_master_fieldnames(common: dict, methods: list) -> list:
+    """Build the fixed CSV fieldnames from the union of all methods' params."""
+    # Collect all combo keys across every method
+    all_keys = set()
+    for m in methods:
+        merged = {**common, **m.get("params", {})}
+        for k in merged:
+            if k == "query_attr_indices":
+                all_keys.add("query_attr_num")
+            else:
+                all_keys.add(k)
+    return ["method"] + sorted(all_keys) + RESULT_COLUMNS
+
+
 def _append_to_master_csv(master_path: str, method: str, combo: dict,
-                           result_data: dict):
+                           result_data: dict, fieldnames: list):
     """Append a row to the master CSV with combo params + result values."""
     row = {"method": method}
     for k, v in combo.items():
@@ -158,10 +190,17 @@ def _append_to_master_csv(master_path: str, method: str, combo: dict,
             row[k] = fmt(v)
     row.update(result_data)
 
-    # Append to master (write header if file is new/empty)
+    # Append to master (write header if file is new/empty, or recreate if schema changed)
     write_header = not os.path.exists(master_path) or os.path.getsize(master_path) == 0
+    if not write_header:
+        with open(master_path, "r", newline="") as f:
+            existing = csv.DictReader(f).fieldnames
+        if existing != fieldnames:
+            print(f"  [warn] CSV header mismatch — recreating {master_path}")
+            os.remove(master_path)
+            write_header = True
     with open(master_path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=row.keys())
+        writer = csv.DictWriter(f, fieldnames=fieldnames, restval="")
         if write_header:
             writer.writeheader()
         writer.writerow(row)
@@ -175,19 +214,19 @@ def cooldown_sleep(seconds: int):
 
 
 def run(config_path: str, dry_run: bool, method_filter: list,
-        cooldown: int, hw_reset: bool, keep_db: bool):
+        cooldown: int, hw_reset: bool, keep_db: bool, warmup: bool = False):
     with open(config_path) as f:
         config = json.load(f)
 
-    exp_label    = config["exp_label"]
+    exp_label    = os.path.splitext(os.path.basename(config_path))[0]
     exp_type     = config.get("exp_type", "write_seq")
     db_path_base = config["db_path_base"]
     common       = config.get("common_params", {})
     methods      = config["methods"]
     is_read_only = (exp_type == "read_seq")
 
-    # Derive exp_dir from config path: param_set's parent directory
-    # e.g. src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write.json
+    # Derive exp_dir from config path: exp_set's parent directory
+    # e.g. src/experiment/comparison-with-vanila-rocksdb/exp_set/seq_write.json
     #   -> src/experiment/comparison-with-vanila-rocksdb
     exp_dir    = os.path.dirname(os.path.dirname(os.path.abspath(config_path)))
     output_dir = os.path.join(exp_dir, "result")
@@ -212,6 +251,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
             if not methods:
                 sys.exit(f"No methods matched: {method_filter}")
 
+        master_fieldnames = _build_master_fieldnames(common, methods)
         total_runs = sum(
             len(cartesian_combinations({**common, **m.get("params", {})}))
             for m in methods
@@ -223,11 +263,13 @@ def run(config_path: str, dry_run: bool, method_filter: list,
         print(f"cooldown : {cooldown}s between runs")
         print(f"hw-reset : {'on (sudo)' if hw_reset else 'off'}")
         print(f"keep-db  : {'on' if keep_db else 'off'}")
+        print(f"warmup   : {'on (per-db)' if warmup else 'off'}")
         if dry_run:
             print("mode     : dry-run\n")
         else:
             print()
 
+        warmed_up_dbs = set()
         global_idx = 0
         for method in methods:
             name         = method["name"]
@@ -241,7 +283,8 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                 global_idx += 1
                 db_combo = {k: v for k, v in combo.items() if k in DB_PARAMS}
                 db_path = f"{db_path_base}/{name}/{encode_params(db_combo)}"
-                cmd     = build_command(binary, exp_label, exp_type, db_path, output_dir, combo)
+                cmd_combo = resolve_expected_selectivity(combo)
+                cmd     = build_command(binary, exp_label, exp_type, db_path, output_dir, cmd_combo)
 
                 print(f"[{global_idx}/{total_runs}] [{name}] {' '.join(cmd)}")
 
@@ -249,6 +292,27 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                     if is_read_only:
                         if not os.path.exists(db_path):
                             sys.exit(f"DB path does not exist (required for read_seq): {db_path}")
+                        # Warmup: run once per db_path to populate OS page cache
+                        if warmup and db_path not in warmed_up_dbs:
+                            print(f"  [warmup] warming up {db_path} ...")
+                            master_fd, slave_fd = pty.openpty()
+                            proc = subprocess.Popen(
+                                cmd, stdout=slave_fd, stderr=slave_fd,
+                                preexec_fn=_set_pdeathsig)
+                            os.close(slave_fd)
+                            while True:
+                                try:
+                                    data = os.read(master_fd, 4096)
+                                except OSError:
+                                    break
+                                if not data:
+                                    break
+                            os.close(master_fd)
+                            proc.wait()
+                            if proc.returncode != 0:
+                                sys.exit(f"Warmup failed (exit {proc.returncode}): {' '.join(cmd)}")
+                            warmed_up_dbs.add(db_path)
+                            print(f"  [warmup] done")
                     else:
                         os.makedirs(db_path, exist_ok=True)
                     os.makedirs(output_dir, exist_ok=True)
@@ -281,7 +345,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                         result_data = _parse_result_line(full_output)
                         if result_data:
                             master_csv = os.path.join(output_dir, f"{exp_label}.csv")
-                            _append_to_master_csv(master_csv, name, combo, result_data)
+                            _append_to_master_csv(master_csv, name, combo, result_data, master_fieldnames)
                     if global_idx < total_runs:
                         if hw_reset:
                             reset_hardware(db_path_base, prev_db_path=db_path,
@@ -313,6 +377,9 @@ def main():
                              "sync + drop_caches + fstrim (run script with sudo)")
     parser.add_argument("--keep-db", action="store_true",
                         help="Do not delete DB directories between runs")
+    parser.add_argument("--warmup", action="store_true",
+                        help="Run one warmup query per DB before measuring (read_seq only, "
+                             "populates OS page cache)")
     parser.add_argument("--daemon", action="store_true",
                         help="Run in background via nohup (logs to logs/ as usual)")
     args = parser.parse_args()
@@ -330,7 +397,8 @@ def main():
 
     method_filter = args.methods.split(",") if args.methods else []
     run(args.config, dry_run=args.dry_run, method_filter=method_filter,
-        cooldown=args.cooldown, hw_reset=args.hw_reset, keep_db=args.keep_db)
+        cooldown=args.cooldown, hw_reset=args.hw_reset, keep_db=args.keep_db,
+        warmup=args.warmup)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-RESULT_DIR = Path(__file__).parent / "result"
+RESULT_DIR = Path(__file__).parent.parent / "result"
 
 FILENAME_PATTERN = re.compile(
     r"^(?P<workload>.+?)_(?P<engine>bitlsm|vanila)"

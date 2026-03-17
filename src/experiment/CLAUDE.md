@@ -53,9 +53,10 @@ python3 src/experiment/run.py <params.json> --methods vanila,bitlsm  # subset
 python3 src/experiment/run.py <params.json> --hw-reset --cooldown 300         # SSD deterministic (deletes DB by default)
 python3 src/experiment/run.py <params.json> --hw-reset --cooldown 300 --keep-db  # hw-reset without DB deletion
 python3 src/experiment/run.py <params.json> --hw-reset --cooldown 60 --daemon    # background run (no tmux needed)
+python3 src/experiment/run.py <params.json> --warmup                             # warmup per-DB page cache before read_seq
 ```
 
-Between-run sequence: `experiment → [hw-reset: rm DB (unless --keep-db or read_seq), sync, drop_caches, fstrim] → [cooldown] → next`
+Between-run sequence: `[warmup: 1 dummy query per unique db_path (read_seq only)] → experiment → [hw-reset: rm DB (unless --keep-db or read_seq), sync, drop_caches, fstrim] → [cooldown] → next`
 
 ## README.md (Required per experiment)
 
