@@ -259,8 +259,8 @@ int main(const int argc, char* argv[]) {
     BitLSM db(db_path, schema.options);
     BitLSMQuery query = build_read_query(schema, query_indices, selectivity);
     ReadResult rr = bitlsm_scan(db, query, n);
-    save_read_csv(output_dir, exp_label, n, s_name, rho, selectivity, qi_str,
-                  rr);
+    cout << "RESULT:" << rr.time_elapsed_ms << "," << rr.records_matched << ","
+         << rr.selectivity_actual << "\n";
   } else {
     // --- Write mode ---
     BitLSM db(db_path, schema.options);

@@ -295,7 +295,8 @@ int main(const int argc, char* argv[]) {
     delete db;
     cout << "DB successfully closed\n";
 
-    save_read_csv(output_dir, exp_label, n, s_name, selectivity, qi_str, rr);
+    cout << "RESULT:" << rr.time_elapsed_ms << "," << rr.records_matched << ","
+         << rr.selectivity_actual << "\n";
   } else {
     // --- Write mode ---
     Options rocksdb_options;

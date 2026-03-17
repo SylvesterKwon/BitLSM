@@ -18,6 +18,7 @@ Options:
 """
 
 import argparse
+import csv
 import ctypes
 import json
 import os
@@ -126,6 +127,45 @@ def reset_hardware(db_path_base: str, prev_db_path: str = None, keep_db: bool = 
     print("  [hw-reset] done")
 
 
+def _schema_stem(schema_path: str) -> str:
+    """Extract stem from schema path: 'schema/default_a16.json' -> 'default_a16'."""
+    return os.path.splitext(os.path.basename(schema_path))[0]
+
+
+RESULT_COLUMNS = ["time_elapsed_ms", "records_matched", "selectivity_actual"]
+
+
+def _parse_result_line(output: str) -> dict | None:
+    """Parse 'RESULT:val1,val2,val3' from binary stdout."""
+    for line in output.splitlines():
+        if line.startswith("RESULT:"):
+            values = line.split("RESULT:", 1)[1].strip().split(",")
+            return dict(zip(RESULT_COLUMNS, values))
+    return None
+
+
+def _append_to_master_csv(master_path: str, method: str, combo: dict,
+                           result_data: dict):
+    """Append a row to the master CSV with combo params + result values."""
+    row = {"method": method}
+    for k, v in combo.items():
+        if k == "schema":
+            row[k] = _schema_stem(str(v))
+        elif k == "query_attr_indices":
+            row["query_attr_num"] = len(str(v).split(","))
+        else:
+            row[k] = fmt(v)
+    row.update(result_data)
+
+    # Append to master (write header if file is new/empty)
+    write_header = not os.path.exists(master_path) or os.path.getsize(master_path) == 0
+    with open(master_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=row.keys())
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
 def cooldown_sleep(seconds: int):
     for remaining in range(seconds, 0, -1):
         print(f"\r  [cooldown] {remaining}s... ", end="", flush=True)
@@ -216,6 +256,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                         cmd, stdout=slave_fd, stderr=slave_fd,
                         preexec_fn=_set_pdeathsig)
                     os.close(slave_fd)
+                    captured_output = []
                     while True:
                         try:
                             data = os.read(master_fd, 4096)
@@ -223,13 +264,23 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                             break
                         if not data:
                             break
-                        sys.stdout.write(data.decode("utf-8", errors="replace"))
+                        text = data.decode("utf-8", errors="replace")
+                        captured_output.append(text)
+                        sys.stdout.write(text)
                         sys.stdout.flush()
                     os.close(master_fd)
                     proc.wait()
                     if proc.returncode != 0:
                         sys.exit(f"Run failed (exit {proc.returncode}): {' '.join(cmd)}")
                     print()
+
+                    # Append to master CSV for read experiments
+                    if is_read_only:
+                        full_output = "".join(captured_output)
+                        result_data = _parse_result_line(full_output)
+                        if result_data:
+                            master_csv = os.path.join(output_dir, f"{exp_label}.csv")
+                            _append_to_master_csv(master_csv, name, combo, result_data)
                     if global_idx < total_runs:
                         if hw_reset:
                             reset_hardware(db_path_base, prev_db_path=db_path,
