@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # 1. 실행 파일 및 경로 설정
-BIN_PATH="$HOME/workspace/lsm-bitmap-index/build/bin/test"
+BIN_PATH="$HOME/workspace/BitLSM/build/bin/test"
 NO_SI_DATA_DIR="/scratch/no-si"
 LU_DATA_DIR="/scratch/lu"
 CK_DATA_DIR="/scratch/ck"
 
-NO_SI_RESULT_DIR="$HOME/workspace/lsm-bitmap-index/experiment_results/no-si"
-LU_RESULT_DIR="$HOME/workspace/lsm-bitmap-index/experiment_results/lu"
-CK_RESULT_DIR="$HOME/workspace/lsm-bitmap-index/experiment_results/ck"
+NO_SI_RESULT_DIR="$HOME/workspace/BitLSM/experiment_results/no-si"
+LU_RESULT_DIR="$HOME/workspace/BitLSM/experiment_results/lu"
+CK_RESULT_DIR="$HOME/workspace/BitLSM/experiment_results/ck"
 
 # 공통 실험 파라미터 설정
 WRITE_N=100000000  # 1e8

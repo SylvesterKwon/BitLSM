@@ -5,11 +5,11 @@ import os
 
 # 1. 파일 경로 및 이름 설정
 file_paths = [
-    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/no-si/no-si-read.csv',
-    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/ck/ck-pf-read.csv',
-    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/ck/ck-im-read.csv',
-    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/lu/lu-pf-read.csv',
-    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/lu/lu-im-read.csv',
+    '~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results/no-si/no-si-read.csv',
+    '~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results/ck/ck-pf-read.csv',
+    '~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results/ck/ck-im-read.csv',
+    '~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results/lu/lu-pf-read.csv',
+    '~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results/lu/lu-im-read.csv',
 ]
 
 names = [ 'NO-SI', 'CK-PF', 'CK-IM', 'LU-PF', 'LU-IM' ]
@@ -75,7 +75,7 @@ plt.grid(True, axis='y', linestyle='--', alpha=0.6)
 plt.tight_layout()
 
 # 저장
-output_dir = os.path.expanduser('~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results')
+output_dir = os.path.expanduser('~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results')
 if not os.path.exists(output_dir):
     os.makedirs(output_dir, exist_ok=True)
 

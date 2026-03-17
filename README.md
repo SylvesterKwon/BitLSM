@@ -38,7 +38,7 @@ cd folly
 # 2. Install dependencies
 sudo ./build/fbcode_builder/getdeps.py install-system-deps --recursive
 # 3. Build, using system dependencies if available
-sudo python3 ./build/fbcode_builder/getdeps.py --allow-system-packages --scratch-path /opt/lsm-bitmap-index build
+sudo python3 ./build/fbcode_builder/getdeps.py --allow-system-packages --scratch-path /opt/BitLSM build
 ```
 
 - OpenSSL 관련 에러가 난다면

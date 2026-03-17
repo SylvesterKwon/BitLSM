@@ -6,11 +6,11 @@ from matplotlib.lines import Line2D # 범례 생성을 위한 도구
 
 # --- [사용자 제공 코드] ---
 file_paths = [
-    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/no-si/no-si-read.csv',
-    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/ck/ck-pf-read.csv',
-    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/ck/ck-im-read.csv',
-    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/lu/lu-pf-read.csv',
-    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/lu/lu-im-read.csv',
+    '~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results/no-si/no-si-read.csv',
+    '~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results/ck/ck-pf-read.csv',
+    '~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results/ck/ck-im-read.csv',
+    '~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results/lu/lu-pf-read.csv',
+    '~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results/lu/lu-im-read.csv',
 ]
 
 names = [ 'NO-SI', 'CK-PF', 'CK-IM', 'LU-PF', 'LU-IM' ]
@@ -90,7 +90,7 @@ plt.legend(handles=legend_elements, loc='upper left', fontsize=8, framealpha=0.5
 plt.tight_layout()
 
 # 저장
-output_dir = os.path.expanduser('~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results')
+output_dir = os.path.expanduser('~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results')
 if not os.path.exists(output_dir):
     os.makedirs(output_dir, exist_ok=True)
 

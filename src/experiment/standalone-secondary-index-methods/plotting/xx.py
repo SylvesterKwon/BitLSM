@@ -3,7 +3,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 # 1. 데이터 불러오기 (파일 경로를 넣어주세요)
-df = pd.read_csv('~/workspace/lsm-bitmap-index/experiment_results/latency-log.csv')
+df = pd.read_csv('~/workspace/BitLSM/experiment_results/latency-log.csv')
 
 # 2. GET 작업만 필터링
 df_get = df[df['operation_type'] == 'GET']

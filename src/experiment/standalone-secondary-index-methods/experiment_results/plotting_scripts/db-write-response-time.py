@@ -3,9 +3,9 @@ import matplotlib.pyplot as plt
 
 # 1. 파일 경로 및 이름 설정
 file_paths = [
-    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/no-si/no-si-write.csv',
-    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/lu/lu-write.csv',
-    '~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/experiment_results/ck/ck-write.csv',
+    '~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results/no-si/no-si-write.csv',
+    '~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results/lu/lu-write.csv',
+    '~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/experiment_results/ck/ck-write.csv',
 ]
 
 names = [ 'NO-SI', 'LU', 'CK' ]
@@ -92,7 +92,7 @@ plt.legend(fontsize=8, loc='upper left')
 plt.tight_layout()
 
 import os
-output_path = os.path.expanduser('~/workspace/lsm-bitmap-index/src/experiment/standalone-secondary-index-methods/db_insert_throughput_comparison.png')
+output_path = os.path.expanduser('~/workspace/BitLSM/src/experiment/standalone-secondary-index-methods/db_insert_throughput_comparison.png')
 plt.savefig(output_path, dpi=300)
 print(f"Saved graph to {output_path}")
 

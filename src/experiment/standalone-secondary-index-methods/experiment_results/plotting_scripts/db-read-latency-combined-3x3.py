@@ -6,11 +6,11 @@ from matplotlib.lines import Line2D
 
 # 1. 공통 설정 (파일 경로 및 색상)
 file_paths = [
-    '~/workspace/lsm-bitmap-index/experiment_results/no-si/no-si-read.csv',
-    '~/workspace/lsm-bitmap-index/experiment_results/ck/ck-pf-read.csv',
-    '~/workspace/lsm-bitmap-index/experiment_results/ck/ck-im-read.csv',
-    '~/workspace/lsm-bitmap-index/experiment_results/lu/lu-pf-read.csv',
-    '~/workspace/lsm-bitmap-index/experiment_results/lu/lu-im-read.csv',
+    '~/workspace/BitLSM/experiment_results/no-si/no-si-read.csv',
+    '~/workspace/BitLSM/experiment_results/ck/ck-pf-read.csv',
+    '~/workspace/BitLSM/experiment_results/ck/ck-im-read.csv',
+    '~/workspace/BitLSM/experiment_results/lu/lu-pf-read.csv',
+    '~/workspace/BitLSM/experiment_results/lu/lu-im-read.csv',
 ]
 
 names = [ 'NO-SI', 'CK-PF', 'CK-IM', 'LU-PF', 'LU-IM' ]
@@ -111,7 +111,7 @@ ax1.set_title('(a) 응답 시간 분포', fontsize=8)
 ax2.set_title('(b) 선택도에 따른 응답 시간', fontsize=8)
 plt.tight_layout()
 
-output_dir = os.path.expanduser('~/workspace/lsm-bitmap-index/experiment_results/')
+output_dir = os.path.expanduser('~/workspace/BitLSM/experiment_results/')
 if not os.path.exists(output_dir):
     os.makedirs(output_dir, exist_ok=True)
 

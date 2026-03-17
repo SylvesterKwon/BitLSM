@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
 
 # 1. 데이터 로드
-df = pd.read_csv('~/workspace/lsm-bitmap-index/experiment_results/latency-log.csv')
+df = pd.read_csv('~/workspace/BitLSM/experiment_results/latency-log.csv')
 
 # 2. GET 작업 필터링 및 전처리
 df['operation_type'] = df['operation_type'].str.strip()

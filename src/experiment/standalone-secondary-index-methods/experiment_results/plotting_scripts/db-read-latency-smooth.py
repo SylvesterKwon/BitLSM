@@ -6,11 +6,11 @@ from scipy.ndimage import gaussian_filter1d # 핵심: 곡선을 부드럽게 만
 import os
 
 file_paths = [
-    '~/workspace/lsm-bitmap-index/experiment_results/no-si/no-si-read.csv',
-    '~/workspace/lsm-bitmap-index/experiment_results/ck/ck-pf-read.csv',
-    '~/workspace/lsm-bitmap-index/experiment_results/ck/ck-im-read.csv',
-    '~/workspace/lsm-bitmap-index/experiment_results/lu/lu-pf-read.csv',
-    '~/workspace/lsm-bitmap-index/experiment_results/lu/lu-im-read.csv',
+    '~/workspace/BitLSM/experiment_results/no-si/no-si-read.csv',
+    '~/workspace/BitLSM/experiment_results/ck/ck-pf-read.csv',
+    '~/workspace/BitLSM/experiment_results/ck/ck-im-read.csv',
+    '~/workspace/BitLSM/experiment_results/lu/lu-pf-read.csv',
+    '~/workspace/BitLSM/experiment_results/lu/lu-im-read.csv',
 ]
 names = [ 'NO-SI', 'CK-PF', 'CK-IM', 'LU-PF', 'LU-IM' ]
 
@@ -132,7 +132,7 @@ plt.legend(title='Method', fontsize=9, loc='upper left')
 plt.tight_layout()
 
 # 저장
-output_dir = os.path.expanduser('~/workspace/lsm-bitmap-index/experiment_results/')
+output_dir = os.path.expanduser('~/workspace/BitLSM/experiment_results/')
 if not os.path.exists(output_dir):
     os.makedirs(output_dir, exist_ok=True)
 output_path = os.path.join(output_dir, 'db_read_latency_smooth.png')

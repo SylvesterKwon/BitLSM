@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 
-project(LSMBitmapIndex VERSION 0.1 LANGUAGES CXX)
+project(BitLSM VERSION 0.1 LANGUAGES CXX)
 
 # 빌드 후 실행 파일이 생성될 위치를 'bin' 디렉터리로 지정
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
@@ -57,7 +57,7 @@ set(ENABLE_ROARING_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/CRoaring)
 
 # Folly
-set(DEPS_ROOT "/opt/lsm-bitmap-index/installed")
+set(DEPS_ROOT "/opt/BitLSM/installed")
 set(FOLLY_DIR "${DEPS_ROOT}/folly")
 file(GLOB FMT_DIR "${DEPS_ROOT}/fmt-*")
 list(APPEND CMAKE_PREFIX_PATH 
