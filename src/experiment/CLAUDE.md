@@ -1,182 +1,62 @@
 # Experiment Conventions
 
-## Directory Structure
-
-Each experiment lives in its own subdirectory under `src/experiment/`:
+## Directory Layout
 
 ```
 src/experiment/
-├── run.py                  # global sweep runner (shared)
+├── run.py                  # shared sweep runner
 ├── <experiment-name>/
-│   ├── <method-a>.cpp      # one binary per method being compared
-│   ├── <method-b>.cpp
-│   ├── params.json         # parameter space for sweep automation
-│   ├── README.md           # experiment spec (English)
+│   ├── <method>.cpp        # one binary per method (auto-compiled by CMake → build/bin/<method>)
+│   ├── params.json         # sweep parameter space
+│   ├── README.md           # experiment spec (English, required)
 │   └── result/             # CSV outputs (auto-created at runtime)
 ```
 
-Every `.cpp` file under `src/experiment/` is automatically compiled into its own binary by CMake (filename without extension = binary name). Output goes to `build/bin/`.
+## CLI Flags (cxxopts)
 
----
-
-## CLI Parameters (cxxopts)
-
-All experiment binaries use `cxxopts` for argument parsing. Include via `<cxxopts.hpp>`.
-
-### Common flags
-
-| Flag | Type | Description |
-|---|---|---|
-| `--exp_label` | string | Experiment label; used in output filename |
-| `--exp_type` | string | Experiment type: `write_seq` (default) or `read_seq` |
-| `-n` | uint64 | Total number of records |
-| `--schema` | string | Path to schema JSON file (defines attrs + payload) |
-| `-d, --db_path` | string | DB storage path |
-| `-o, --output_dir` | string | CSV output directory (default: `./result`) |
-
-### Read-specific flags (`read_seq`)
-
-| Flag | Type | Description |
-|---|---|---|
-| `--query_attr_indices` | string | Comma-separated attribute indices for query (e.g. `0,1,3`) |
-| `--selectivity` | double | Per-attribute selectivity; required only when querying continuous attrs |
-
-Method-specific flags are defined per experiment and documented in the experiment's README.md.
-
----
+Common: `--exp_label`, `--exp_type` (`write_seq`|`read_seq`), `-n`, `--schema`, `-d/--db_path`, `-o/--output_dir`
+Read-only: `--query_attr_indices` (comma-sep), `--selectivity` (double)
+Method-specific flags: defined per experiment in its README.md.
 
 ## Result Files
 
-### Output directory
+- Path: `<exp_dir>/result/`
+- Filename: `{exp_label}_{method}_{param1}{val1}_{param2}{val2}_...csv` — common params first, then method-specific
+- Every CSV has `time_elapsed_ms`; additional columns defined per experiment type in README.md
 
-Each experiment writes results to a `result/` subdirectory inside its own experiment directory.
-Created automatically at runtime via `std::filesystem::create_directories`.
+## Progress Logging
 
-### Filename convention
+Use a local `vector<ProgressLog>` + `mutex` inside each `.cpp`. Do **not** modify shared headers like `utils.h`.
 
-```
-{exp_label}_{method}_{param1}{val1}_{param2}{val2}_...csv
-```
+## Sweep: params.json
 
-- `exp_label` first, then method name, then parameters in order
-- Method name is a short identifier for the binary (e.g., `vanila`, `bitlsm`)
-- Parameter encoding order: common params first (`n`, `p`, `t`, `a`), then method-specific
-
-### CSV schema
-
-Columns are defined per experiment type. Each row represents one measurement checkpoint.
-Common columns across experiment types:
-
-| Column | Description |
-|---|---|
-| `time_elapsed_ms` | Wall-clock ms since experiment start |
-
-Additional columns (e.g., `records_written`, `response_time_us`) are defined per experiment type and documented in the experiment's README.md.
-
----
-
-## Progress Logging Pattern
-
-For multi-threaded experiments, collect checkpoints in a shared `vector<ProgressLog>` protected by a `mutex`.
-
-Do **not** modify shared utility headers (e.g., `utils.h`) to add logging hooks. Write a local worker function inside the experiment's own `.cpp` file instead.
-
----
-
-## Sweep Automation
-
-### params.json
-
-Each experiment directory must have a `params.json` that defines the parameter space.
-Values are lists — the runner computes the cartesian product.
+Values are lists; runner computes cartesian product. `schema` values are filenames only (resolved to `<exp_dir>/schema/`). `db_path` is auto-generated as `{db_path_base}/{method}/{encoded_params}` using `DB_PARAMS = ["n", "schema", "rho"]`.
 
 ```json
 {
-  "exp_label": "write_seq_exp_sample",
+  "exp_label": "...",
   "exp_type": "write_seq",
   "db_path_base": "/scratch",
-  "common_params": {
-    "n":            [100000000],
-    "schema":       ["default_a16.json", "a8_only_cont.json"]
-  },
+  "common_params": { "n": [100000000], "schema": ["default_a16.json"] },
   "methods": [
-    {
-      "name":   "<method-name>",
-      "binary": "build/bin/<binary-name>",
-      "params": {}
-    },
-    {
-      "name":   "<method-name>",
-      "binary": "build/bin/<binary-name>",
-      "params": {
-        "<method-specific-flag>": [0.05, 0.1, 0.2]
-      }
-    }
+    { "name": "...", "binary": "build/bin/...", "params": { "<flag>": [0.05, 0.1] } }
   ]
 }
 ```
 
-- `exp_label`: human-readable label used in output filenames and log files (passed to binary as `--exp_label`)
-- `exp_type`: controls runner behavior — `"write_seq"` (default) or `"read_seq"`
-  - `write_seq`: creates DB directories, normal execution
-  - `read_seq`: skips DB directory creation (DB must already exist), skips DB deletion on `--hw-reset`
-- `output_dir`: auto-derived as `<exp_dir>/result` (not in JSON)
-- `schema` values in `common_params` are **filenames only** — run.py resolves them to `<exp_dir>/schema/<filename>`
-- `common_params` keys map 1:1 to cxxopts long-form flag names (`--key value`)
-- `db_path` is auto-generated as `{db_path_base}/{method_name}/{encoded_params}`
-  - `DB_PARAMS` is hardcoded in `run.py` as `["n", "schema", "rho"]` — only these keys are included in the path encoding. For `schema`, the filename stem is used (e.g. `schema/default_a16.json` → `schema_default_a16`). Keys not present in a given combination are silently skipped. This ensures write and read experiments produce identical DB paths
-- Method-specific `params` are merged with `common_params` before computing the product
-
-### run.py
-
-Global runner at `src/experiment/run.py`. One runner for all experiments.
-
-| Flag | Default | Description |
-|---|---|---|
-| `--dry-run` | off | Print commands without executing |
-| `--methods m1,m2` | all | Comma-separated list of methods to run |
-| `--cooldown SECONDS` | `0` | Wait between runs; for SSD SLC cache recovery |
-| `--hw-reset` | off | Reset hardware state between runs (requires sudo): DB 삭제 + `sync` + `drop_caches` + `fstrim` on `db_path_base`. **DB 삭제가 기본값**으로 포함됨 |
-| `--keep-db` | off | `--hw-reset` 사용 시 DB 디렉토리 삭제를 건너뜀 |
+## Sweep: run.py
 
 ```bash
-# run all combinations
-python3 src/experiment/run.py <path/to/params.json>
-
-# dry-run: print commands without executing
-python3 src/experiment/run.py <path/to/params.json> --dry-run
-
-# run only specific methods
-python3 src/experiment/run.py <path/to/params.json> --methods vanila,bitlsm
-
-# SSD deterministic state: hw-reset + cooldown for GC (DB is deleted between runs by default)
-python3 src/experiment/run.py <path/to/params.json> --hw-reset --cooldown 300
-
-# hw-reset without deleting DB
-python3 src/experiment/run.py <path/to/params.json> --hw-reset --cooldown 300 --keep-db
-
-# write then read workflow: write with --keep-db, then run read on the same DB
-python3 src/experiment/run.py <path/to/write_params.json> --keep-db
-python3 src/experiment/run.py <path/to/read_params.json>
+python3 src/experiment/run.py <params.json>                          # run all
+python3 src/experiment/run.py <params.json> --dry-run                # print only
+python3 src/experiment/run.py <params.json> --methods vanila,bitlsm  # subset
+python3 src/experiment/run.py <params.json> --hw-reset --cooldown 300         # SSD deterministic (deletes DB by default)
+python3 src/experiment/run.py <params.json> --hw-reset --cooldown 300 --keep-db  # hw-reset without DB deletion
+python3 src/experiment/run.py <params.json> --hw-reset --cooldown 60 --daemon    # background run (no tmux needed)
 ```
 
-Between-run sequence when enabled: `experiment → [hw-reset: rm -rf db (unless --keep-db or read_seq), sync, drop_caches, fstrim] → [cooldown: sleep Ns] → next experiment`
+Between-run sequence: `experiment → [hw-reset: rm DB (unless --keep-db or read_seq), sync, drop_caches, fstrim] → [cooldown] → next`
 
----
+## README.md (Required per experiment)
 
-## README.md Requirements
-
-**Every experiment directory must have a `README.md`.** When a new experiment is created or significantly modified, generate or update its README.md as part of the same task.
-
-Write in **English**. Required sections:
-
-| Section | Content |
-|---|---|
-| **Objective** | What is being measured and why |
-| **Subjects** | Methods/binaries being compared, with source filenames |
-| **Experiment Types** | Each `exp_label` value: what workload it runs and how |
-| **Parameters** | Full table of flags — common and method-specific — with types, defaults, descriptions |
-| **Build** | CMake commands to build the relevant binaries |
-| **Running** | Concrete invocation example with all flags filled in |
-| **Results** | Output directory, filename convention, CSV column definitions |
-| **Examples** | Shell loops sweeping one parameter at a time |
+Write in English. Sections: **Objective**, **Subjects** (methods/binaries), **Experiment Types**, **Parameters** (all flags with types/defaults), **Build**, **Running**, **Results** (dir, filename, CSV columns), **Examples**.

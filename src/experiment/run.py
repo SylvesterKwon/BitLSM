@@ -15,6 +15,7 @@ Options:
     --hw-reset            Reset hardware state between runs (run script with sudo).
                           Runs: sync, drop_caches, fstrim on db_path_base.
     --keep-db             Do not delete DB directories between runs.
+    --daemon              Run in background via nohup (logs to logs/ as usual).
 """
 
 import argparse
@@ -312,7 +313,20 @@ def main():
                              "sync + drop_caches + fstrim (run script with sudo)")
     parser.add_argument("--keep-db", action="store_true",
                         help="Do not delete DB directories between runs")
+    parser.add_argument("--daemon", action="store_true",
+                        help="Run in background via nohup (logs to logs/ as usual)")
     args = parser.parse_args()
+
+    if args.daemon:
+        # Rebuild argv without --daemon
+        child_argv = [a for a in sys.argv if a != "--daemon"]
+        cmd = ["nohup", sys.executable] + child_argv
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=os.setpgrp)
+        print(f"Background PID: {proc.pid}")
+        print(f"Check logs: tail -f logs/<timestamp>_*.log")
+        sys.exit(0)
 
     method_filter = args.methods.split(",") if args.methods else []
     run(args.config, dry_run=args.dry_run, method_filter=method_filter,

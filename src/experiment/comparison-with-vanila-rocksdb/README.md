@@ -198,13 +198,18 @@ time_elapsed_ms,records_matched,selectivity_actual
 
 `--hw-reset` uses `sync`, `drop_caches`, and `fstrim`, so the **entire script must be run as root**.
 **`--hw-reset` deletes the previous DB directory between runs by default.** Use `--keep-db` to preserve DB directories.
-Use `tmux` to keep the session alive after terminal disconnect.
+Use `--daemon` to run in the background without tmux, or use `tmux` to keep the session alive after terminal disconnect.
 
 ```bash
 # dry-run to preview all commands
 python3 src/experiment/run.py \
   src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write_default.json \
   --dry-run
+
+# background run with --daemon (no tmux needed)
+sudo python3 src/experiment/run.py \
+  src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write_default.json \
+  --hw-reset --cooldown 60 --daemon
 
 # full sweep with SSD hardware reset + 1-min cooldown (DB deleted between runs by default)
 sudo tmux new -d -s sweep 'sudo python3 src/experiment/run.py \
@@ -216,10 +221,10 @@ sudo tmux new -d -s sweep 'sudo python3 src/experiment/run.py \
   src/experiment/comparison-with-vanila-rocksdb/param_set/seq_write_default.json \
   --hw-reset --cooldown 60 --keep-db'
 
-# attach to see live output
+# attach to see live output (tmux only)
 sudo tmux attach -t sweep
 
-# terminate experiment
+# terminate experiment (tmux only)
 sudo tmux kill-session -t sweep
 ```
 
