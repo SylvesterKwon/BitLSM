@@ -56,6 +56,7 @@ def plot_time_by_qa_per_selectivity(df: pd.DataFrame):
         ax.set_xlabel("# Query Attributes", fontsize=10)
         ax.set_ylabel("Read Time (sec)", fontsize=10)
         ax.set_xticks([1, 2, 4, 8])
+        ax.set_ylim(bottom=0)
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
@@ -155,52 +156,6 @@ def plot_time_by_selectivity_per_qa(df: pd.DataFrame):
     print("Saved: seq_read_cont_qa_time_by_sel.png")
 
 
-def plot_heatmap_speedup(df: pd.DataFrame):
-    """Heatmap: BitLSM speedup ratio across selectivity x query_attr_num."""
-    selectivities = sorted(df["expected_selectivity"].unique(), reverse=True)
-    qa_nums = sorted(df["query_attr_num"].unique())
-
-    vanila = df[df["method"] == "vanila"].set_index(["expected_selectivity", "query_attr_num"])
-    bitlsm = df[df["method"] == "bitlsm"].set_index(["expected_selectivity", "query_attr_num"])
-
-    matrix = np.zeros((len(selectivities), len(qa_nums)))
-    for i, sel in enumerate(selectivities):
-        for j, qa in enumerate(qa_nums):
-            try:
-                vt = vanila.loc[(sel, qa), "time_elapsed_ms"]
-                bt = bitlsm.loc[(sel, qa), "time_elapsed_ms"]
-                matrix[i, j] = vt / bt
-            except KeyError:
-                matrix[i, j] = np.nan
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    im = ax.imshow(matrix, cmap="RdYlGn", aspect="auto")
-
-    # Annotate cells
-    for i in range(len(selectivities)):
-        for j in range(len(qa_nums)):
-            val = matrix[i, j]
-            if not np.isnan(val):
-                color = "white" if val < 0.8 or val > 3.0 else "black"
-                ax.text(j, i, f"{val:.1f}x", ha="center", va="center",
-                        fontsize=11, fontweight="bold", color=color)
-
-    ax.set_xticks(range(len(qa_nums)))
-    ax.set_xticklabels([str(q) for q in qa_nums])
-    ax.set_yticks(range(len(selectivities)))
-    ax.set_yticklabels([f"{s}" for s in selectivities])
-    ax.set_xlabel("# Query Attributes", fontsize=12)
-    ax.set_ylabel("Expected Selectivity", fontsize=12)
-    ax.set_title("BitLSM Speedup Ratio (Vanilla / BitLSM)", fontsize=14)
-
-    cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label("Speedup", fontsize=10)
-    fig.tight_layout()
-    fig.savefig(OUTPUT_DIR / "seq_read_cont_qa_heatmap.png", dpi=150)
-    plt.close(fig)
-    print("Saved: seq_read_cont_qa_heatmap.png")
-
-
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -214,7 +169,6 @@ def main():
     plot_time_by_qa_per_selectivity(df)
     plot_speedup_by_qa(df)
     plot_time_by_selectivity_per_qa(df)
-    plot_heatmap_speedup(df)
 
     print(f"\nAll plots saved to: {OUTPUT_DIR}")
 
