@@ -13,9 +13,9 @@ from pathlib import Path
 CSV_PATH = Path(__file__).parent.parent / "result" / "seq_read_cont_qa.csv"
 OUTPUT_DIR = Path(__file__).parent.parent / "result" / "plots"
 
-ENGINE_LABELS = {"vanila": "Vanilla RocksDB", "bitlsm": "BitLSM"}
-ENGINE_COLORS = {"vanila": "steelblue", "bitlsm": "indianred"}
-ENGINE_MARKERS = {"vanila": "s", "bitlsm": "o"}
+ENGINE_LABELS = {"no-index": "No-Index", "bitlsm": "BitLSM"}
+ENGINE_COLORS = {"no-index": "steelblue", "bitlsm": "indianred"}
+ENGINE_MARKERS = {"no-index": "s", "bitlsm": "o"}
 
 
 def load_data() -> pd.DataFrame:
@@ -37,7 +37,7 @@ def plot_time_by_qa_per_selectivity(df: pd.DataFrame):
         ax = axes[idx // cols][idx % cols]
         subset = df[df["expected_selectivity"] == sel]
 
-        for method in ["vanila", "bitlsm"]:
+        for method in ["no-index", "bitlsm"]:
             mdata = subset[subset["method"] == method].sort_values("query_attr_num")
             ax.plot(
                 mdata["query_attr_num"], mdata["time_sec"],
@@ -72,11 +72,11 @@ def plot_time_by_qa_per_selectivity(df: pd.DataFrame):
 
 
 def plot_speedup_by_qa(df: pd.DataFrame):
-    """Bar chart: BitLSM speedup ratio (vanila_time / bitlsm_time) by query_attr_num, grouped by selectivity."""
+    """Bar chart: BitLSM speedup ratio (no_index_time / bitlsm_time) by query_attr_num, grouped by selectivity."""
     selectivities = sorted(df["expected_selectivity"].unique(), reverse=True)
     qa_nums = sorted(df["query_attr_num"].unique())
 
-    vanila = df[df["method"] == "vanila"].set_index(["expected_selectivity", "query_attr_num"])
+    no_index = df[df["method"] == "no-index"].set_index(["expected_selectivity", "query_attr_num"])
     bitlsm = df[df["method"] == "bitlsm"].set_index(["expected_selectivity", "query_attr_num"])
 
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -89,7 +89,7 @@ def plot_speedup_by_qa(df: pd.DataFrame):
         ratios = []
         for qa in qa_nums:
             try:
-                vt = vanila.loc[(sel, qa), "time_elapsed_ms"]
+                vt = no_index.loc[(sel, qa), "time_elapsed_ms"]
                 bt = bitlsm.loc[(sel, qa), "time_elapsed_ms"]
                 ratios.append(vt / bt)
             except KeyError:
@@ -110,7 +110,7 @@ def plot_speedup_by_qa(df: pd.DataFrame):
 
     ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=1, alpha=0.7)
     ax.set_xlabel("# Query Attributes", fontsize=12)
-    ax.set_ylabel("Speedup (Vanilla / BitLSM)", fontsize=12)
+    ax.set_ylabel("Speedup (No-Index / BitLSM)", fontsize=12)
     ax.set_title("BitLSM Read Speedup by Query Attribute Count", fontsize=14)
     ax.set_xticks(x)
     ax.set_xticklabels([str(q) for q in qa_nums])
@@ -133,7 +133,7 @@ def plot_time_by_selectivity_per_qa(df: pd.DataFrame):
         ax = axes[0][idx]
         subset = df[df["query_attr_num"] == qa]
 
-        for method in ["vanila", "bitlsm"]:
+        for method in ["no-index", "bitlsm"]:
             mdata = subset[subset["method"] == method].sort_values("expected_selectivity")
             ax.plot(
                 mdata["expected_selectivity"], mdata["time_sec"],

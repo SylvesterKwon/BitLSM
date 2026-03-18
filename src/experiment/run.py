@@ -226,8 +226,8 @@ def run(config_path: str, dry_run: bool, method_filter: list,
     is_read_only = (exp_type == "read_seq")
 
     # Derive exp_dir from config path: exp_set's parent directory
-    # e.g. src/experiment/comparison-with-vanila-rocksdb/exp_set/seq_write.json
-    #   -> src/experiment/comparison-with-vanila-rocksdb
+    # e.g. src/experiment/benchmark/exp_set/seq_write.json
+    #   -> src/experiment/benchmark
     exp_dir    = os.path.dirname(os.path.dirname(os.path.abspath(config_path)))
     output_dir = os.path.join(exp_dir, "result")
     schema_dir = os.path.join(exp_dir, "schema")

@@ -1,6 +1,6 @@
 {
   "exp_type": "write_seq",
-  "db_path_base": "/scratch/comparison-with-vanila-rocksdb",
+  "db_path_base": "/scratch/benchmark",
   "common_params": {
     "n": [
       100000000
@@ -16,8 +16,8 @@
   },
   "methods": [
     {
-      "name": "vanila",
-      "binary": "build/bin/vanila-rocksdb",
+      "name": "no-index",
+      "binary": "build/bin/no-index",
       "params": {}
     },
     {

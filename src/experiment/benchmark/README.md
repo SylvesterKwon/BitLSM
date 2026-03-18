@@ -1,8 +1,8 @@
-# Experiment: Vanilla RocksDB vs BitLSM Performance Comparison
+# Experiment: No-Index RocksDB vs BitLSM Performance Comparison
 
 ## Objective
 
-Compare the **write** and **read** performance of **Vanilla RocksDB** and **BitLSM** under identical workload conditions.
+Compare the **write** and **read** performance of **No-Index RocksDB** and **BitLSM** under identical workload conditions.
 BitLSM integrates a bitmap index into the LSM-Tree. The write experiment measures the overhead of maintaining that index; the read experiment measures the query speedup it provides.
 
 ---
@@ -11,7 +11,7 @@ BitLSM integrates a bitmap index into the LSM-Tree. The write experiment measure
 
 | Method | Binary | Source |
 |---|---|---|
-| Vanilla RocksDB | `vanila-rocksdb` | `vanila-rocksdb.cpp` |
+| No-Index RocksDB | `no-index` | `no-index.cpp` |
 | BitLSM | `bit-lsm` | `bit-lsm.cpp` |
 
 Both methods use the same record format, defined by a **schema JSON file** (`schema/` directory):
@@ -57,7 +57,7 @@ Inserts N records using a single writer thread with `Put` calls.
 Opens a pre-populated DB (created by `seq_write`) and executes a single range/equality query, scanning all matching records.
 
 - **Mode trigger**: `--exp_type read_seq` switches the binary to read mode.
-- **Vanilla RocksDB**: Full table scan — iterates every record and checks the query condition.
+- **No-Index RocksDB**: Full table scan — iterates every record and checks the query condition.
 - **BitLSM**: Bitmap-indexed scan via `BitLSM::NewIterator(query)` — reads only qualifying blocks.
 - **Query generation**: For each attribute index in `--query_attr_indices`:
   - **Continuous** attribute: range query `[lo, lo + selectivity × range)` with random `lo` (requires `--selectivity`)
@@ -101,37 +101,37 @@ From the project root:
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target vanila-rocksdb bit-lsm -j$(nproc)
+cmake --build build --target no-index bit-lsm -j$(nproc)
 ```
 
-Outputs: `build/bin/vanila-rocksdb`, `build/bin/bit-lsm`
+Outputs: `build/bin/no-index`, `build/bin/bit-lsm`
 
 ---
 
 ## Running
 
 ```bash
-# Write — Vanilla RocksDB
-./build/bin/vanila-rocksdb \
+# Write — No-Index RocksDB
+./build/bin/no-index \
   --exp_label seq_write --exp_type write_seq \
   -n 100000000 --schema schema/default_a16.json \
-  -d /scratch/vanila-exp \
-  -o src/experiment/comparison-with-vanila-rocksdb/result
+  -d /scratch/no-index-exp \
+  -o src/experiment/benchmark/result
 
 # Write — BitLSM
 ./build/bin/bit-lsm \
   --exp_label seq_write --exp_type write_seq \
   -n 100000000 --schema schema/default_a16.json --rho 0.1 \
   -d /scratch/bitlsm-exp \
-  -o src/experiment/comparison-with-vanila-rocksdb/result
+  -o src/experiment/benchmark/result
 
-# Read — Vanilla RocksDB (full scan)
-./build/bin/vanila-rocksdb \
+# Read — No-Index RocksDB (full scan)
+./build/bin/no-index \
   --exp_label seq_read_continuous --exp_type read_seq \
   -n 100000000 --schema schema/default_a16.json \
   --selectivity 0.01 --query_attr_indices 1,3 \
-  -d /scratch/vanila-exp \
-  -o src/experiment/comparison-with-vanila-rocksdb/result
+  -d /scratch/no-index-exp \
+  -o src/experiment/benchmark/result
 
 # Read — BitLSM (bitmap-indexed scan)
 ./build/bin/bit-lsm \
@@ -139,7 +139,7 @@ Outputs: `build/bin/vanila-rocksdb`, `build/bin/bit-lsm`
   -n 100000000 --schema schema/default_a16.json --rho 0.1 \
   --selectivity 0.01 --query_attr_indices 1,3 \
   -d /scratch/bitlsm-exp \
-  -o src/experiment/comparison-with-vanila-rocksdb/result
+  -o src/experiment/benchmark/result
 ```
 
 ---
@@ -149,7 +149,7 @@ Outputs: `build/bin/vanila-rocksdb`, `build/bin/bit-lsm`
 ### Output Directory
 
 ```
-src/experiment/comparison-with-vanila-rocksdb/result/
+src/experiment/benchmark/result/
 ```
 
 Auto-created by run.py (derived from experiment directory).
@@ -162,9 +162,9 @@ Auto-created by run.py (derived from experiment directory).
 
 | Method | Example filename |
 |---|---|
-| Vanilla (write) | `seq_write_vanila_n100000000_schema_default_a16.csv` |
+| No-Index (write) | `seq_write_no-index_n100000000_schema_default_a16.csv` |
 | BitLSM (write) | `seq_write_bitlsm_n100000000_schema_default_a16_rho0.1.csv` |
-| Vanilla (read) | `seq_read_continuous_vanila_n100000000_schema_default_a16_selectivity0.01_query_attr_indices1,3.csv` |
+| No-Index (read) | `seq_read_continuous_no-index_n100000000_schema_default_a16_selectivity0.01_query_attr_indices1,3.csv` |
 
 ### CSV Schema — Write
 
@@ -186,12 +186,12 @@ method,n,schema,selectivity,query_attr_num,rho,time_elapsed_ms,records_matched,s
 bitlsm,100000000,default_a2,0.5,1,0.2,134043,50000599,0.500006
 ```
 
-- `method`: method name (`vanila` or `bitlsm`)
+- `method`: method name (`no-index` or `bitlsm`)
 - `n`: total number of records in DB
 - `schema`: schema name used
 - `selectivity`: requested selectivity
 - `query_attr_num`: number of query attributes
-- `rho`: BitLSM rho parameter (empty for vanilla)
+- `rho`: BitLSM rho parameter (empty for no-index)
 - `time_elapsed_ms`: total query execution time (ms)
 - `records_matched`: number of records matching the query
 - `selectivity_actual`: `records_matched / n`
@@ -210,17 +210,17 @@ Use `--daemon` to run in the background.
 ```bash
 # dry-run to preview all commands
 python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/exp_set/seq_write_default.json \
+  src/experiment/benchmark/exp_set/seq_write_default.json \
   --dry-run
 
 # full sweep with SSD hardware reset + 1-min cooldown (DB deleted between runs by default)
 sudo python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/exp_set/seq_write_default.json \
+  src/experiment/benchmark/exp_set/seq_write_default.json \
   --hw-reset --cooldown 60 --daemon
 
 # hw-reset without deleting DB between runs (e.g., for preparing read test)
 sudo python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/exp_set/seq_write_default.json \
+  src/experiment/benchmark/exp_set/seq_write_default.json \
   --hw-reset --cooldown 60 --keep-db --daemon
 
 # check daemon status (PID is printed at launch)
@@ -238,13 +238,13 @@ kill <PID>
 ```bash
 # 1. Write with --keep-db to preserve DB
 sudo python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/exp_set/seq_write_default.json \
+  src/experiment/benchmark/exp_set/seq_write_default.json \
   --hw-reset --cooldown 60 --keep-db --daemon
 
 # 2. Read on the same DB (DB_PARAMS ensures matching paths)
 #    --warmup runs one dummy query per DB to populate OS page cache before measuring
 sudo python3 src/experiment/run.py \
-  src/experiment/comparison-with-vanila-rocksdb/exp_set/seq_read_continuous.json \
+  src/experiment/benchmark/exp_set/seq_read_continuous.json \
   --warmup --daemon
 ```
 
@@ -255,19 +255,19 @@ sudo python3 src/experiment/run.py \
 for rho in 0.05 0.1 0.2 0.5; do
   ./build/bin/bit-lsm \
     --exp_type write_seq -n 100000000 \
-    --schema src/experiment/comparison-with-vanila-rocksdb/schema/default_a16.json \
+    --schema src/experiment/benchmark/schema/default_a16.json \
     --rho $rho \
     -d /scratch/bitlsm-rho$rho \
-    -o src/experiment/comparison-with-vanila-rocksdb/result
+    -o src/experiment/benchmark/result
 done
 
 # Vary selectivity for read
 for s in 0.1 0.01 0.001; do
-  ./build/bin/vanila-rocksdb \
+  ./build/bin/no-index \
     --exp_type read_seq -n 100000000 \
-    --schema src/experiment/comparison-with-vanila-rocksdb/schema/default_a16.json \
+    --schema src/experiment/benchmark/schema/default_a16.json \
     --selectivity $s --query_attr_indices 1,3 \
-    -d /scratch/vanila-a16 \
-    -o src/experiment/comparison-with-vanila-rocksdb/result
+    -d /scratch/no-index-a16 \
+    -o src/experiment/benchmark/result
 done
 ```

@@ -49,7 +49,7 @@ Values are lists; runner computes cartesian product. `schema` values are filenam
 ```bash
 python3 src/experiment/run.py <params.json>                          # run all
 python3 src/experiment/run.py <params.json> --dry-run                # print only
-python3 src/experiment/run.py <params.json> --methods vanila,bitlsm  # subset
+python3 src/experiment/run.py <params.json> --methods no-index,bitlsm  # subset
 python3 src/experiment/run.py <params.json> --hw-reset --cooldown 300         # SSD deterministic (deletes DB by default)
 python3 src/experiment/run.py <params.json> --hw-reset --cooldown 300 --keep-db  # hw-reset without DB deletion
 python3 src/experiment/run.py <params.json> --hw-reset --cooldown 60 --daemon    # background run (no tmux needed)

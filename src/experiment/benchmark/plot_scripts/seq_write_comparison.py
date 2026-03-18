@@ -13,7 +13,7 @@ from pathlib import Path
 RESULT_DIR = Path(__file__).parent.parent / "result"
 
 FILENAME_PATTERN = re.compile(
-    r"^(?P<workload>.+?)_(?P<engine>bitlsm|vanila)"
+    r"^(?P<workload>.+?)_(?P<engine>bitlsm|no-index)"
     r"_n(?P<n>\d+)_p(?P<p>\d+)_a(?P<a>\d+)"
     r"(?:_rho(?P<rho>[\d.]+))?"
     r"\.csv$"
@@ -34,7 +34,7 @@ def parse_filename(filename: str) -> dict | None:
 
 
 def build_label(params: dict) -> str:
-    engine = "BitLSM" if params["engine"] == "bitlsm" else "Vanilla RocksDB"
+    engine = "BitLSM" if params["engine"] == "bitlsm" else "No-Index"
     label = f"{engine} (a={params['a']}"
     if params["rho"] is not None:
         label += f", ρ={params['rho']}"
@@ -60,14 +60,14 @@ def plot_throughput_over_time(experiments, output_dir: Path):
     """Plot throughput (records/sec) over records_written for each experiment."""
     fig, ax = plt.subplots(figsize=(12, 7))
 
-    # Sort: vanila first, then bitlsm; within each group sort by a
+    # Sort: no-index first, then bitlsm; within each group sort by a
     experiments_sorted = sorted(
         experiments, key=lambda e: (e["params"]["engine"] == "bitlsm", e["params"]["a"])
     )
 
-    vanila_cmap = plt.cm.Blues
+    no_index_cmap = plt.cm.Blues
     bitlsm_cmap = plt.cm.Reds
-    vanila_count = sum(1 for e in experiments_sorted if e["params"]["engine"] == "vanila")
+    no_index_count = sum(1 for e in experiments_sorted if e["params"]["engine"] == "no-index")
     bitlsm_count = sum(1 for e in experiments_sorted if e["params"]["engine"] == "bitlsm")
 
     vi, bi = 0, 0
@@ -80,8 +80,8 @@ def plot_throughput_over_time(experiments, output_dir: Path):
         records_m = df["records_written"] / 1e6
 
         label = build_label(exp["params"])
-        if exp["params"]["engine"] == "vanila":
-            color = vanila_cmap(0.4 + 0.5 * vi / max(vanila_count - 1, 1))
+        if exp["params"]["engine"] == "no-index":
+            color = no_index_cmap(0.4 + 0.5 * vi / max(no_index_count - 1, 1))
             vi += 1
             linestyle = "-"
         else:
@@ -119,8 +119,8 @@ def plot_total_time_by_attr(experiments, output_dir: Path):
     data.sort(key=lambda x: (x["a"], x["engine"]))
 
     attrs = sorted(set(d["a"] for d in data))
-    engines = ["vanila", "bitlsm"]
-    engine_labels = {"vanila": "Vanilla RocksDB", "bitlsm": "BitLSM"}
+    engines = ["no-index", "bitlsm"]
+    engine_labels = {"no-index": "No-Index", "bitlsm": "BitLSM"}
 
     fig, ax = plt.subplots(figsize=(10, 6))
     bar_width = 0.35
@@ -134,7 +134,7 @@ def plot_total_time_by_attr(experiments, output_dir: Path):
         offset = (i - 0.5) * bar_width
         bars = ax.bar([xi + offset for xi in x], times, bar_width,
                       label=engine_labels[engine],
-                      color=("steelblue" if engine == "vanila" else "indianred"))
+                      color=("steelblue" if engine == "no-index" else "indianred"))
         for bar, t in zip(bars, times):
             if t > 0:
                 ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1,
@@ -168,8 +168,8 @@ def plot_avg_throughput_by_attr(experiments, output_dir: Path):
         })
 
     attrs = sorted(set(d["a"] for d in data))
-    engines = ["vanila", "bitlsm"]
-    engine_labels = {"vanila": "Vanilla RocksDB", "bitlsm": "BitLSM"}
+    engines = ["no-index", "bitlsm"]
+    engine_labels = {"no-index": "No-Index", "bitlsm": "BitLSM"}
 
     fig, ax = plt.subplots(figsize=(10, 6))
     bar_width = 0.35
@@ -183,7 +183,7 @@ def plot_avg_throughput_by_attr(experiments, output_dir: Path):
         offset = (i - 0.5) * bar_width
         bars = ax.bar([xi + offset for xi in x], [v / 1e6 for v in vals], bar_width,
                       label=engine_labels[engine],
-                      color=("steelblue" if engine == "vanila" else "indianred"))
+                      color=("steelblue" if engine == "no-index" else "indianred"))
         for bar, v in zip(bars, vals):
             if v > 0:
                 ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
@@ -203,21 +203,21 @@ def plot_avg_throughput_by_attr(experiments, output_dir: Path):
 
 
 def plot_slowdown_ratio(experiments, output_dir: Path):
-    """Plot BitLSM slowdown ratio compared to Vanilla RocksDB, grouped by rho if present."""
-    vanila_time = {}   # a -> total_time
+    """Plot BitLSM slowdown ratio compared to No-Index, grouped by rho if present."""
+    no_index_time = {}   # a -> total_time
     bitlsm_time = {}   # (a, rho) -> total_time
 
     for exp in experiments:
         a = exp["params"]["a"]
         engine = exp["params"]["engine"]
         total_time = exp["df"]["time_elapsed_ms"].iloc[-1]
-        if engine == "vanila":
-            vanila_time[a] = total_time
+        if engine == "no-index":
+            no_index_time[a] = total_time
         else:
             rho = exp["params"]["rho"]
             bitlsm_time[(a, rho)] = total_time
 
-    attrs = sorted(set(a for (a, _) in bitlsm_time if a in vanila_time))
+    attrs = sorted(set(a for (a, _) in bitlsm_time if a in no_index_time))
     rhos = sorted(set(rho for (_, rho) in bitlsm_time if rho is not None))
 
     if not attrs:
@@ -231,8 +231,8 @@ def plot_slowdown_ratio(experiments, output_dir: Path):
         for i, rho in enumerate(rhos):
             ratios = []
             for a in attrs:
-                if (a, rho) in bitlsm_time and a in vanila_time:
-                    ratios.append(bitlsm_time[(a, rho)] / vanila_time[a])
+                if (a, rho) in bitlsm_time and a in no_index_time:
+                    ratios.append(bitlsm_time[(a, rho)] / no_index_time[a])
                 else:
                     ratios.append(0)
             positions = [j + (i - (n_rhos - 1) / 2) * bar_width for j in range(len(attrs))]
@@ -245,8 +245,8 @@ def plot_slowdown_ratio(experiments, output_dir: Path):
     else:
         ratios = []
         for a in attrs:
-            if (a, None) in bitlsm_time and a in vanila_time:
-                ratios.append(bitlsm_time[(a, None)] / vanila_time[a])
+            if (a, None) in bitlsm_time and a in no_index_time:
+                ratios.append(bitlsm_time[(a, None)] / no_index_time[a])
             else:
                 ratios.append(0)
         bars = ax.bar(range(len(attrs)), ratios, color="mediumpurple",
@@ -258,8 +258,8 @@ def plot_slowdown_ratio(experiments, output_dir: Path):
 
     ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=1, label="1x (no overhead)")
     ax.set_xlabel("Number of Attributes (a)", fontsize=12)
-    ax.set_ylabel("Slowdown Ratio (BitLSM / Vanilla)", fontsize=12)
-    ax.set_title("BitLSM Write Overhead vs Vanilla RocksDB", fontsize=14)
+    ax.set_ylabel("Slowdown Ratio (BitLSM / No-Index)", fontsize=12)
+    ax.set_title("BitLSM Write Overhead vs No-Index", fontsize=14)
     ax.set_xticks(range(len(attrs)))
     ax.set_xticklabels([str(a) for a in attrs])
     ax.legend(fontsize=10)
@@ -271,7 +271,7 @@ def plot_slowdown_ratio(experiments, output_dir: Path):
 
 
 def plot_throughput_by_rho(experiments, output_dir: Path):
-    """Plot BitLSM avg throughput vs rho for each attribute count, with Vanilla baselines."""
+    """Plot BitLSM avg throughput vs rho for each attribute count, with No-Index baselines."""
     bitlsm_data = []
     for exp in experiments:
         if exp["params"]["engine"] != "bitlsm" or exp["params"]["rho"] is None:
@@ -288,15 +288,15 @@ def plot_throughput_by_rho(experiments, output_dir: Path):
     if not bitlsm_data:
         return
 
-    vanila_throughput = {}
+    no_index_throughput = {}
     for exp in experiments:
-        if exp["params"]["engine"] != "vanila":
+        if exp["params"]["engine"] != "no-index":
             continue
         df = exp["df"]
         a = exp["params"]["a"]
         total_records = df["records_written"].iloc[-1]
         total_time_sec = df["time_elapsed_ms"].iloc[-1] / 1000.0
-        vanila_throughput[a] = total_records / total_time_sec
+        no_index_throughput[a] = total_records / total_time_sec
 
     attrs = sorted(set(d["a"] for d in bitlsm_data))
     rhos = sorted(set(d["rho"] for d in bitlsm_data))
@@ -313,13 +313,13 @@ def plot_throughput_by_rho(experiments, output_dir: Path):
                 valid_rhos.append(rho)
         ax.plot(valid_rhos, throughputs, marker="o", label=f"BitLSM a={a}",
                 color=cmap(i), linewidth=1.5)
-        if a in vanila_throughput:
-            ax.axhline(y=vanila_throughput[a] / 1e6, color=cmap(i),
+        if a in no_index_throughput:
+            ax.axhline(y=no_index_throughput[a] / 1e6, color=cmap(i),
                        linestyle="--", linewidth=0.8, alpha=0.5)
 
     ax.set_xlabel("\u03c1 (rho)", fontsize=12)
     ax.set_ylabel("Avg Throughput (M records/sec)", fontsize=12)
-    ax.set_title("BitLSM Throughput by \u03c1 (dashed = Vanilla baseline)", fontsize=14)
+    ax.set_title("BitLSM Throughput by \u03c1 (dashed = No-Index baseline)", fontsize=14)
     ax.legend(fontsize=9, loc="best")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()

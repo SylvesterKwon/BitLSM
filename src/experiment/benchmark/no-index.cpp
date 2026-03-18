@@ -81,7 +81,7 @@ static BitLSMQuery build_read_query(const Schema& schema,
   return query;
 }
 
-static ReadResult vanila_full_scan(rocksdb::DB* db,
+static ReadResult no_index_full_scan(rocksdb::DB* db,
                                    const BitLSMOptions& options,
                                    BitLSMQuery& query) {
   ReadOptions ro;
@@ -110,7 +110,7 @@ static void save_read_csv(const string& output_dir, const string& exp_label,
                           const string& query_attr_indices_str,
                           const ReadResult& result) {
   filesystem::create_directories(output_dir);
-  string filename = exp_label + "_vanila_n" + to_string(n) + "_schema_" +
+  string filename = exp_label + "_no-index_n" + to_string(n) + "_schema_" +
                     schema_name + "_selectivity" +
                     format_double(selectivity) + "_query_attr_indices" +
                     query_attr_indices_str + ".csv";
@@ -123,11 +123,11 @@ static void save_read_csv(const string& output_dir, const string& exp_label,
   cout << "Result saved to: " << full_path << "\n";
 }
 
-static void vanila_fill_kvp(const Schema& schema, uint64_t n,
+static void no_index_fill_kvp(const Schema& schema, uint64_t n,
                             vector<ProgressLog>& progress_log,
                             bool debug = false) {
   if (debug)
-    cout << "creating " << n << " kvps into Vanila using Put API...\n";
+    cout << "creating " << n << " kvps into No-Index using Put API...\n";
 
   WriteOptions wo;
   mt19937 gen(42);
@@ -195,7 +195,7 @@ static void save_csv(const string& output_dir, const string& exp_label,
                      const vector<ProgressLog>& progress_log) {
   filesystem::create_directories(output_dir);
   string filename =
-      exp_label + "_vanila_n" + to_string(n) + "_schema_" + schema_name + ".csv";
+      exp_label + "_no-index_n" + to_string(n) + "_schema_" + schema_name + ".csv";
   string full_path = output_dir + "/" + filename;
   ofstream f(full_path);
   f << "time_elapsed_ms,records_written\n";
@@ -206,8 +206,8 @@ static void save_csv(const string& output_dir, const string& exp_label,
 }
 
 int main(const int argc, char* argv[]) {
-  cxxopts::Options opts("vanila-rocksdb",
-                        "Vanilla RocksDB sequential write/read experiment");
+  cxxopts::Options opts("no-index",
+                        "No-Index RocksDB sequential write/read experiment");
   // clang-format off
   opts.add_options()
     ("h,help", "Print usage")
@@ -288,7 +288,7 @@ int main(const int argc, char* argv[]) {
     }
 
     BitLSMQuery query = build_read_query(schema, query_indices, selectivity);
-    ReadResult rr = vanila_full_scan(db, schema.options, query);
+    ReadResult rr = no_index_full_scan(db, schema.options, query);
 
     for (auto* h : cf_handles)
       db->DestroyColumnFamilyHandle(h);
@@ -322,7 +322,7 @@ int main(const int argc, char* argv[]) {
     }
 
     vector<ProgressLog> progress_log;
-    vanila_fill_kvp(schema, n, progress_log, true);
+    no_index_fill_kvp(schema, n, progress_log, true);
 
     WaitForCompactOptions wait_for_compact_options = WaitForCompactOptions();
     wait_for_compact_options.close_db = true;
