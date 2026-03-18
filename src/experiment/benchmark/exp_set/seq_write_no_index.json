@@ -6,6 +6,10 @@
       100000000
     ],
     "schema": [
+      "default_a1.json",
+      "default_a2.json",
+      "default_a4.json",
+      "default_a8.json",
       "default_a16.json",
       "default_a32.json"
     ]
@@ -15,17 +19,6 @@
       "name": "no-index",
       "binary": "build/bin/no-index",
       "params": {}
-    },
-    {
-      "name": "bitlsm",
-      "binary": "build/bin/bit-lsm",
-      "params": {
-        "rho": [
-          0.2,
-          0.1,
-          0.05
-        ]
-      }
     }
   ]
 }

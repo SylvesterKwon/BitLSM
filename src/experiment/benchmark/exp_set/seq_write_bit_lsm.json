@@ -16,14 +16,15 @@
   },
   "methods": [
     {
-      "name": "si-lazy",
-      "binary": "build/bin/si-lazy",
-      "params": {}
-    },
-    {
-      "name": "si-composite",
-      "binary": "build/bin/si-composite",
-      "params": {}
+      "name": "bitlsm",
+      "binary": "build/bin/bit-lsm",
+      "params": {
+        "rho": [
+          0.2,
+          0.1,
+          0.05
+        ]
+      }
     }
   ]
 }

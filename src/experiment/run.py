@@ -137,6 +137,8 @@ def reset_hardware(db_path_base: str, prev_db_path: str = None, keep_db: bool = 
     subprocess.run(["sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"], check=True)
 
     # 3. TRIM freed blocks — SSD controller can now reclaim them
+    #    fstrim needs the mount point to exist
+    os.makedirs(db_path_base, exist_ok=True)
     print("  [hw-reset] fstrim ...")
     subprocess.run(["fstrim", "-v", db_path_base], check=True)
 

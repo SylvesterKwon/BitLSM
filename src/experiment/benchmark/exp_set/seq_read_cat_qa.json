@@ -33,6 +33,16 @@
           0.1
         ]
       }
+    },
+    {
+      "name": "si-lazy",
+      "binary": "build/bin/si-lazy",
+      "params": {}
+    },
+    {
+      "name": "si-composite",
+      "binary": "build/bin/si-composite",
+      "params": {}
     }
   ]
 }
