@@ -271,6 +271,13 @@ def run(config_path: str, dry_run: bool, method_filter: list,
 
         warmed_up_dbs = set()
         global_idx = 0
+
+        if hw_reset and not dry_run:
+            print("[pre-run] initial hw-reset ...")
+            reset_hardware(db_path_base)
+            if cooldown > 0:
+                cooldown_sleep(cooldown)
+
         for method in methods:
             name         = method["name"]
             binary       = method["binary"]
@@ -346,12 +353,11 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                         if result_data:
                             master_csv = os.path.join(output_dir, f"{exp_label}.csv")
                             _append_to_master_csv(master_csv, name, combo, result_data, master_fieldnames)
-                    if global_idx < total_runs:
-                        if hw_reset:
-                            reset_hardware(db_path_base, prev_db_path=db_path,
-                                           keep_db=(keep_db or is_read_only))
-                        if cooldown > 0:
-                            cooldown_sleep(cooldown)
+                    if hw_reset:
+                        reset_hardware(db_path_base, prev_db_path=db_path,
+                                       keep_db=(keep_db or is_read_only))
+                    if cooldown > 0 and global_idx < total_runs:
+                        cooldown_sleep(cooldown)
 
         print(f"Log saved to: {log_file_path}")
     finally:
