@@ -6,10 +6,6 @@
       100000000
     ],
     "schema": [
-      "default_a1.json",
-      "default_a2.json",
-      "default_a4.json",
-      "default_a8.json",
       "default_a16.json",
       "default_a32.json"
     ]

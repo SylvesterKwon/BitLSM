@@ -6,7 +6,8 @@
 src/experiment/
 ├── run.py                  # shared sweep runner
 ├── <experiment-name>/
-│   ├── <method>.cpp        # one binary per method (auto-compiled by CMake → build/bin/<method>)
+│   ├── benchmark_experiment.h  # CRTP base class (CLI, data gen, progress, CSV output)
+│   ├── <method>.cpp        # one binary per method — derives from BenchmarkExperiment (auto-compiled by CMake → build/bin/<method>)
 │   ├── params.json         # sweep parameter space
 │   ├── README.md           # experiment spec (English, required)
 │   └── result/             # CSV outputs (auto-created at runtime)
@@ -26,7 +27,7 @@ Method-specific flags: defined per experiment in its README.md.
 
 ## Progress Logging
 
-Use a local `vector<ProgressLog>` + `mutex` inside each `.cpp`. Do **not** modify shared headers like `utils.h`.
+`ProgressLog` struct and progress logging logic live in the CRTP base class `BenchmarkExperiment` (`benchmark_experiment.h`). Each derived `.cpp` inherits this automatically — no per-file logging code needed. Checkpoint interval: every 1,000,000 records.
 
 ## Sweep: params.json
 

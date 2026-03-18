@@ -14,6 +14,10 @@ BitLSM integrates a bitmap index into the LSM-Tree. The write experiment measure
 | No-Index RocksDB | `no-index` | `no-index.cpp` |
 | BitLSM | `bit-lsm` | `bit-lsm.cpp` |
 
+Both methods derive from the CRTP base class `BenchmarkExperiment<Derived>` in `benchmark_experiment.h`.
+The base class handles CLI parsing, random data generation, progress logging, and CSV output.
+Each derived class implements four methods: `Open`, `Put`, `Scan`, `Close`.
+
 Both methods use the same record format, defined by a **schema JSON file** (`schema/` directory):
 - **PK**: 8-character random alphanumeric string (`[A-Za-z0-9]`)
 - **Attributes**: type (categorical/continuous), cardinality, range — all defined per-attr in schema
