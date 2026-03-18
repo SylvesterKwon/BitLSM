@@ -2,6 +2,8 @@
 
 #include "bit_lsm_iterator.h"
 #include "bit_lsm_query.h"
+#include <rocksdb/options.h>
+#include <rocksdb/table.h>
 #include <string>
 
 using Attr = std::variant<double, std::string>;
@@ -20,7 +22,9 @@ private:
   // Helper functions
 
 public:
-  BitLSM(const std::string& db_path, const BitLSMOptions& bit_lsm_options);
+  BitLSM(const std::string& db_path, const BitLSMOptions& bit_lsm_options,
+         const rocksdb::Options& rocksdb_options,
+         const rocksdb::BlockBasedTableOptions& table_options);
   ~BitLSM();
   // BitLSM core API
   rocksdb::Status Put(const std::string& pk, const std::vector<Attr>& attrs,

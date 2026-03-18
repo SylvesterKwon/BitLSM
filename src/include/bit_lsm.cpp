@@ -11,27 +11,16 @@ using namespace std;
 using namespace rocksdb;
 using namespace bit_lsm;
 
-BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options)
+BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
+               const Options& rocksdb_options,
+               const BlockBasedTableOptions& table_options)
     : db_path_(db_path), bit_lsm_options_(bit_lsm_options) {
-  // configure DB
-  // Using recommending options for better performance:
-  // (reference:
-  // https://github.com/facebook/rocksdb/wiki/Setup-Options-and-Basic-Tuning)
-  rocksdb_options_.create_if_missing = true;
-  rocksdb_options_.max_background_jobs = 6;
-  rocksdb_options_.bytes_per_sync = 1048576;
-  rocksdb_options_.compaction_pri = kMinOverlappingRatio;
-  // reference:
-  // https://github.com/facebook/rocksdb/wiki/RocksDB-Tuning-Guide#flushing-options
-  // rocksdb_options.write_buffer_size = 64 << 20; // Default: 64MB
-  rocksdb_options_.max_write_buffer_number = 5;
-  // rocksdb_options_.min_write_buffer_number_to_merge = 2;
-  BlockBasedTableOptions table_options;
-  table_options.block_size = 4 * 1024; // default, 4kb
-  table_options.user_defined_index_factory =
-      make_shared<SABIFactory>(bit_lsm_options_);
-  rocksdb_options_.table_factory.reset(
-      NewBlockBasedTableFactory(table_options));
+  rocksdb_options_ = rocksdb_options;
+
+  BlockBasedTableOptions opts = table_options;
+  opts.user_defined_index_factory = make_shared<SABIFactory>(bit_lsm_options_);
+  rocksdb_options_.table_factory.reset(NewBlockBasedTableFactory(opts));
+
   ColumnFamilyOptions cf_opts(rocksdb_options_);
   cf_opts.level_compaction_dynamic_level_bytes = true;
   const vector<ColumnFamilyDescriptor> column_families(
@@ -105,10 +94,9 @@ unique_ptr<BitLSMIterator> BitLSM::NewIterator(BitLSMQuery& query) {
               return a.attr_idx < b.attr_idx;
             });
 
-  return std::make_unique<BitLSMIterator>(
-      db_,
-      cf_handles_[0], // 기본 Column Family 사용
-      bit_lsm_options_, query);
+  return std::make_unique<BitLSMIterator>(db_,
+                                          cf_handles_[0], // Default CF
+                                          bit_lsm_options_, query);
 }
 
 void BitLSM::Statistics() {

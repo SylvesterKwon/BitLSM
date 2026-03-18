@@ -2,6 +2,7 @@
 #include "bit_lsm_utils.h"
 #include "sabi.h"
 #include "utils.h"
+#include <rocksdb/table.h>
 #include <cstdint>
 #include <cstring>
 
@@ -27,7 +28,16 @@ int main(const int argc, char* argv[]) {
       bit_lsm_options.attr_types.push_back(AttrType::CONTINUOUS);
   }
 
-  BitLSM db(db_path, bit_lsm_options);
+  Options rocksdb_options;
+  rocksdb_options.create_if_missing = true;
+  rocksdb_options.max_background_jobs = 6;
+  rocksdb_options.bytes_per_sync = 1048576;
+  rocksdb_options.compaction_pri = kMinOverlappingRatio;
+  rocksdb_options.max_write_buffer_number = 5;
+  BlockBasedTableOptions table_options;
+  table_options.block_size = 4 * 1024;
+
+  BitLSM db(db_path, bit_lsm_options, rocksdb_options, table_options);
 
   // Write test
   // fill_kvp_multi_thread(&db, num_threads, 1e7, bit_lsm_options, 32, 42,

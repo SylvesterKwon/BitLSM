@@ -1,5 +1,7 @@
 #include "benchmark_experiment.h"
 #include "bit_lsm.h"
+#include <rocksdb/options.h>
+#include <rocksdb/table.h>
 
 using namespace std;
 using namespace bit_lsm;
@@ -24,9 +26,18 @@ class BitLSMExperiment
     rho_ = result["rho"].as<double>();
     method_param_suffix = "_rho" + benchmark::format_double(rho_);
 
+    rocksdb::Options rocksdb_options;
+    rocksdb_options.create_if_missing = true;
+    rocksdb_options.max_background_jobs = 6;
+    rocksdb_options.bytes_per_sync = 1048576;
+    rocksdb_options.compaction_pri = rocksdb::kMinOverlappingRatio;
+    rocksdb_options.max_write_buffer_number = 5;
+    rocksdb::BlockBasedTableOptions table_options;
+    table_options.block_size = 4 * 1024;
+
     BitLSMOptions options = schema.options;
     options.rho = rho_;
-    db_ = make_unique<BitLSM>(db_path, options);
+    db_ = make_unique<BitLSM>(db_path, options, rocksdb_options, table_options);
   }
 
   void Put(const string& pk, const vector<Attr>& attrs,
