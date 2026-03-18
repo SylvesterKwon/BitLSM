@@ -1,6 +1,7 @@
 #pragma once
 #include "rocksdb/slice.h"
 #include "util/coding.h"
+#include <cstring>
 #include <iostream>
 #include <queue>
 #include <string>
@@ -21,8 +22,6 @@ public:
   rocksdb::Slice Current() const { return current_; }
   void Next() {
     if (cnt_ > 0) {
-      // GetLengthPrefixedSlice는 data_ 포인터를 다음 아이템 위치로
-      // 이동시킵니다.
       if (rocksdb::GetLengthPrefixedSlice(&data_, &current_)) {
         cnt_--;
         valid_ = true;
@@ -164,7 +163,50 @@ inline void MergeIndexValue(const rocksdb::Slice* a, const rocksdb::Slice* b,
   rocksdb::EncodeFixed32(reinterpret_cast<char*>(dest->data()), cnt);
 }
 
-// Return index SI key
+// ---------- Order-preserving double encoding ----------
+// IEEE 754 bit trick: flip sign bit for positives, flip all bits for negatives.
+// Result: memcmp on 8-byte encoded form == numeric < on doubles.
+
+inline void EncodeDoubleOrderPreserving(double val, char* out) {
+  uint64_t bits;
+  std::memcpy(&bits, &val, sizeof(bits));
+  if (bits & (uint64_t{1} << 63))
+    bits = ~bits;                    // negative: flip all
+  else
+    bits ^= (uint64_t{1} << 63);    // positive: flip sign bit
+  // big-endian
+  for (int i = 7; i >= 0; --i) {
+    out[i] = static_cast<char>(bits & 0xFF);
+    bits >>= 8;
+  }
+}
+
+inline double DecodeDoubleOrderPreserving(const char* data) {
+  uint64_t bits = 0;
+  for (int i = 0; i < 8; ++i)
+    bits = (bits << 8) | static_cast<uint8_t>(data[i]);
+  if (bits & (uint64_t{1} << 63))
+    bits ^= (uint64_t{1} << 63);    // was positive: flip sign bit back
+  else
+    bits = ~bits;                    // was negative: flip all back
+  double val;
+  std::memcpy(&val, &bits, sizeof(val));
+  return val;
+}
+
+inline std::string EncodeDoubleForSIKey(double val) {
+  std::string s(8, '\0');
+  EncodeDoubleOrderPreserving(val, s.data());
+  return s;
+}
+
+// Encode into a reusable buffer (hot-path friendly)
+inline void EncodeDoubleForSIKey(double val, std::string& out) {
+  out.resize(8);
+  EncodeDoubleOrderPreserving(val, out.data());
+}
+
+// Return index SI key (string secondary key)
 inline std::string GetInternalSIKey(uint32_t idx_no, const rocksdb::Slice& key,
                                     uint32_t idx_no_prefix_size = 4) {
   std::string res = std::to_string(idx_no);
@@ -172,7 +214,19 @@ inline std::string GetInternalSIKey(uint32_t idx_no, const rocksdb::Slice& key,
   res.resize(idx_no_prefix_size, ' '); // Add padding to make it fix-sized
   res += key.ToStringView();
   return res;
-};
+}
+
+// Return index SI key (double secondary key, order-preserving)
+inline std::string GetInternalSIKey(uint32_t idx_no, double sk_value,
+                                    uint32_t idx_no_prefix_size = 4) {
+  std::string res = std::to_string(idx_no);
+  assert(res.size() <= idx_no_prefix_size);
+  res.resize(idx_no_prefix_size, ' ');
+  char buf[8];
+  EncodeDoubleOrderPreserving(sk_value, buf);
+  res.append(buf, 8);
+  return res;
+}
 
 // Get i-th token of given string and delimiter. Returns empty string if there's
 // no i-th token
@@ -191,10 +245,8 @@ inline std::string_view GetIthToken(std::string_view str, int index,
     current++;
   }
 
-  // 마지막 토큰 처리 (구분자 뒤에 남은 문자열)
   if (current == index)
     return str.substr(start);
 
-  // 인덱스가 범위 밖이면 빈 view 반환
   return {};
 }

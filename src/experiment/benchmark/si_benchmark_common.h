@@ -1,41 +1,23 @@
 #pragma once
 
 #include "benchmark_experiment.h"
-#include "../standalone-secondary-index-methods/standalone_secondary_index_utils.h"
+#include "si_index_utils.h"
+#include <algorithm>
+#include <optional>
 #include <rocksdb/merge_operator.h>
 #include <rocksdb/table.h>
 #include <rocksdb/utilities/transaction_db.h>
-#include <algorithm>
 #include <unordered_map>
 
 namespace benchmark {
-
-// ---------- SI ↔ Attr index mapping ----------
-
-struct SIMapping {
-  std::vector<uint32_t> si_to_attr;  // si_no → attr_idx
-  std::unordered_map<uint32_t, uint32_t> attr_to_si;  // attr_idx → si_no
-  uint32_t si_cnt;
-};
-
-inline SIMapping BuildSIMapping(const Schema& schema) {
-  SIMapping m;
-  for (uint32_t j = 0; j < schema.options.attr_num; ++j) {
-    if (schema.options.attr_types[j] == bit_lsm::AttrType::CATEGORICAL) {
-      m.attr_to_si[j] = static_cast<uint32_t>(m.si_to_attr.size());
-      m.si_to_attr.push_back(j);
-    }
-  }
-  m.si_cnt = static_cast<uint32_t>(m.si_to_attr.size());
-  return m;
-}
 
 // ---------- Composite query strategy ----------
 
 enum class SIStrategy { kIndexMerge, kPostFiltering };
 
 inline SIStrategy ParseSIStrategy(const std::string& s) {
-  if (s == "post_filter") return SIStrategy::kPostFiltering;
+  if (s == "post_filter")
+    return SIStrategy::kPostFiltering;
   return SIStrategy::kIndexMerge;
 }
 
@@ -43,35 +25,93 @@ inline std::string SIStrategyToString(SIStrategy s) {
   return s == SIStrategy::kPostFiltering ? "post_filter" : "index_merge";
 }
 
-// ---------- Query → SI lookup plan ----------
+enum class SILookupType { kPointLookup, kRangeScan };
+
+struct SILookup {
+  uint32_t attr_idx;
+  SILookupType type;
+  bit_lsm::AttrType attr_type;
+
+  // For kPointLookup (CATEGORICAL + EQUAL):
+  std::string sk_value;
+
+  // For kRangeScan (CONTINUOUS + range ops):
+  std::optional<double> lower_bound;
+  bool lower_inclusive = true; // >= vs >
+  std::optional<double> upper_bound;
+  bool upper_inclusive = false; // <= vs <
+};
 
 struct SIQueryPlan {
-  std::vector<std::pair<uint32_t, std::string>> si_lookups;  // (si_no, sk_value)
-  bit_lsm::BitLSMQuery post_filter_query;  // remaining conditions
+  std::vector<SILookup> si_lookups;
+  bit_lsm::BitLSMQuery post_filter_query; // remaining conditions
 };
 
 inline SIQueryPlan MapQueryToSILookups(const bit_lsm::BitLSMQuery& query,
-                                       const SIMapping& mapping,
                                        const bit_lsm::BitLSMOptions& options) {
   SIQueryPlan plan;
+
+  // Group CONTINUOUS conditions by attr_idx to coalesce bounds
+  std::unordered_map<uint32_t, SILookup> range_map;
+
   for (const auto& cond : query.conditions) {
-    auto it = mapping.attr_to_si.find(cond.attr_idx);
-    if (it != mapping.attr_to_si.end() &&
-        cond.op == bit_lsm::CompareOp::EQUAL &&
-        options.attr_types[cond.attr_idx] == bit_lsm::AttrType::CATEGORICAL) {
-      plan.si_lookups.emplace_back(it->second,
-                                   std::get<std::string>(cond.value));
+    if (options.attr_types[cond.attr_idx] == bit_lsm::AttrType::CATEGORICAL) {
+      if (cond.op == bit_lsm::CompareOp::EQUAL) {
+        SILookup lk;
+        lk.attr_idx = cond.attr_idx;
+        lk.type = SILookupType::kPointLookup;
+        lk.attr_type = bit_lsm::AttrType::CATEGORICAL;
+        lk.sk_value = std::get<std::string>(cond.value);
+        plan.si_lookups.push_back(std::move(lk));
+      } else {
+        plan.post_filter_query.conditions.push_back(cond);
+      }
     } else {
-      plan.post_filter_query.conditions.push_back(cond);
+      // CONTINUOUS: coalesce into range bounds
+      auto& lk = range_map[cond.attr_idx];
+      lk.attr_idx = cond.attr_idx;
+      lk.type = SILookupType::kRangeScan;
+      lk.attr_type = bit_lsm::AttrType::CONTINUOUS;
+
+      double val = std::get<double>(cond.value);
+      switch (cond.op) {
+      case bit_lsm::CompareOp::GREATER_EQUAL:
+        lk.lower_bound = val;
+        lk.lower_inclusive = true;
+        break;
+      case bit_lsm::CompareOp::GREATER:
+        lk.lower_bound = val;
+        lk.lower_inclusive = false;
+        break;
+      case bit_lsm::CompareOp::LESS_EQUAL:
+        lk.upper_bound = val;
+        lk.upper_inclusive = true;
+        break;
+      case bit_lsm::CompareOp::LESS:
+        lk.upper_bound = val;
+        lk.upper_inclusive = false;
+        break;
+      case bit_lsm::CompareOp::EQUAL:
+        // exact match on continuous: both bounds equal, inclusive
+        lk.lower_bound = val;
+        lk.lower_inclusive = true;
+        lk.upper_bound = val;
+        lk.upper_inclusive = true;
+        break;
+      }
     }
   }
+
+  for (auto& [_, lk] : range_map)
+    plan.si_lookups.push_back(std::move(lk));
+
   return plan;
 }
 
 // ---------- Merge operator for LazyUpdates ----------
 
 class SIValueMergeOperator : public rocksdb::MergeOperator {
- public:
+public:
   const char* Name() const override { return "SIValueMergeOperator"; }
 
   bool FullMergeV2(const MergeOperationInput& merge_in,
@@ -84,9 +124,9 @@ class SIValueMergeOperator : public rocksdb::MergeOperator {
   }
 
   bool PartialMergeMulti(const rocksdb::Slice&,
-                          const std::deque<rocksdb::Slice>& operand_list,
-                          std::string* new_value,
-                          rocksdb::Logger*) const override {
+                         const std::deque<rocksdb::Slice>& operand_list,
+                         std::string* new_value,
+                         rocksdb::Logger*) const override {
     std::vector<rocksdb::Slice> all(operand_list.begin(), operand_list.end());
     MergeIndexValue(all, new_value);
     return true;
@@ -115,8 +155,7 @@ inline SIDBHandles OpenSITransactionDB(
 
   rocksdb::BlockBasedTableOptions table_options;
   table_options.block_size = 4 * 1024;
-  opts.table_factory.reset(
-      rocksdb::NewBlockBasedTableFactory(table_options));
+  opts.table_factory.reset(rocksdb::NewBlockBasedTableFactory(table_options));
 
   rocksdb::ColumnFamilyOptions primary_cf_opts(opts);
   primary_cf_opts.level_compaction_dynamic_level_bytes = true;
@@ -125,11 +164,13 @@ inline SIDBHandles OpenSITransactionDB(
   rocksdb::ColumnFamilyOptions secondary_cf_opts(opts);
   secondary_cf_opts.level_compaction_dynamic_level_bytes = true;
   if (secondary_cf_opts_override.merge_operator)
-    secondary_cf_opts.merge_operator = secondary_cf_opts_override.merge_operator;
+    secondary_cf_opts.merge_operator =
+        secondary_cf_opts_override.merge_operator;
   if (secondary_cf_opts_override.table_factory)
     secondary_cf_opts.table_factory = secondary_cf_opts_override.table_factory;
   if (secondary_cf_opts_override.prefix_extractor)
-    secondary_cf_opts.prefix_extractor = secondary_cf_opts_override.prefix_extractor;
+    secondary_cf_opts.prefix_extractor =
+        secondary_cf_opts_override.prefix_extractor;
 
   std::vector<rocksdb::ColumnFamilyDescriptor> column_families = {
       {rocksdb::kDefaultColumnFamilyName, primary_cf_opts},
@@ -137,9 +178,8 @@ inline SIDBHandles OpenSITransactionDB(
   };
 
   rocksdb::TransactionDBOptions txn_db_opts;
-  auto s = rocksdb::TransactionDB::Open(opts, txn_db_opts, db_path,
-                                         column_families, &h.cf_handles,
-                                         &h.txn_db);
+  auto s = rocksdb::TransactionDB::Open(
+      opts, txn_db_opts, db_path, column_families, &h.cf_handles, &h.txn_db);
   if (!s.ok()) {
     std::cerr << "Failed to open TransactionDB: " << s.ToString() << "\n";
     exit(1);
@@ -148,7 +188,8 @@ inline SIDBHandles OpenSITransactionDB(
 }
 
 inline void CloseSITransactionDB(SIDBHandles& h) {
-  if (!h.txn_db) return;
+  if (!h.txn_db)
+    return;
   for (auto* handle : h.cf_handles)
     h.txn_db->DestroyColumnFamilyHandle(handle);
   h.cf_handles.clear();
@@ -166,28 +207,25 @@ inline void CloseSITransactionDB(SIDBHandles& h) {
 inline ReadResult ScanByIndexMerge(
     rocksdb::TransactionDB* txn_db,
     const std::vector<rocksdb::ColumnFamilyHandle*>& cf_handles,
-    SIQueryPlan& plan,
-    const bit_lsm::BitLSMOptions& options,
-    uint64_t n,
-    // GetPKList: given (si_no, sk_value), returns vector<string> of PKs
-    std::function<std::vector<std::string>(uint32_t si_no, const std::string& sk)> GetPKList) {
+    SIQueryPlan& plan, const bit_lsm::BitLSMOptions& options, uint64_t n,
+    std::function<std::vector<std::string>(const SILookup&)> GetPKList) {
   auto start = std::chrono::high_resolution_clock::now();
 
   bool is_first = true;
   std::vector<std::string> merged;
-  for (auto& [si_no, sk_value] : plan.si_lookups) {
-    auto pk_list = GetPKList(si_no, sk_value);
+  for (auto& lookup : plan.si_lookups) {
+    auto pk_list = GetPKList(lookup);
     if (is_first) {
       merged = std::move(pk_list);
       is_first = false;
     } else {
       std::vector<std::string> tmp;
-      std::set_intersection(merged.begin(), merged.end(),
-                            pk_list.begin(), pk_list.end(),
-                            std::back_inserter(tmp));
+      std::set_intersection(merged.begin(), merged.end(), pk_list.begin(),
+                            pk_list.end(), std::back_inserter(tmp));
       merged = std::move(tmp);
     }
-    if (merged.empty()) break;
+    if (merged.empty())
+      break;
   }
 
   // MultiGet from primary CF
@@ -226,25 +264,21 @@ inline ReadResult ScanByIndexMerge(
 inline ReadResult ScanByPostFiltering(
     rocksdb::TransactionDB* txn_db,
     const std::vector<rocksdb::ColumnFamilyHandle*>& cf_handles,
-    SIQueryPlan& plan,
-    const bit_lsm::BitLSMQuery& original_query,
-    const bit_lsm::BitLSMOptions& options,
-    uint64_t n,
-    std::function<std::vector<std::string>(uint32_t si_no, const std::string& sk)> GetPKList) {
+    SIQueryPlan& plan, const bit_lsm::BitLSMQuery& original_query,
+    const bit_lsm::BitLSMOptions& options, uint64_t n,
+    std::function<std::vector<std::string>(const SILookup&)> GetPKList) {
   auto start = std::chrono::high_resolution_clock::now();
 
   // Use first SI lookup only
-  auto pk_list = GetPKList(plan.si_lookups[0].first,
-                           plan.si_lookups[0].second);
+  auto pk_list = GetPKList(plan.si_lookups[0]);
 
-  // Build filter query: all conditions except the first SI lookup
+  // Build filter query: all conditions except those for the first SI lookup's
+  // attr
+  uint32_t first_attr = plan.si_lookups[0].attr_idx;
   bit_lsm::BitLSMQuery filter_query;
   for (const auto& cond : original_query.conditions) {
-    if (cond.op == bit_lsm::CompareOp::EQUAL &&
-        options.attr_types[cond.attr_idx] == bit_lsm::AttrType::CATEGORICAL &&
-        std::get<std::string>(cond.value) == plan.si_lookups[0].second) {
-      continue;  // skip the first SI condition
-    }
+    if (cond.attr_idx == first_attr)
+      continue;
     filter_query.conditions.push_back(cond);
   }
 
@@ -280,12 +314,11 @@ inline ReadResult ScanByPostFiltering(
 }
 
 // Full table scan fallback
-inline ReadResult ScanFullTable(
-    rocksdb::TransactionDB* txn_db,
-    const std::vector<rocksdb::ColumnFamilyHandle*>& cf_handles,
-    bit_lsm::BitLSMQuery& query,
-    const bit_lsm::BitLSMOptions& options,
-    uint64_t n) {
+inline ReadResult
+ScanFullTable(rocksdb::TransactionDB* txn_db,
+              const std::vector<rocksdb::ColumnFamilyHandle*>& cf_handles,
+              bit_lsm::BitLSMQuery& query,
+              const bit_lsm::BitLSMOptions& options, uint64_t n) {
   rocksdb::ReadOptions ro;
   auto* it = txn_db->NewIterator(ro, cf_handles[0]);
   uint64_t matched = 0, total = 0;
@@ -305,4 +338,4 @@ inline ReadResult ScanFullTable(
           total > 0 ? static_cast<double>(matched) / total : 0.0};
 }
 
-}  // namespace benchmark
+} // namespace benchmark
