@@ -54,11 +54,10 @@ Status BitLSM::Put(const string& key, const vector<Attr>& attrs,
   }
 
   // 2. Serialize value
-  string serialized_value;
-  EncodeValue(bit_lsm_options_, attrs, payload, serialized_value);
+  EncodeValue(bit_lsm_options_, attrs, payload, serialized_value_buf_);
 
   // 3. Put Key-Value pair to RocksDB
-  return db_->Put(WriteOptions(), key, serialized_value);
+  return db_->Put(WriteOptions(), key, serialized_value_buf_);
 }
 
 rocksdb::Status BitLSM::PutBatch(const vector<string>& pks,

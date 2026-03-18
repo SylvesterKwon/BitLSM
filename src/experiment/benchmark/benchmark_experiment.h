@@ -208,8 +208,11 @@ class BenchmarkExperiment {
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
+    vector<Attr> attrs(schema.options.attr_num);
+    string payload(schema.payload_bytes, '\0');
+    string pk(8, '\0');
+
     for (uint64_t i = 0; i < n; ++i) {
-      vector<Attr> attrs(schema.options.attr_num);
       for (uint32_t j = 0; j < schema.options.attr_num; ++j) {
         if (schema.options.attr_types[j] == AttrType::CATEGORICAL)
           attrs[j] = to_string(cat_dists[j](gen));
@@ -217,15 +220,11 @@ class BenchmarkExperiment {
           attrs[j] = cont_dists[j](gen);
       }
 
-      string payload;
-      payload.reserve(schema.payload_bytes);
       for (size_t k = 0; k < schema.payload_bytes; ++k)
-        payload += kCharSet[char_dist(gen)];
+        payload[k] = kCharSet[char_dist(gen)];
 
-      string pk;
-      pk.reserve(8);
       for (size_t k = 0; k < 8; ++k)
-        pk += kCharSet[char_dist(gen)];
+        pk[k] = kCharSet[char_dist(gen)];
 
       self().Put(pk, attrs, payload);
 

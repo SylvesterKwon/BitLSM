@@ -18,6 +18,7 @@ private:
   std::vector<rocksdb::ColumnFamilyHandle*> cf_handles_;
   rocksdb::Options rocksdb_options_;
   BitLSMOptions bit_lsm_options_;
+  std::string serialized_value_buf_;
 
   // Helper functions
 

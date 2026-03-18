@@ -60,6 +60,20 @@ python3 src/experiment/run.py <params.json> --warmup                            
 
 Between-run sequence: `[warmup: 1 dummy query per unique db_path (read_seq only)] → experiment → [hw-reset: rm DB (unless --keep-db or read_seq), sync, drop_caches, fstrim] → [cooldown] → next`
 
+## Performance: Hot-Path Allocation Rules
+
+`Put()` is called up to 1억 times per run. Heap allocation inside this loop directly impacts throughput.
+
+**Rules for method `.cpp` files:**
+- `Put()` must not allocate heap memory per call. Buffers like `serialized_value` must be class member variables, reused across calls via `resize()`/`clear()`.
+- `EncodeValue()` uses `out_value.resize(exact_size)` + `memcpy` — safe to reuse the same `string&` without `clear()`.
+
+**Rules already enforced in `benchmark_experiment.h` (CRTP base):**
+- `vector<Attr>`, `payload`, `pk` are allocated once before the loop and reused per iteration.
+- `payload`/`pk` are fixed-size strings with index assignment (`str[k] = ...`), not `clear()` + `+=`.
+
+When adding a new method, follow the existing pattern in `no-index.cpp` and `bit-lsm.cpp`.
+
 ## README.md (Required per experiment)
 
 Write in English. Sections: **Objective**, **Subjects** (methods/binaries), **Experiment Types**, **Parameters** (all flags with types/defaults), **Build**, **Running**, **Results** (dir, filename, CSV columns), **Examples**.

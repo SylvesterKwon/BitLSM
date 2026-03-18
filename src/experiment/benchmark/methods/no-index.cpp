@@ -13,6 +13,7 @@ class NoIndexExperiment
   vector<ColumnFamilyHandle*> cf_handles_;
   BitLSMOptions options_;
   WriteOptions wo_;
+  string serialized_value_;
 
  public:
   NoIndexExperiment() { method_name = "no-index"; }
@@ -22,43 +23,39 @@ class NoIndexExperiment
     options_ = schema.options;
 
     Options rocksdb_options;
+    rocksdb_options.create_if_missing = true;
     rocksdb_options.max_background_jobs = 6;
+    rocksdb_options.bytes_per_sync = 1048576;
+    rocksdb_options.compaction_pri = kMinOverlappingRatio;
+    rocksdb_options.max_write_buffer_number = 5;
     BlockBasedTableOptions table_options;
     table_options.block_size = 4 * 1024;
     rocksdb_options.table_factory.reset(
         NewBlockBasedTableFactory(table_options));
+
     ColumnFamilyOptions cf_opts(rocksdb_options);
     cf_opts.level_compaction_dynamic_level_bytes = true;
     const vector<ColumnFamilyDescriptor> column_families(
         {ColumnFamilyDescriptor(kDefaultColumnFamilyName, cf_opts)});
 
+    Status s;
     if (read_mode) {
-      Status s = DB::OpenForReadOnly(rocksdb_options, db_path, column_families,
-                                     &cf_handles_, &db_);
-      if (!s.ok()) {
-        cerr << "Failed to open DB: " << s.ToString() << "\n";
-        exit(1);
-      }
+      s = DB::OpenForReadOnly(rocksdb_options, db_path, column_families,
+                              &cf_handles_, &db_);
     } else {
-      rocksdb_options.create_if_missing = true;
-      rocksdb_options.bytes_per_sync = 1048576;
-      rocksdb_options.compaction_pri = kMinOverlappingRatio;
-      rocksdb_options.max_write_buffer_number = 5;
-      Status s =
-          DB::Open(rocksdb_options, db_path, column_families, &cf_handles_,
+      s = DB::Open(rocksdb_options, db_path, column_families, &cf_handles_,
                    &db_);
-      if (!s.ok()) {
-        cerr << "Failed to open DB: " << s.ToString() << "\n";
-        exit(1);
-      }
+    }
+    if (!s.ok()) {
+      cerr << "Failed to open DB: " << s.ToString() << "\n";
+      exit(1);
     }
   }
 
   void Put(const string& pk, const vector<Attr>&attrs,
            const string& payload) {
-    string serialized_value;
-    EncodeValue(options_, attrs, payload, serialized_value);
-    db_->Put(wo_, pk, serialized_value);
+    EncodeValue(options_, attrs, payload, serialized_value_);
+    db_->Put(wo_, pk, serialized_value_);
   }
 
   benchmark::ReadResult Scan(BitLSMQuery& query, uint64_t) {
