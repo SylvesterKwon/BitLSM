@@ -11,8 +11,8 @@ BitLSM integrates a bitmap index into the LSM-Tree. The write experiment measure
 
 | Method | Binary | Source |
 |---|---|---|
-| No-Index RocksDB | `no-index` | `no-index.cpp` |
-| BitLSM | `bit-lsm` | `bit-lsm.cpp` |
+| No-Index RocksDB | `no-index` | `methods/no-index.cpp` |
+| BitLSM | `bit-lsm` | `methods/bit-lsm.cpp` |
 
 Both methods derive from the CRTP base class `BenchmarkExperiment<Derived>` in `benchmark_experiment.h`.
 The base class handles CLI parsing, random data generation, progress logging, and CSV output.

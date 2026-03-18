@@ -7,7 +7,8 @@ src/experiment/
 ├── run.py                  # shared sweep runner
 ├── <experiment-name>/
 │   ├── benchmark_experiment.h  # CRTP base class (CLI, data gen, progress, CSV output)
-│   ├── <method>.cpp        # one binary per method — derives from BenchmarkExperiment (auto-compiled by CMake → build/bin/<method>)
+│   ├── methods/            # comparison method implementations (one .cpp per method)
+│   │   └── <method>.cpp    # derives from BenchmarkExperiment (auto-compiled by CMake → build/bin/<method>)
 │   ├── params.json         # sweep parameter space
 │   ├── README.md           # experiment spec (English, required)
 │   └── result/             # CSV outputs (auto-created at runtime)

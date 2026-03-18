@@ -12,6 +12,7 @@ class NoIndexExperiment
   rocksdb::DB* db_ = nullptr;
   vector<ColumnFamilyHandle*> cf_handles_;
   BitLSMOptions options_;
+  WriteOptions wo_;
 
  public:
   NoIndexExperiment() { method_name = "no-index"; }
@@ -55,10 +56,9 @@ class NoIndexExperiment
 
   void Put(const string& pk, const vector<Attr>&attrs,
            const string& payload) {
-    WriteOptions wo;
     string serialized_value;
     EncodeValue(options_, attrs, payload, serialized_value);
-    db_->Put(wo, pk, serialized_value);
+    db_->Put(wo_, pk, serialized_value);
   }
 
   benchmark::ReadResult Scan(BitLSMQuery& query, uint64_t) {

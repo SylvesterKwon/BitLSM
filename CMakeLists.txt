@@ -167,9 +167,12 @@ foreach(EXP_SRC ${EXPERIMENT_SOURCES})
 
     # Main.cpp과 동일한 환경 설정 (변수 재사용)
     target_include_directories(${EXP_NAME} PRIVATE ${COMMON_INCLUDE_DIRS})
-    target_include_directories(${EXP_NAME} PRIVATE 
+    # 실험용 헤더: EXP_DIR 자신 + 부모 디렉토리 (methods/ 하위 소스가 상위 헤더 참조)
+    get_filename_component(EXP_PARENT_DIR ${EXP_DIR} DIRECTORY)
+    target_include_directories(${EXP_NAME} PRIVATE
         ${COMMON_INCLUDE_DIRS} # 공통 헤더
         ${EXP_DIR}             # 실험용 헤더
+        ${EXP_PARENT_DIR}      # 실험 상위 헤더
     )
     target_link_directories(${EXP_NAME} PRIVATE /usr/local/lib)
     target_link_libraries(${EXP_NAME} PRIVATE ${COMMON_LINK_LIBS})
