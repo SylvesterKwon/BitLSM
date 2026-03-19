@@ -24,7 +24,7 @@ class SILUExperiment
 
     cxxopts::Options opts("si-lu", "");
     opts.allow_unrecognised_options();
-    opts.add_options()("read_strategy", "im or ck",
+    opts.add_options()("read_strategy", "im or pf",
                        cxxopts::value<string>()->default_value("im"));
     auto result = opts.parse(argc, argv);
     strategy_ = benchmark::ParseSIStrategy(

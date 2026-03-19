@@ -40,7 +40,7 @@
       "params": {
         "read_strategy": [
           "im",
-          "ck"
+          "pf"
         ]
       }
     },
@@ -50,7 +50,7 @@
       "params": {
         "read_strategy": [
           "im",
-          "ck"
+          "pf"
         ]
       }
     }

@@ -16,13 +16,13 @@ namespace benchmark {
 enum class SIStrategy { kIndexMerge, kPostFiltering };
 
 inline SIStrategy ParseSIStrategy(const std::string& s) {
-  if (s == "ck" || s == "post_filter")
+  if (s == "pf" || s == "post_filter")
     return SIStrategy::kPostFiltering;
   return SIStrategy::kIndexMerge;
 }
 
 inline std::string SIStrategyToString(SIStrategy s) {
-  return s == SIStrategy::kPostFiltering ? "ck" : "im";
+  return s == SIStrategy::kPostFiltering ? "pf" : "im";
 }
 
 enum class SILookupType { kPointLookup, kRangeScan };
@@ -307,7 +307,7 @@ inline ReadResult ScanByPostFiltering(
   auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                      std::chrono::high_resolution_clock::now() - start)
                      .count();
-  std::cout << "scan (ck) done: " << matched << "/" << n
+  std::cout << "scan (pf) done: " << matched << "/" << n
             << " matched, " << elapsed << "ms\n";
   return {static_cast<uint64_t>(elapsed), matched,
           n > 0 ? static_cast<double>(matched) / n : 0.0};
