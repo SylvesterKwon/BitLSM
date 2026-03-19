@@ -29,8 +29,8 @@ class SICKExperiment
 
     cxxopts::Options opts("si-ck", "");
     opts.allow_unrecognised_options();
-    opts.add_options()("read_strategy", "index_merge or post_filter",
-                       cxxopts::value<string>()->default_value("index_merge"));
+    opts.add_options()("read_strategy", "im or ck",
+                       cxxopts::value<string>()->default_value("im"));
     auto result = opts.parse(argc, argv);
     strategy_ = benchmark::ParseSIStrategy(
         result["read_strategy"].as<string>());

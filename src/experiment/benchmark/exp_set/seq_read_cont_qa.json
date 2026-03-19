@@ -41,12 +41,22 @@
     {
       "name": "si-lu",
       "binary": "build/bin/si-lu",
-      "params": {}
+      "params": {
+        "read_strategy": [
+          "im",
+          "ck"
+        ]
+      }
     },
     {
       "name": "si-ck",
       "binary": "build/bin/si-ck",
-      "params": {}
+      "params": {
+        "read_strategy": [
+          "im",
+          "ck"
+        ]
+      }
     }
   ]
 }
