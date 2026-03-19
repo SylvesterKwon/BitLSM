@@ -34,7 +34,7 @@ class SICompositeExperiment
     auto result = opts.parse(argc, argv);
     strategy_ = benchmark::ParseSIStrategy(
         result["read_strategy"].as<string>());
-    method_param_suffix =
+    this->read_param_suffix =
         "_strategy_" + benchmark::SIStrategyToString(strategy_);
 
     // Open TransactionDB with prefix bloom filter on secondary CF

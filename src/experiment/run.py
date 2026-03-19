@@ -400,7 +400,8 @@ def main():
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             preexec_fn=os.setpgrp)
         print(f"Background PID: {proc.pid}")
-        print(f"Check logs: tail -f logs/<timestamp>_*.log")
+        print(f"- Check daemon status: ps -p {proc.pid}")
+        print(f"- Terminate daemon: kill {proc.pid}")
         sys.exit(0)
 
     method_filter = args.methods.split(",") if args.methods else []

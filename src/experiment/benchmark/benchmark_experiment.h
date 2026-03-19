@@ -97,7 +97,8 @@ template <typename Derived>
 class BenchmarkExperiment {
  public:
   string method_name;
-  string method_param_suffix;
+  string method_param_suffix;       // write CSV filename suffix
+  string read_param_suffix;         // read-only params (e.g. strategy)
 
   int Run(int argc, char* argv[]) {
     cxxopts::Options opts(self().method_name,

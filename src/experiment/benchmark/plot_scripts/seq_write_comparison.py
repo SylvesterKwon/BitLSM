@@ -13,8 +13,8 @@ from pathlib import Path
 RESULT_DIR = Path(__file__).parent.parent / "result"
 
 FILENAME_PATTERN = re.compile(
-    r"^(?P<workload>.+?)_(?P<engine>bitlsm|no-index)"
-    r"_n(?P<n>\d+)_p(?P<p>\d+)_a(?P<a>\d+)"
+    r"^(?P<workload>.+?)_(?P<index>bitlsm|no-index|si-lazy|si-composite)"
+    r"_n(?P<n>\d+)_schema_(?P<schema>.+?)_a(?P<a>\d+)"
     r"(?:_rho(?P<rho>[\d.]+))?"
     r"\.csv$"
 )
@@ -26,16 +26,39 @@ def parse_filename(filename: str) -> dict | None:
         return None
     d = m.groupdict()
     d["n"] = int(d["n"])
-    d["p"] = int(d["p"])
     d["a"] = int(d["a"])
     if d["rho"] is not None:
         d["rho"] = float(d["rho"])
     return d
 
 
+INDEX_DISPLAY = {
+    "no-index": "No-Index",
+    "bitlsm": "BitLSM",
+    "si-lazy": "SI-Lazy",
+    "si-composite": "SI-Composite",
+}
+
+INDEX_STYLE = {
+    "no-index":     {"cmap": plt.cm.Blues,    "linestyle": "-"},
+    "bitlsm":       {"cmap": plt.cm.Reds,     "linestyle": "--"},
+    "si-lazy":       {"cmap": plt.cm.Greens,   "linestyle": "-."},
+    "si-composite":  {"cmap": plt.cm.Purples,  "linestyle": ":"},
+}
+
+INDEX_ORDER = ["no-index", "bitlsm", "si-lazy", "si-composite"]
+
+INDEX_BAR_COLOR = {
+    "no-index": "steelblue",
+    "bitlsm": "indianred",
+    "si-lazy": "seagreen",
+    "si-composite": "mediumpurple",
+}
+
+
 def build_label(params: dict) -> str:
-    engine = "BitLSM" if params["engine"] == "bitlsm" else "No-Index"
-    label = f"{engine} (a={params['a']}"
+    index_name = INDEX_DISPLAY.get(params["index"], params["index"])
+    label = f"{index_name} (a={params['a']}"
     if params["rho"] is not None:
         label += f", ρ={params['rho']}"
     label += ")"
@@ -60,17 +83,19 @@ def plot_throughput_over_time(experiments, output_dir: Path):
     """Plot throughput (records/sec) over records_written for each experiment."""
     fig, ax = plt.subplots(figsize=(12, 7))
 
-    # Sort: no-index first, then bitlsm; within each group sort by a
+    # Sort by index order, then by a
+    index_rank = {e: i for i, e in enumerate(INDEX_ORDER)}
     experiments_sorted = sorted(
-        experiments, key=lambda e: (e["params"]["engine"] == "bitlsm", e["params"]["a"])
+        experiments, key=lambda e: (index_rank.get(e["params"]["index"], 99), e["params"]["a"])
     )
 
-    no_index_cmap = plt.cm.Blues
-    bitlsm_cmap = plt.cm.Reds
-    no_index_count = sum(1 for e in experiments_sorted if e["params"]["engine"] == "no-index")
-    bitlsm_count = sum(1 for e in experiments_sorted if e["params"]["engine"] == "bitlsm")
+    # Count per index for color gradient
+    index_counts = {}
+    for e in experiments_sorted:
+        idx_name = e["params"]["index"]
+        index_counts[idx_name] = index_counts.get(idx_name, 0) + 1
+    index_counter = {}
 
-    vi, bi = 0, 0
     for exp in experiments_sorted:
         df = exp["df"].copy()
         # Compute interval throughput (records per second)
@@ -79,18 +104,16 @@ def plot_throughput_over_time(experiments, output_dir: Path):
         throughput = dr / dt_sec
         records_m = df["records_written"] / 1e6
 
-        label = build_label(exp["params"])
-        if exp["params"]["engine"] == "no-index":
-            color = no_index_cmap(0.4 + 0.5 * vi / max(no_index_count - 1, 1))
-            vi += 1
-            linestyle = "-"
-        else:
-            color = bitlsm_cmap(0.4 + 0.5 * bi / max(bitlsm_count - 1, 1))
-            bi += 1
-            linestyle = "--"
+        idx_name = exp["params"]["index"]
+        style = INDEX_STYLE.get(idx_name, {"cmap": plt.cm.Greys, "linestyle": "-"})
+        idx = index_counter.get(idx_name, 0)
+        count = index_counts.get(idx_name, 1)
+        color = style["cmap"](0.4 + 0.5 * idx / max(count - 1, 1))
+        index_counter[idx_name] = idx + 1
 
+        label = build_label(exp["params"])
         ax.plot(records_m.iloc[1:], throughput.iloc[1:],
-                label=label, color=color, linestyle=linestyle, linewidth=1.2)
+                label=label, color=color, linestyle=style["linestyle"], linewidth=1.2)
 
     ax.set_xlabel("Records Written (M)", fontsize=12)
     ax.set_ylabel("Throughput (records/sec)", fontsize=12)
@@ -103,38 +126,61 @@ def plot_throughput_over_time(experiments, output_dir: Path):
     print(f"Saved: throughput_over_time.png")
 
 
-def plot_total_time_by_attr(experiments, output_dir: Path):
-    """Bar chart: total time for each (engine, a) combination."""
+def _build_bar_series(experiments):
+    """Build (index, rho) series list and per-experiment data for bar charts."""
     data = []
     for exp in experiments:
         df = exp["df"]
+        total_records = df["records_written"].iloc[-1]
         total_time_sec = df["time_elapsed_ms"].iloc[-1] / 1000.0
         data.append({
-            "engine": exp["params"]["engine"],
+            "index": exp["params"]["index"],
             "a": exp["params"]["a"],
+            "rho": exp["params"]["rho"],
             "total_time_sec": total_time_sec,
-            "label": build_label(exp["params"]),
+            "avg_throughput": total_records / total_time_sec,
         })
 
-    data.sort(key=lambda x: (x["a"], x["engine"]))
+    series = []
+    for idx_name in INDEX_ORDER:
+        if not any(d["index"] == idx_name for d in data):
+            continue
+        rhos = sorted(set(d["rho"] for d in data if d["index"] == idx_name))
+        cmap = INDEX_STYLE[idx_name]["cmap"]
+        if rhos == [None]:
+            series.append({"index": idx_name, "rho": None,
+                           "label": INDEX_DISPLAY[idx_name],
+                           "color": cmap(0.6)})
+        else:
+            n_rhos = len([r for r in rhos if r is not None])
+            for j, rho in enumerate(r for r in rhos if r is not None):
+                intensity = 0.35 + 0.5 * j / max(n_rhos - 1, 1)
+                series.append({"index": idx_name, "rho": rho,
+                               "label": f"{INDEX_DISPLAY[idx_name]} \u03c1={rho}",
+                               "color": cmap(intensity)})
 
+    return data, series
+
+
+def plot_total_time_by_attr(experiments, output_dir: Path):
+    """Bar chart: total time for each (index, rho, a) combination."""
+    data, series = _build_bar_series(experiments)
     attrs = sorted(set(d["a"] for d in data))
-    engines = ["no-index", "bitlsm"]
-    engine_labels = {"no-index": "No-Index", "bitlsm": "BitLSM"}
+    n_series = len(series)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    bar_width = 0.35
+    fig, ax = plt.subplots(figsize=(12, 6))
+    bar_width = 0.8 / n_series
     x = range(len(attrs))
 
-    for i, engine in enumerate(engines):
+    for i, s in enumerate(series):
         times = []
         for a in attrs:
-            match = [d for d in data if d["engine"] == engine and d["a"] == a]
+            match = [d for d in data if d["index"] == s["index"]
+                     and d["a"] == a and d["rho"] == s["rho"]]
             times.append(match[0]["total_time_sec"] if match else 0)
-        offset = (i - 0.5) * bar_width
+        offset = (i - (n_series - 1) / 2) * bar_width
         bars = ax.bar([xi + offset for xi in x], times, bar_width,
-                      label=engine_labels[engine],
-                      color=("steelblue" if engine == "no-index" else "indianred"))
+                      label=s["label"], color=s["color"])
         for bar, t in zip(bars, times):
             if t > 0:
                 ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1,
@@ -154,36 +200,24 @@ def plot_total_time_by_attr(experiments, output_dir: Path):
 
 
 def plot_avg_throughput_by_attr(experiments, output_dir: Path):
-    """Bar chart: average throughput for each (engine, a) combination."""
-    data = []
-    for exp in experiments:
-        df = exp["df"]
-        total_records = df["records_written"].iloc[-1]
-        total_time_sec = df["time_elapsed_ms"].iloc[-1] / 1000.0
-        avg_throughput = total_records / total_time_sec
-        data.append({
-            "engine": exp["params"]["engine"],
-            "a": exp["params"]["a"],
-            "avg_throughput": avg_throughput,
-        })
-
+    """Bar chart: average throughput for each (index, rho, a) combination."""
+    data, series = _build_bar_series(experiments)
     attrs = sorted(set(d["a"] for d in data))
-    engines = ["no-index", "bitlsm"]
-    engine_labels = {"no-index": "No-Index", "bitlsm": "BitLSM"}
+    n_series = len(series)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    bar_width = 0.35
+    fig, ax = plt.subplots(figsize=(12, 6))
+    bar_width = 0.8 / n_series
     x = range(len(attrs))
 
-    for i, engine in enumerate(engines):
+    for i, s in enumerate(series):
         vals = []
         for a in attrs:
-            match = [d for d in data if d["engine"] == engine and d["a"] == a]
+            match = [d for d in data if d["index"] == s["index"]
+                     and d["a"] == a and d["rho"] == s["rho"]]
             vals.append(match[0]["avg_throughput"] if match else 0)
-        offset = (i - 0.5) * bar_width
+        offset = (i - (n_series - 1) / 2) * bar_width
         bars = ax.bar([xi + offset for xi in x], [v / 1e6 for v in vals], bar_width,
-                      label=engine_labels[engine],
-                      color=("steelblue" if engine == "no-index" else "indianred"))
+                      label=s["label"], color=s["color"])
         for bar, v in zip(bars, vals):
             if v > 0:
                 ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
@@ -203,66 +237,50 @@ def plot_avg_throughput_by_attr(experiments, output_dir: Path):
 
 
 def plot_slowdown_ratio(experiments, output_dir: Path):
-    """Plot BitLSM slowdown ratio compared to No-Index, grouped by rho if present."""
-    no_index_time = {}   # a -> total_time
-    bitlsm_time = {}   # (a, rho) -> total_time
+    """Plot slowdown ratio of all indexes compared to No-Index."""
+    data, series = _build_bar_series(experiments)
+    # Exclude no-index from series (it's the baseline)
+    series = [s for s in series if s["index"] != "no-index"]
 
-    for exp in experiments:
-        a = exp["params"]["a"]
-        engine = exp["params"]["engine"]
-        total_time = exp["df"]["time_elapsed_ms"].iloc[-1]
-        if engine == "no-index":
-            no_index_time[a] = total_time
-        else:
-            rho = exp["params"]["rho"]
-            bitlsm_time[(a, rho)] = total_time
+    no_index_time = {}
+    for d in data:
+        if d["index"] == "no-index":
+            no_index_time[d["a"]] = d["total_time_sec"]
 
-    attrs = sorted(set(a for (a, _) in bitlsm_time if a in no_index_time))
-    rhos = sorted(set(rho for (_, rho) in bitlsm_time if rho is not None))
-
-    if not attrs:
+    if not series or not no_index_time:
         return
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    attrs = sorted(no_index_time.keys())
+    n_series = len(series)
 
-    if rhos:
-        n_rhos = len(rhos)
-        bar_width = 0.8 / n_rhos
-        for i, rho in enumerate(rhos):
-            ratios = []
-            for a in attrs:
-                if (a, rho) in bitlsm_time and a in no_index_time:
-                    ratios.append(bitlsm_time[(a, rho)] / no_index_time[a])
-                else:
-                    ratios.append(0)
-            positions = [j + (i - (n_rhos - 1) / 2) * bar_width for j in range(len(attrs))]
-            bars = ax.bar(positions, ratios, bar_width,
-                          label=f"\u03c1={rho}", edgecolor="black", linewidth=0.5)
-            for bar, r in zip(bars, ratios):
-                if r > 0:
-                    ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
-                            f"{r:.2f}x", ha="center", va="bottom", fontsize=8)
-    else:
+    fig, ax = plt.subplots(figsize=(12, 6))
+    bar_width = 0.8 / n_series
+
+    for i, s in enumerate(series):
         ratios = []
         for a in attrs:
-            if (a, None) in bitlsm_time and a in no_index_time:
-                ratios.append(bitlsm_time[(a, None)] / no_index_time[a])
+            match = [d for d in data if d["index"] == s["index"]
+                     and d["a"] == a and d["rho"] == s["rho"]]
+            if match and a in no_index_time:
+                ratios.append(match[0]["total_time_sec"] / no_index_time[a])
             else:
                 ratios.append(0)
-        bars = ax.bar(range(len(attrs)), ratios, color="mediumpurple",
+        positions = [j + (i - (n_series - 1) / 2) * bar_width for j in range(len(attrs))]
+        bars = ax.bar(positions, ratios, bar_width,
+                      label=s["label"], color=s["color"],
                       edgecolor="black", linewidth=0.5)
         for bar, r in zip(bars, ratios):
             if r > 0:
                 ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
-                        f"{r:.2f}x", ha="center", va="bottom", fontsize=10)
+                        f"{r:.2f}x", ha="center", va="bottom", fontsize=7)
 
     ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=1, label="1x (no overhead)")
     ax.set_xlabel("Number of Attributes (a)", fontsize=12)
-    ax.set_ylabel("Slowdown Ratio (BitLSM / No-Index)", fontsize=12)
-    ax.set_title("BitLSM Write Overhead vs No-Index", fontsize=14)
+    ax.set_ylabel("Slowdown Ratio (Method / No-Index)", fontsize=12)
+    ax.set_title("Write Overhead vs No-Index", fontsize=14)
     ax.set_xticks(range(len(attrs)))
     ax.set_xticklabels([str(a) for a in attrs])
-    ax.legend(fontsize=10)
+    ax.legend(fontsize=8, loc="best")
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
     fig.savefig(output_dir / "slowdown_ratio.png", dpi=150)
@@ -274,7 +292,7 @@ def plot_throughput_by_rho(experiments, output_dir: Path):
     """Plot BitLSM avg throughput vs rho for each attribute count, with No-Index baselines."""
     bitlsm_data = []
     for exp in experiments:
-        if exp["params"]["engine"] != "bitlsm" or exp["params"]["rho"] is None:
+        if exp["params"]["index"] != "bitlsm" or exp["params"]["rho"] is None:
             continue
         df = exp["df"]
         total_records = df["records_written"].iloc[-1]
@@ -290,7 +308,7 @@ def plot_throughput_by_rho(experiments, output_dir: Path):
 
     no_index_throughput = {}
     for exp in experiments:
-        if exp["params"]["engine"] != "no-index":
+        if exp["params"]["index"] != "no-index":
             continue
         df = exp["df"]
         a = exp["params"]["a"]
