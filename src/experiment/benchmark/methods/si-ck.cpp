@@ -7,27 +7,27 @@ using namespace std;
 using namespace rocksdb;
 using namespace bit_lsm;
 
-class SICompositeExperiment
-    : public benchmark::BenchmarkExperiment<SICompositeExperiment> {
+class SICKExperiment
+    : public benchmark::BenchmarkExperiment<SICKExperiment> {
   benchmark::SIDBHandles db_;
   BitLSMOptions options_;
   benchmark::SIStrategy strategy_ = benchmark::SIStrategy::kIndexMerge;
   WriteOptions wo_;
   string serialized_value_;
-  // Composite key parameters (fixed)
+  // CK parameters (fixed)
   static constexpr uint32_t idx_no_prefix_size_ = 4;
   static constexpr uint32_t si_prefix_length_ = 16;
   // Reusable buffer for Put()
   string si_key_buf_;
 
  public:
-  SICompositeExperiment() { method_name = "si-composite"; }
+  SICKExperiment() { method_name = "si-ck"; }
 
   void Open(int argc, char* argv[], const string& db_path,
             const Schema& schema, bool) {
     options_ = schema.options;
 
-    cxxopts::Options opts("si-composite", "");
+    cxxopts::Options opts("si-ck", "");
     opts.allow_unrecognised_options();
     opts.add_options()("read_strategy", "index_merge or post_filter",
                        cxxopts::value<string>()->default_value("index_merge"));
@@ -37,7 +37,7 @@ class SICompositeExperiment
     this->read_param_suffix =
         "_strategy_" + benchmark::SIStrategyToString(strategy_);
 
-    // Open TransactionDB with prefix bloom filter on secondary CF
+    // Open TransactionDB with prefix bloom filter on SI CF
     ColumnFamilyOptions si_cf_opts;
     BlockBasedTableOptions si_table_options;
     si_table_options.filter_policy.reset(NewBloomFilterPolicy(10, false));
@@ -58,7 +58,7 @@ class SICompositeExperiment
     for (uint32_t attr_idx = 0; attr_idx < options_.attr_num; ++attr_idx) {
       if (options_.attr_types[attr_idx] == AttrType::CATEGORICAL) {
         const string& sk_value = get<string>(attrs[attr_idx]);
-        // Build composite key: [idx_no_padded][sk_padded][pk]
+        // Build CK: [idx_no_padded][sk_padded][pk]
         si_key_buf_ = sk_value;
         si_key_buf_.resize(si_prefix_length_, ' ');
         si_key_buf_ += pk;
@@ -190,5 +190,5 @@ class SICompositeExperiment
 };
 
 int main(const int argc, char* argv[]) {
-  return SICompositeExperiment{}.Run(argc, argv);
+  return SICKExperiment{}.Run(argc, argv);
 }

@@ -4,8 +4,8 @@ using namespace std;
 using namespace rocksdb;
 using namespace bit_lsm;
 
-class SILazyExperiment
-    : public benchmark::BenchmarkExperiment<SILazyExperiment> {
+class SILUExperiment
+    : public benchmark::BenchmarkExperiment<SILUExperiment> {
   benchmark::SIDBHandles db_;
   BitLSMOptions options_;
   benchmark::SIStrategy strategy_ = benchmark::SIStrategy::kIndexMerge;
@@ -16,13 +16,13 @@ class SILazyExperiment
   string encoded_si_value_;
 
  public:
-  SILazyExperiment() { method_name = "si-lazy"; }
+  SILUExperiment() { method_name = "si-lu"; }
 
   void Open(int argc, char* argv[], const string& db_path,
             const Schema& schema, bool) {
     options_ = schema.options;
 
-    cxxopts::Options opts("si-lazy", "");
+    cxxopts::Options opts("si-lu", "");
     opts.allow_unrecognised_options();
     opts.add_options()("read_strategy", "index_merge or post_filter",
                        cxxopts::value<string>()->default_value("index_merge"));
@@ -32,7 +32,7 @@ class SILazyExperiment
     this->read_param_suffix =
         "_strategy_" + benchmark::SIStrategyToString(strategy_);
 
-    // Open TransactionDB with merge operator on secondary CF
+    // Open TransactionDB with merge operator on SI CF
     ColumnFamilyOptions si_cf_opts;
     si_cf_opts.merge_operator.reset(new benchmark::SIValueMergeOperator());
     db_ = benchmark::OpenSITransactionDB(db_path, si_cf_opts);
@@ -156,5 +156,5 @@ class SILazyExperiment
 };
 
 int main(const int argc, char* argv[]) {
-  return SILazyExperiment{}.Run(argc, argv);
+  return SILUExperiment{}.Run(argc, argv);
 }

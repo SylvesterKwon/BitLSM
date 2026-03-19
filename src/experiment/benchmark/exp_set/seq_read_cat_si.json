@@ -45,8 +45,8 @@
       }
     },
     {
-      "name": "si-lazy",
-      "binary": "build/bin/si-lazy",
+      "name": "si-lu",
+      "binary": "build/bin/si-lu",
       "params": {
         "read_strategy": [
           "index_merge",
@@ -55,8 +55,8 @@
       }
     },
     {
-      "name": "si-composite",
-      "binary": "build/bin/si-composite",
+      "name": "si-ck",
+      "binary": "build/bin/si-ck",
       "params": {
         "read_strategy": [
           "index_merge",

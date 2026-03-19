@@ -206,7 +206,7 @@ inline void EncodeDoubleForSIKey(double val, std::string& out) {
   EncodeDoubleOrderPreserving(val, out.data());
 }
 
-// Return index SI key (string secondary key)
+// Return SI key (string attribute value)
 inline std::string GetInternalSIKey(uint32_t idx_no, const rocksdb::Slice& key,
                                     uint32_t idx_no_prefix_size = 4) {
   std::string res = std::to_string(idx_no);
@@ -216,7 +216,7 @@ inline std::string GetInternalSIKey(uint32_t idx_no, const rocksdb::Slice& key,
   return res;
 }
 
-// Return index SI key (double secondary key, order-preserving)
+// Return SI key (double attribute value, order-preserving)
 inline std::string GetInternalSIKey(uint32_t idx_no, double sk_value,
                                     uint32_t idx_no_prefix_size = 4) {
   std::string res = std::to_string(idx_no);

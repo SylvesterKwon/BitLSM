@@ -11,7 +11,7 @@
 
 namespace benchmark {
 
-// ---------- Composite query strategy ----------
+// ---------- Multi-attribute query strategy ----------
 
 enum class SIStrategy { kIndexMerge, kPostFiltering };
 
@@ -108,7 +108,7 @@ inline SIQueryPlan MapQueryToSILookups(const bit_lsm::BitLSMQuery& query,
   return plan;
 }
 
-// ---------- Merge operator for LazyUpdates ----------
+// ---------- Merge operator for lazy updates (LU) ----------
 
 class SIValueMergeOperator : public rocksdb::MergeOperator {
 public:
@@ -142,7 +142,7 @@ struct SIDBHandles {
 
 inline SIDBHandles OpenSITransactionDB(
     const std::string& db_path,
-    rocksdb::ColumnFamilyOptions secondary_cf_opts_override = {}) {
+    rocksdb::ColumnFamilyOptions si_cf_opts_override = {}) {
   SIDBHandles h;
 
   rocksdb::Options opts;
@@ -160,21 +160,21 @@ inline SIDBHandles OpenSITransactionDB(
   rocksdb::ColumnFamilyOptions primary_cf_opts(opts);
   primary_cf_opts.level_compaction_dynamic_level_bytes = true;
 
-  // Merge secondary CF options with base
-  rocksdb::ColumnFamilyOptions secondary_cf_opts(opts);
-  secondary_cf_opts.level_compaction_dynamic_level_bytes = true;
-  if (secondary_cf_opts_override.merge_operator)
-    secondary_cf_opts.merge_operator =
-        secondary_cf_opts_override.merge_operator;
-  if (secondary_cf_opts_override.table_factory)
-    secondary_cf_opts.table_factory = secondary_cf_opts_override.table_factory;
-  if (secondary_cf_opts_override.prefix_extractor)
-    secondary_cf_opts.prefix_extractor =
-        secondary_cf_opts_override.prefix_extractor;
+  // Merge SI CF options with base
+  rocksdb::ColumnFamilyOptions si_cf_opts(opts);
+  si_cf_opts.level_compaction_dynamic_level_bytes = true;
+  if (si_cf_opts_override.merge_operator)
+    si_cf_opts.merge_operator =
+        si_cf_opts_override.merge_operator;
+  if (si_cf_opts_override.table_factory)
+    si_cf_opts.table_factory = si_cf_opts_override.table_factory;
+  if (si_cf_opts_override.prefix_extractor)
+    si_cf_opts.prefix_extractor =
+        si_cf_opts_override.prefix_extractor;
 
   std::vector<rocksdb::ColumnFamilyDescriptor> column_families = {
       {rocksdb::kDefaultColumnFamilyName, primary_cf_opts},
-      {"secondary_index", secondary_cf_opts},
+      {"standalone_index", si_cf_opts},
   };
 
   rocksdb::TransactionDBOptions txn_db_opts;

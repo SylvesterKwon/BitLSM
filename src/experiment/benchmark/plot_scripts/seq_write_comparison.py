@@ -13,7 +13,7 @@ from pathlib import Path
 RESULT_DIR = Path(__file__).parent.parent / "result"
 
 FILENAME_PATTERN = re.compile(
-    r"^(?P<workload>.+?)_(?P<index>bitlsm|no-index|si-lazy|si-composite)"
+    r"^(?P<workload>.+?)_(?P<index>bitlsm|no-index|si-lu|si-ck)"
     r"_n(?P<n>\d+)_schema_(?P<schema>.+?)_a(?P<a>\d+)"
     r"(?:_rho(?P<rho>[\d.]+))?"
     r"\.csv$"
@@ -35,24 +35,24 @@ def parse_filename(filename: str) -> dict | None:
 INDEX_DISPLAY = {
     "no-index": "No-Index",
     "bitlsm": "BitLSM",
-    "si-lazy": "SI-Lazy",
-    "si-composite": "SI-Composite",
+    "si-lu": "SI-LU",
+    "si-ck": "SI-CK",
 }
 
 INDEX_STYLE = {
     "no-index":     {"cmap": plt.cm.Blues,    "linestyle": "-"},
     "bitlsm":       {"cmap": plt.cm.Reds,     "linestyle": "--"},
-    "si-lazy":       {"cmap": plt.cm.Greens,   "linestyle": "-."},
-    "si-composite":  {"cmap": plt.cm.Purples,  "linestyle": ":"},
+    "si-lu":         {"cmap": plt.cm.Greens,   "linestyle": "-."},
+    "si-ck":         {"cmap": plt.cm.Purples,  "linestyle": ":"},
 }
 
-INDEX_ORDER = ["no-index", "bitlsm", "si-lazy", "si-composite"]
+INDEX_ORDER = ["no-index", "bitlsm", "si-lu", "si-ck"]
 
 INDEX_BAR_COLOR = {
     "no-index": "steelblue",
     "bitlsm": "indianred",
-    "si-lazy": "seagreen",
-    "si-composite": "mediumpurple",
+    "si-lu": "seagreen",
+    "si-ck": "mediumpurple",
 }
 
 
