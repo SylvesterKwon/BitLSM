@@ -182,7 +182,11 @@ private:
                                std::vector<rocksdb::PinnableSlice>& out_keys,
                                std::vector<rocksdb::PinnableSlice>& out_values);
 
-  // Get bitmap for given query condition
+  // Get bitmap for a single QueryCondition (leaf node in CNF)
+  roaring::Roaring GetBitmapForSingleCondition(
+      const QueryCondition& cond,
+      std::vector<const roaring::Roaring*>& buf);
+  // Get bitmap for a full query (CNF: AND of OR clauses)
   roaring::Roaring GetBitmapFromQuery(const BitLSMQuery& query);
   // Fill buffer by loading next data block
   void LoadNextBlock();

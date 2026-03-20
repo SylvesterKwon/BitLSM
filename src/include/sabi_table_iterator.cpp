@@ -113,127 +113,138 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
   //      << ")\n";
 }
 
+// Build bitmap for a single QueryCondition (leaf node in CNF)
+roaring::Roaring
+SABITableIterator::GetBitmapForSingleCondition(
+    const QueryCondition& cond, vector<const roaring::Roaring*>& buf) {
+  roaring::Roaring cur_cond_bitmap;
+  const AttrType& cur_attr_type = options_.attr_types[cond.attr_idx];
+
+  uint32_t bitmap_offset = 0;
+  for (uint32_t i = 0; i < cond.attr_idx; ++i)
+    bitmap_offset += sabi_reader_->bitmap_index.bitmap_nums[i];
+
+  if (cur_attr_type == AttrType::CATEGORICAL) {
+    if (cond.op != CompareOp::EQUAL)
+      assert(false);
+    const string& value = std::get<string>(cond.value);
+    vector<pair<string, uint32_t>>& cur_attr_binning_policy =
+        get<vector<pair<string, uint32_t>>>(
+            sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
+    auto it = std::lower_bound(
+        cur_attr_binning_policy.begin(), cur_attr_binning_policy.end(), value,
+        [](const pair<string, uint32_t>& policy_entry, const string& val) {
+          return policy_entry.first < val;
+        });
+    if (it != cur_attr_binning_policy.end() && it->first == value) {
+      uint32_t local_bin_idx = it->second;
+      cur_cond_bitmap =
+          sabi_reader_->bitmap_index.bitmaps[bitmap_offset + local_bin_idx];
+    }
+  } else if (cur_attr_type == AttrType::CONTINUOUS) {
+    const double& value = std::get<double>(cond.value);
+    const vector<double>& boundaries = std::get<vector<double>>(
+        sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
+    uint32_t num_bins = sabi_reader_->bitmap_index.bitmap_nums[cond.attr_idx];
+
+    // Find bin index by value
+    // upper_bound: value보다 큰 첫 번째 경계값의 위치
+    auto it = std::upper_bound(boundaries.begin(), boundaries.end(), value);
+
+    int32_t target_bin_idx;
+    if (it == boundaries.begin()) {
+      // Case A: Given value is smaller than leftmost bin (virtual bin -1)
+      target_bin_idx = -1;
+    } else if (it == boundaries.end()) {
+      // Case B: Given value is larger than rightmost bin (virtual bin N)
+      target_bin_idx = static_cast<int32_t>(num_bins);
+    } else {
+      // Case C: Else
+      target_bin_idx =
+          static_cast<int32_t>(std::distance(boundaries.begin(), it)) - 1;
+    }
+    // Why using virtual bin -1, N?: To unify range logic without complex
+    // branching. e.g., In case of N=10, [10,10]. Range will clamped into
+    // inverted range [10,9]. This means empty set.
+
+    // Set raw range based on operator
+    int32_t start_bin, end_bin;
+    switch (cond.op) {
+    case CompareOp::EQUAL:
+      start_bin = target_bin_idx;
+      end_bin = target_bin_idx;
+      break;
+    case CompareOp::GREATER_EQUAL: // >= value
+    case CompareOp::GREATER:       // > value
+      start_bin = target_bin_idx;
+      end_bin = static_cast<int32_t>(num_bins) - 1;
+      break;
+    case CompareOp::LESS_EQUAL: // <= value
+    case CompareOp::LESS:       // < value
+      start_bin = 0;
+      end_bin = target_bin_idx;
+      break;
+    default:
+      assert(false);
+    }
+    // Clamp range
+    if (start_bin < 0)
+      start_bin = 0;
+    if (static_cast<int32_t>(num_bins) <= end_bin)
+      end_bin = static_cast<int32_t>(num_bins) - 1;
+
+    // Merge bitmap (OR)
+    buf.clear();
+    buf.reserve(end_bin - start_bin + 1);
+    for (int32_t i = start_bin; i <= end_bin; ++i)
+      buf.push_back(
+          &(sabi_reader_->bitmap_index.bitmaps[bitmap_offset + i]));
+    if (!buf.empty()) {
+      cur_cond_bitmap =
+          roaring::Roaring::fastunion(buf.size(), buf.data());
+    }
+  }
+  return cur_cond_bitmap;
+}
+
+// CNF bitmap evaluation: AND of OR clauses
 roaring::Roaring
 SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
   roaring::Roaring result;
-  if (query.conditions.empty())
+  if (query.clause_groups.empty())
     return result;
 
-  bool is_first_condition = true;
+  bool is_first_clause = true;
   vector<const roaring::Roaring*> bitmap_ptrs_buf;
-  for (const auto& cond : query.conditions) {
 
-    // 1. Create bitmap for current query condition
-    roaring::Roaring cur_cond_bitmap;
-    const AttrType& cur_attr_type = options_.attr_types[cond.attr_idx];
-
-    uint32_t bitmap_offset = 0;
-    for (uint32_t i = 0; i < cond.attr_idx; ++i)
-      bitmap_offset += sabi_reader_->bitmap_index.bitmap_nums[i];
-
-    if (cur_attr_type == AttrType::CATEGORICAL) {
-      // We only support EQUAL for categorical type
-      // Maybe support OR clause
-      if (cond.op != CompareOp::EQUAL)
-        assert(false);
-      const string& value = std::get<string>(cond.value);
-      vector<pair<string, uint32_t>>& cur_attr_binning_policy =
-          get<vector<pair<string, uint32_t>>>(
-              sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
-      auto it = std::lower_bound(
-          cur_attr_binning_policy.begin(), cur_attr_binning_policy.end(), value,
-          [](const pair<string, uint32_t>& policy_entry, const string& val) {
-            return policy_entry.first < val;
-          });
-      if (it != cur_attr_binning_policy.end() && it->first == value) {
-        // Found bitmap for given query condition
-        uint32_t local_bin_idx = it->second;
-        cur_cond_bitmap =
-            sabi_reader_->bitmap_index.bitmaps[bitmap_offset + local_bin_idx];
+  for (const auto& clause : query.clause_groups) {
+    // OR within clause: union bitmaps of all conditions
+    roaring::Roaring clause_bitmap;
+    bool is_first_cond = true;
+    for (const auto& cond : clause) {
+      roaring::Roaring cond_bitmap =
+          GetBitmapForSingleCondition(cond, bitmap_ptrs_buf);
+      if (is_first_cond) {
+        clause_bitmap = std::move(cond_bitmap);
+        is_first_cond = false;
       } else {
-        // No bitmap for given query condition, leave it empty bitmap
-        // noop
-      }
-    } else if (cur_attr_type == AttrType::CONTINUOUS) {
-      const double& value = std::get<double>(cond.value);
-      const vector<double>& boundaries = std::get<vector<double>>(
-          sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
-      uint32_t num_bins = sabi_reader_->bitmap_index.bitmap_nums[cond.attr_idx];
-
-      // Find bin index by value
-      // upper_bound: value보다 큰 첫 번째 경계값의 위치
-      auto it = std::upper_bound(boundaries.begin(), boundaries.end(), value);
-
-      int32_t target_bin_idx;
-      if (it == boundaries.begin()) {
-        // Case A: Given value is smaller than leftmost bin (virtual bin -1)
-        target_bin_idx = -1;
-      } else if (it == boundaries.end()) {
-        // Case B: Given value is larger than rightmost bin (virtual bin N)
-        target_bin_idx = static_cast<int32_t>(num_bins);
-      } else {
-        // Case C: Else
-        target_bin_idx =
-            static_cast<int32_t>(std::distance(boundaries.begin(), it)) - 1;
-      }
-      // Why using virtual vin -1, N?: To unify range logic without complex
-      // branching. e.g., In case of N=10, [10,10]. Range will clamped into
-      // inverted range [10,9]. This means empty set.
-
-      // 2. Set raw range based on operator
-      int32_t start_bin, end_bin;
-      switch (cond.op) {
-      case CompareOp::EQUAL:
-        start_bin = target_bin_idx;
-        end_bin = target_bin_idx;
-        break;
-      case CompareOp::GREATER_EQUAL: // >= value
-      case CompareOp::GREATER:       // > value
-        start_bin = target_bin_idx;
-        end_bin = static_cast<int32_t>(num_bins) - 1;
-        break;
-      case CompareOp::LESS_EQUAL: // <= value
-      case CompareOp::LESS:       // < value
-        start_bin = 0;
-        end_bin = target_bin_idx;
-        break;
-
-      default:
-        assert(false);
-      }
-      // Clamp range
-      if (start_bin < 0)
-        start_bin = 0;
-      if (static_cast<int32_t>(num_bins) <= end_bin)
-        end_bin = static_cast<int32_t>(num_bins) - 1;
-
-      // 3. Merge bitmap (OR)
-      uint32_t num_bitmaps = end_bin - start_bin + 1;
-      bitmap_ptrs_buf.clear();
-      bitmap_ptrs_buf.reserve(num_bitmaps);
-      for (int32_t i = start_bin; i <= end_bin; ++i)
-        bitmap_ptrs_buf.push_back(
-            &(sabi_reader_->bitmap_index.bitmaps[bitmap_offset + i]));
-      if (!bitmap_ptrs_buf.empty()) {
-        cur_cond_bitmap = roaring::Roaring::fastunion(bitmap_ptrs_buf.size(),
-                                                      bitmap_ptrs_buf.data());
+        clause_bitmap |= cond_bitmap; // OR
       }
     }
 
-    if (is_first_condition) {
-      result = cur_cond_bitmap;
-      is_first_condition = false;
+    // AND between clauses
+    if (is_first_clause) {
+      result = std::move(clause_bitmap);
+      is_first_clause = false;
     } else {
-      result &= cur_cond_bitmap;
+      result &= clause_bitmap;
     }
 
-    // Optimization: If result bitmap is already empty set, return
-    // immediately
     if (result.isEmpty())
       return result;
   }
 
-  // 4. Filter tombstone
+  // Filter tombstones
   if (!sabi_reader_->bitmap_index.tombstone_bitmap.isEmpty())
     result -= sabi_reader_->bitmap_index.tombstone_bitmap;
 

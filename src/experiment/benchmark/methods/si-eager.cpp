@@ -102,21 +102,21 @@ class SIEagerExperiment
 
     auto GetPKList = [this](const benchmark::SILookup& lookup) -> vector<string> {
       if (lookup.type == benchmark::SILookupType::kPointLookup) {
-        // Categorical equality: point Get
         ReadOptions ro;
-        string si_value_str;
-        auto s = db_.txn_db->Get(ro, db_.cf_handles[1],
-                                  GetInternalSIKey(lookup.attr_idx, lookup.sk_value),
-                                  &si_value_str);
-        if (s.IsNotFound()) return {};
-
-        vector<Slice> si_value;
-        Slice si_slice(si_value_str);
-        DecodeIndexValue(si_slice, &si_value);
-
-        vector<string> result(si_value.size());
-        for (size_t i = 0; i < si_value.size(); ++i)
-          result[i] = si_value[i].ToString();
+        vector<string> result;
+        for (const auto& val : lookup.sk_values) {
+          string si_value_str;
+          auto s = db_.txn_db->Get(ro, db_.cf_handles[1],
+                                    GetInternalSIKey(lookup.attr_idx, val),
+                                    &si_value_str);
+          if (s.IsNotFound()) continue;
+          vector<Slice> si_value;
+          Slice si_slice(si_value_str);
+          DecodeIndexValue(si_slice, &si_value);
+          for (auto& pk : si_value)
+            result.push_back(pk.ToString());
+        }
+        std::sort(result.begin(), result.end());
         return result;
       } else {
         // Continuous range scan: iterator over SI entries

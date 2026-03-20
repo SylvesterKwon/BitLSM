@@ -8,6 +8,14 @@
     "schema": [
       "default_a16.json"
     ],
+    "expected_selectivity": [
+      0.1,
+      0.01,
+      0.001,
+      0.0001,
+      0.00001,
+      0.000001
+    ],
     "query_attr_indices": [
       "0",
       "0,2",

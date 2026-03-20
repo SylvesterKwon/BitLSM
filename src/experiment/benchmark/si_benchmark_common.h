@@ -33,7 +33,8 @@ struct SILookup {
   bit_lsm::AttrType attr_type;
 
   // For kPointLookup (CATEGORICAL + EQUAL):
-  std::string sk_value;
+  // Multiple values represent OR within a clause (e.g., attr=1 OR attr=3).
+  std::vector<std::string> sk_values;
 
   // For kRangeScan (CONTINUOUS + range ops):
   std::optional<double> lower_bound;
@@ -54,53 +55,67 @@ inline SIQueryPlan MapQueryToSILookups(const bit_lsm::BitLSMQuery& query,
   // Group CONTINUOUS conditions by attr_idx to coalesce bounds
   std::unordered_map<uint32_t, SILookup> range_map;
 
-  for (const auto& cond : query.conditions) {
-    if (options.attr_types[cond.attr_idx] == bit_lsm::AttrType::CATEGORICAL) {
-      if (cond.op == bit_lsm::CompareOp::EQUAL) {
+  // Process each clause (AND between clauses, OR within a clause).
+  for (const auto& clause : query.clause_groups) {
+    // Check if this clause is a pure categorical OR on a single attr
+    // (all conditions are EQUAL on the same categorical attr).
+    bool pure_cat_or = !clause.empty();
+    uint32_t cat_attr = clause.empty() ? 0 : clause[0].attr_idx;
+    for (const auto& cond : clause) {
+      if (cond.attr_idx != cat_attr ||
+          cond.op != bit_lsm::CompareOp::EQUAL ||
+          options.attr_types[cond.attr_idx] != bit_lsm::AttrType::CATEGORICAL) {
+        pure_cat_or = false;
+        break;
+      }
+    }
+
+    if (pure_cat_or) {
+      // Single multi-value point lookup (OR union handled in GetPKList)
+      SILookup lk;
+      lk.attr_idx = cat_attr;
+      lk.type = SILookupType::kPointLookup;
+      lk.attr_type = bit_lsm::AttrType::CATEGORICAL;
+      for (const auto& cond : clause)
+        lk.sk_values.push_back(std::get<std::string>(cond.value));
+      plan.si_lookups.push_back(std::move(lk));
+    } else if (clause.size() == 1) {
+      // Single-condition clause (common case: AND-only queries)
+      const auto& cond = clause[0];
+      if (options.attr_types[cond.attr_idx] == bit_lsm::AttrType::CONTINUOUS) {
+        auto& lk = range_map[cond.attr_idx];
+        lk.attr_idx = cond.attr_idx;
+        lk.type = SILookupType::kRangeScan;
+        lk.attr_type = bit_lsm::AttrType::CONTINUOUS;
+        double val = std::get<double>(cond.value);
+        switch (cond.op) {
+        case bit_lsm::CompareOp::GREATER_EQUAL:
+          lk.lower_bound = val; lk.lower_inclusive = true; break;
+        case bit_lsm::CompareOp::GREATER:
+          lk.lower_bound = val; lk.lower_inclusive = false; break;
+        case bit_lsm::CompareOp::LESS_EQUAL:
+          lk.upper_bound = val; lk.upper_inclusive = true; break;
+        case bit_lsm::CompareOp::LESS:
+          lk.upper_bound = val; lk.upper_inclusive = false; break;
+        case bit_lsm::CompareOp::EQUAL:
+          lk.lower_bound = val; lk.lower_inclusive = true;
+          lk.upper_bound = val; lk.upper_inclusive = true; break;
+        }
+      } else if (cond.op == bit_lsm::CompareOp::EQUAL) {
         SILookup lk;
         lk.attr_idx = cond.attr_idx;
         lk.type = SILookupType::kPointLookup;
         lk.attr_type = bit_lsm::AttrType::CATEGORICAL;
-        lk.sk_value = std::get<std::string>(cond.value);
+        lk.sk_values.push_back(std::get<std::string>(cond.value));
         plan.si_lookups.push_back(std::move(lk));
       } else {
-        plan.post_filter_query.conditions.push_back(cond);
+        plan.post_filter_query.clause_groups.push_back(clause);
       }
     } else {
-      // CONTINUOUS: coalesce into range bounds
-      auto& lk = range_map[cond.attr_idx];
-      lk.attr_idx = cond.attr_idx;
-      lk.type = SILookupType::kRangeScan;
-      lk.attr_type = bit_lsm::AttrType::CONTINUOUS;
-
-      double val = std::get<double>(cond.value);
-      switch (cond.op) {
-      case bit_lsm::CompareOp::GREATER_EQUAL:
-        lk.lower_bound = val;
-        lk.lower_inclusive = true;
-        break;
-      case bit_lsm::CompareOp::GREATER:
-        lk.lower_bound = val;
-        lk.lower_inclusive = false;
-        break;
-      case bit_lsm::CompareOp::LESS_EQUAL:
-        lk.upper_bound = val;
-        lk.upper_inclusive = true;
-        break;
-      case bit_lsm::CompareOp::LESS:
-        lk.upper_bound = val;
-        lk.upper_inclusive = false;
-        break;
-      case bit_lsm::CompareOp::EQUAL:
-        // exact match on continuous: both bounds equal, inclusive
-        lk.lower_bound = val;
-        lk.lower_inclusive = true;
-        lk.upper_bound = val;
-        lk.upper_inclusive = true;
-        break;
-      }
+      // Mixed clause (different attrs or non-EQUAL ops) → post-filter
+      plan.post_filter_query.clause_groups.push_back(clause);
     }
-  }
+  } // end for (clause)
 
   for (auto& [_, lk] : range_map)
     plan.si_lookups.push_back(std::move(lk));
@@ -243,7 +258,7 @@ inline ReadResult ScanByIndexMerge(
 
     for (size_t i = 0; i < merged.size(); ++i) {
       if (statuses[i].ok()) {
-        if (plan.post_filter_query.conditions.empty() ||
+        if (plan.post_filter_query.clause_groups.empty() ||
             plan.post_filter_query.CheckCondition(
                 rocksdb::Slice(values[i].data(), values[i].size()), options))
           matched++;
@@ -276,10 +291,17 @@ inline ReadResult ScanByPostFiltering(
   // attr
   uint32_t first_attr = plan.si_lookups[0].attr_idx;
   bit_lsm::BitLSMQuery filter_query;
-  for (const auto& cond : original_query.conditions) {
-    if (cond.attr_idx == first_attr)
-      continue;
-    filter_query.conditions.push_back(cond);
+  for (const auto& clause : original_query.clause_groups) {
+    // Keep clauses that don't solely target the first SI lookup's attr
+    bool dominated = true;
+    for (const auto& cond : clause) {
+      if (cond.attr_idx != first_attr) {
+        dominated = false;
+        break;
+      }
+    }
+    if (!dominated)
+      filter_query.clause_groups.push_back(clause);
   }
 
   uint64_t matched = 0;
@@ -296,7 +318,7 @@ inline ReadResult ScanByPostFiltering(
 
     for (size_t i = 0; i < pk_list.size(); ++i) {
       if (statuses[i].ok()) {
-        if (filter_query.conditions.empty() ||
+        if (filter_query.clause_groups.empty() ||
             filter_query.CheckCondition(
                 rocksdb::Slice(values[i].data(), values[i].size()), options))
           matched++;

@@ -93,25 +93,25 @@ class SICKExperiment
 
     auto GetPKList = [this](const benchmark::SILookup& lookup) -> vector<string> {
       if (lookup.type == benchmark::SILookupType::kPointLookup) {
-        // Categorical: prefix seek (same as before)
         ReadOptions si_ro;
         si_ro.auto_prefix_mode = true;
         si_ro.prefix_same_as_start = true;
         si_ro.total_order_seek = false;
-
-        string resized_sk = lookup.sk_value;
-        resized_sk.resize(si_prefix_length_, ' ');
-        string seek_key = GetInternalSIKey(lookup.attr_idx, resized_sk);
         uint32_t prefix_size = idx_no_prefix_size_ + si_prefix_length_;
 
-        auto* it = db_.txn_db->NewIterator(si_ro, db_.cf_handles[1]);
         vector<string> pk_list;
-        for (it->Seek(seek_key); it->Valid(); it->Next()) {
-          auto key = it->key();
-          pk_list.push_back(key.ToString().substr(prefix_size,
-                                                   key.size() - prefix_size));
+        for (const auto& val : lookup.sk_values) {
+          string resized_sk = val;
+          resized_sk.resize(si_prefix_length_, ' ');
+          string seek_key = GetInternalSIKey(lookup.attr_idx, resized_sk);
+          auto* it = db_.txn_db->NewIterator(si_ro, db_.cf_handles[1]);
+          for (it->Seek(seek_key); it->Valid(); it->Next()) {
+            auto key = it->key();
+            pk_list.push_back(key.ToString().substr(prefix_size,
+                                                     key.size() - prefix_size));
+          }
+          delete it;
         }
-        delete it;
         std::sort(pk_list.begin(), pk_list.end());
         return pk_list;
       } else {

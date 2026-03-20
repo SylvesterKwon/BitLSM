@@ -94,19 +94,47 @@ def cartesian_combinations(params: dict) -> list:
     return [dict(zip(keys, combo)) for combo in product(*values)]
 
 
-def resolve_expected_selectivity(combo: dict) -> dict:
+def _load_schema_attrs(schema_path: str) -> list:
+    """Load attr definitions from a schema JSON file."""
+    with open(schema_path) as f:
+        return json.load(f)["attrs"]
+
+
+def resolve_expected_selectivity(combo: dict) -> dict | None:
     """Convert expected_selectivity (overall) to per-attr selectivity for the binary.
 
     If 'expected_selectivity' is present, compute per-attr selectivity as
     expected_selectivity^(1/k) where k = number of query attributes.
-    Returns a new combo dict with 'selectivity' replacing 'expected_selectivity'.
+
+    For categorical attributes, the actual per-attr selectivity is quantized to
+    round(per_attr_sel * cardinality) / cardinality. If the resulting overall
+    selectivity deviates from expected by more than 2x, returns None (skip).
+
+    Returns a new combo dict with 'selectivity' replacing 'expected_selectivity',
+    or None if the combo should be skipped.
     """
     if "expected_selectivity" not in combo:
         return combo
     resolved = dict(combo)
     expected_sel = resolved.pop("expected_selectivity")
-    k = len(str(resolved.get("query_attr_indices", "0")).split(","))
+    indices = [int(x) for x in str(resolved.get("query_attr_indices", "0")).split(",")]
+    k = len(indices)
     per_attr_sel = expected_sel ** (1.0 / k)
+
+    schema_path = resolved.get("schema", "")
+    if schema_path and os.path.exists(schema_path):
+        attrs = _load_schema_attrs(schema_path)
+        actual_sel = 1.0
+        for idx in indices:
+            if idx < len(attrs) and attrs[idx].get("type") == "categorical":
+                card = attrs[idx].get("cardinality", 10)
+                actual_per = max(1, round(per_attr_sel * card)) / card
+            else:
+                actual_per = per_attr_sel
+            actual_sel *= actual_per
+        if actual_sel > expected_sel * 2 or actual_sel < expected_sel / 2:
+            return None
+
     resolved["selectivity"] = per_attr_sel
     return resolved
 
@@ -244,8 +272,12 @@ def run(config_path: str, dry_run: bool, method_filter: list,
     os.makedirs(log_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_file_path = os.path.join(log_dir, f"{timestamp}_{exp_label}.log")
-    log_file = open(log_file_path, "w")
-    sys.stdout = TeeOutput(log_file)
+    try:
+        log_file = open(log_file_path, "w")
+        sys.stdout = TeeOutput(log_file)
+    except PermissionError:
+        log_file = None
+        print(f"[warn] cannot write log to {log_file_path}, logging to stdout only")
 
     try:
         if method_filter:
@@ -293,6 +325,9 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                 db_combo = {k: v for k, v in combo.items() if k in DB_PARAMS}
                 db_path = f"{db_path_base}/{name}/{encode_params(db_combo)}"
                 cmd_combo = resolve_expected_selectivity(combo)
+                if cmd_combo is None:
+                    print(f"[{global_idx}/{total_runs}] [{name}] SKIP: actual selectivity deviates >2x from expected")
+                    continue
                 cmd     = build_command(binary, exp_label, exp_type, db_path, output_dir, cmd_combo)
 
                 print(f"[{global_idx}/{total_runs}] [{name}] {' '.join(cmd)}")
@@ -363,7 +398,8 @@ def run(config_path: str, dry_run: bool, method_filter: list,
 
         print(f"Log saved to: {log_file_path}")
     finally:
-        log_file.close()
+        if log_file:
+            log_file.close()
         sys.stdout = sys.__stdout__
 
 

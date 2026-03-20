@@ -2,35 +2,35 @@
   "attrs": [
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     }
   ],
   "payload_bytes": 32

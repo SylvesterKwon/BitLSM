@@ -34,7 +34,7 @@ Schema files live in `schema/` and define the DB's physical structure:
 ```json
 {
   "attrs": [
-    { "type": "categorical", "cardinality": 100 },
+    { "type": "categorical", "cardinality": 1000 },
     { "type": "continuous" },
     { "type": "continuous", "min": -1.0, "max": 1.0 }
   ],

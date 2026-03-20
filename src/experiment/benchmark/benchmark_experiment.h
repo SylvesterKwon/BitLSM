@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -68,6 +69,9 @@ inline string schema_stem(const string& path) {
   return (dot == string::npos) ? fname : fname.substr(0, dot);
 }
 
+// selectivity drives both continuous (range width) and categorical (number of
+// OR'd values). For categorical attr with cardinality C, picks
+// K = max(1, round(selectivity * C)) distinct values as an OR clause.
 inline BitLSMQuery build_read_query(const Schema& schema,
                                     const vector<uint32_t>& query_indices,
                                     double selectivity) {
@@ -80,11 +84,23 @@ inline BitLSMQuery build_read_query(const Schema& schema,
       uniform_real_distribution<double> dist(schema.range_min[idx],
                                              schema.range_max[idx] - width);
       double lo = dist(gen);
-      query.conditions.push_back({idx, CompareOp::GREATER_EQUAL, lo});
-      query.conditions.push_back({idx, CompareOp::LESS, lo + width});
+      query.clause_groups.push_back(
+          {{idx, CompareOp::GREATER_EQUAL, lo}});
+      query.clause_groups.push_back(
+          {{idx, CompareOp::LESS, lo + width}});
     } else {
-      uniform_int_distribution<int> dist(0, schema.cardinalities[idx] - 1);
-      query.conditions.push_back({idx, CompareOp::EQUAL, to_string(dist(gen))});
+      uint32_t card = schema.cardinalities[idx];
+      uint32_t k = std::max(1u, static_cast<uint32_t>(std::round(selectivity * card)));
+      k = std::min(k, card);
+      uniform_int_distribution<int> cat_dist(0, card - 1);
+      bit_lsm::OrClause clause;
+      std::set<int> chosen;
+      while (chosen.size() < k) {
+        int v = cat_dist(gen);
+        if (chosen.insert(v).second)
+          clause.push_back({idx, CompareOp::EQUAL, to_string(v)});
+      }
+      query.clause_groups.push_back(std::move(clause));
     }
   }
   return query;
@@ -149,25 +165,15 @@ class BenchmarkExperiment {
         }
       }
 
-      double selectivity = 0.0;
-      bool has_continuous = false;
-      for (uint32_t idx : query_indices) {
-        if (schema.options.attr_types[idx] == AttrType::CONTINUOUS) {
-          has_continuous = true;
-          break;
-        }
+      if (result.count("selectivity") == 0) {
+        cerr << "ERROR: --selectivity required for read_seq\n";
+        self().Close();
+        return 1;
       }
-      if (has_continuous) {
-        if (result.count("selectivity") == 0) {
-          cerr << "ERROR: --selectivity required when querying continuous "
-                  "attrs\n";
-          self().Close();
-          return 1;
-        }
-        selectivity = result["selectivity"].as<double>();
-      }
+      double selectivity = result["selectivity"].as<double>();
 
       BitLSMQuery query = build_read_query(schema, query_indices, selectivity);
+      cout << "QUERY: " << query.ToString() << "\n";
       ReadResult rr = self().Scan(query, n);
       self().Close();
 

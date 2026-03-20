@@ -2,56 +2,56 @@
   "attrs": [
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "continuous"
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "continuous"
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "continuous"
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "continuous"
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "continuous"
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "continuous"
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "continuous"
     },
     {
       "type": "categorical",
-      "cardinality": 10
+      "cardinality": 100
     },
     {
       "type": "continuous"
