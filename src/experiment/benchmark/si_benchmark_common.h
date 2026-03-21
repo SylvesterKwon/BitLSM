@@ -243,25 +243,31 @@ inline ReadResult ScanByIndexMerge(
       break;
   }
 
-  // MultiGet from primary CF
+  // MultiGet from primary CF (batched)
   uint64_t matched = 0;
   if (!merged.empty()) {
-    std::vector<rocksdb::Slice> keys(merged.size());
-    for (size_t i = 0; i < merged.size(); ++i)
-      keys[i] = rocksdb::Slice(merged[i]);
-
-    std::vector<rocksdb::PinnableSlice> values(merged.size());
-    std::vector<rocksdb::Status> statuses(merged.size());
+    static constexpr size_t kBatchSize = 1000000;
     rocksdb::ReadOptions ro;
-    txn_db->MultiGet(ro, cf_handles[0], merged.size(), keys.data(),
-                     values.data(), statuses.data());
 
-    for (size_t i = 0; i < merged.size(); ++i) {
-      if (statuses[i].ok()) {
-        if (plan.post_filter_query.clause_groups.empty() ||
-            plan.post_filter_query.CheckCondition(
-                rocksdb::Slice(values[i].data(), values[i].size()), options))
-          matched++;
+    for (size_t offset = 0; offset < merged.size(); offset += kBatchSize) {
+      size_t batch_len = std::min(kBatchSize, merged.size() - offset);
+
+      std::vector<rocksdb::Slice> keys(batch_len);
+      for (size_t i = 0; i < batch_len; ++i)
+        keys[i] = rocksdb::Slice(merged[offset + i]);
+
+      std::vector<rocksdb::PinnableSlice> values(batch_len);
+      std::vector<rocksdb::Status> statuses(batch_len);
+      txn_db->MultiGet(ro, cf_handles[0], batch_len, keys.data(),
+                       values.data(), statuses.data());
+
+      for (size_t i = 0; i < batch_len; ++i) {
+        if (statuses[i].ok()) {
+          if (plan.post_filter_query.clause_groups.empty() ||
+              plan.post_filter_query.CheckCondition(
+                  rocksdb::Slice(values[i].data(), values[i].size()), options))
+            matched++;
+        }
       }
     }
   }
@@ -306,22 +312,28 @@ inline ReadResult ScanByPostFiltering(
 
   uint64_t matched = 0;
   if (!pk_list.empty()) {
-    std::vector<rocksdb::Slice> keys(pk_list.size());
-    for (size_t i = 0; i < pk_list.size(); ++i)
-      keys[i] = rocksdb::Slice(pk_list[i]);
-
-    std::vector<rocksdb::PinnableSlice> values(pk_list.size());
-    std::vector<rocksdb::Status> statuses(pk_list.size());
+    static constexpr size_t kBatchSize = 1000000;
     rocksdb::ReadOptions ro;
-    txn_db->MultiGet(ro, cf_handles[0], pk_list.size(), keys.data(),
-                     values.data(), statuses.data());
 
-    for (size_t i = 0; i < pk_list.size(); ++i) {
-      if (statuses[i].ok()) {
-        if (filter_query.clause_groups.empty() ||
-            filter_query.CheckCondition(
-                rocksdb::Slice(values[i].data(), values[i].size()), options))
-          matched++;
+    for (size_t offset = 0; offset < pk_list.size(); offset += kBatchSize) {
+      size_t batch_len = std::min(kBatchSize, pk_list.size() - offset);
+
+      std::vector<rocksdb::Slice> keys(batch_len);
+      for (size_t i = 0; i < batch_len; ++i)
+        keys[i] = rocksdb::Slice(pk_list[offset + i]);
+
+      std::vector<rocksdb::PinnableSlice> values(batch_len);
+      std::vector<rocksdb::Status> statuses(batch_len);
+      txn_db->MultiGet(ro, cf_handles[0], batch_len, keys.data(),
+                       values.data(), statuses.data());
+
+      for (size_t i = 0; i < batch_len; ++i) {
+        if (statuses[i].ok()) {
+          if (filter_query.clause_groups.empty() ||
+              filter_query.CheckCondition(
+                  rocksdb::Slice(values[i].data(), values[i].size()), options))
+            matched++;
+        }
       }
     }
   }
