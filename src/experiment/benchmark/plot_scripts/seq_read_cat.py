@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Plot seq_read_cat_qa results: read performance by number of query attributes.
-Reads directly from result/seq_read_cat_qa.csv.
+Plot seq_read_cat results: read performance by number of query attributes.
+Reads directly from result/seq_read_cat.csv.
+Generates one figure per plot type with subplots side-by-side per schema (cardinality).
 """
 
+import re
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-CSV_PATH = Path(__file__).parent.parent / "result" / "seq_read_cat_qa.csv"
+CSV_PATH = Path(__file__).parent.parent / "result" / "seq_read_cat.csv"
 OUTPUT_DIR = Path(__file__).parent.parent / "result" / "plots"
 
 ENGINE_LABELS = {
@@ -38,6 +40,15 @@ ENGINE_MARKERS = {
 }
 
 
+MIN_EXPECTED_MATCHES = 1
+
+
+def _parse_cardinality(schema: str) -> int:
+    """Extract cardinality from schema name like 'default_a16_c1000'."""
+    m = re.search(r"_c(\d+)", schema)
+    return int(m.group(1)) if m else 0
+
+
 def load_data() -> pd.DataFrame:
     df = pd.read_csv(CSV_PATH)
     df["time_sec"] = df["time_elapsed_ms"] / 1000.0
@@ -48,12 +59,20 @@ def load_data() -> pd.DataFrame:
         else r["method"],
         axis=1,
     )
+    # Filter out combinations where expected matches ≈ 0
+    def _has_enough_matches(row):
+        c = _parse_cardinality(row["schema"])
+        if c == 0:
+            return True
+        expected = row["n"] * (1.0 / c) ** row["query_attr_num"]
+        return expected >= MIN_EXPECTED_MATCHES
+
+    df = df[df.apply(_has_enough_matches, axis=1)].reset_index(drop=True)
     return df
 
 
-def plot_time_by_qa(df: pd.DataFrame):
-    """Line chart: read time vs query_attr_num, comparing methods."""
-    fig, ax = plt.subplots(figsize=(8, 5))
+def plot_time_by_qa(df: pd.DataFrame, ax: plt.Axes, schema: str, show_legend: bool):
+    """Line chart on ax: read time vs query_attr_num, comparing methods."""
     methods = [m for m in ENGINE_LABELS if m in df["method_key"].unique()]
 
     for method in methods:
@@ -73,21 +92,18 @@ def plot_time_by_qa(df: pd.DataFrame):
                 ha="center", fontsize=7,
             )
 
-    ax.set_title("Sequential Read Time by Query Attribute Count (Categorical)", fontsize=13)
-    ax.set_xlabel("# Query Attributes", fontsize=11)
-    ax.set_ylabel("Read Time (sec)", fontsize=11)
+    ax.set_title(schema, fontsize=12)
+    ax.set_xlabel("# Query Attributes", fontsize=10)
+    ax.set_ylabel("Read Time (sec)", fontsize=10)
     ax.set_xticks(sorted(df["query_attr_num"].unique()))
     ax.set_ylim(bottom=0)
-    ax.legend(fontsize=9)
+    if show_legend:
+        ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(OUTPUT_DIR / "seq_read_cat_qa_time_by_qa.png", dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print("Saved: seq_read_cat_qa_time_by_qa.png")
 
 
-def plot_speedup_by_qa(df: pd.DataFrame):
-    """Bar chart: speedup ratio (no_index_time / method_time) by query_attr_num."""
+def plot_speedup_by_qa(df: pd.DataFrame, ax: plt.Axes, schema: str, show_legend: bool):
+    """Bar chart on ax: speedup ratio (no_index_time / method_time) by query_attr_num."""
     qa_nums = sorted(df["query_attr_num"].unique())
     indexed_methods = [m for m in ENGINE_LABELS if m != "no-index" and m in df["method_key"].unique()]
 
@@ -96,8 +112,6 @@ def plot_speedup_by_qa(df: pd.DataFrame):
     n_methods = len(indexed_methods)
     bar_width = 0.8 / max(n_methods, 1)
     x = np.arange(len(qa_nums))
-
-    fig, ax = plt.subplots(figsize=(10, 5))
 
     for bar_idx, method in enumerate(indexed_methods):
         mdata = df[df["method_key"] == method].set_index("query_attr_num")
@@ -129,30 +143,53 @@ def plot_speedup_by_qa(df: pd.DataFrame):
                 )
 
     ax.axhline(y=1.0, color="gray", linestyle="--", linewidth=1, alpha=0.7)
-    ax.set_xlabel("# Query Attributes", fontsize=12)
-    ax.set_ylabel("Speedup (No-Index / Method)", fontsize=12)
-    ax.set_title("Read Speedup by Query Attribute Count (Categorical)", fontsize=13)
+    ax.set_title(schema, fontsize=12)
+    ax.set_xlabel("# Query Attributes", fontsize=10)
+    ax.set_ylabel("Speedup (No-Index / Method)", fontsize=10)
     ax.set_xticks(x)
     ax.set_xticklabels([str(q) for q in qa_nums])
-    ax.legend(fontsize=9)
+    if show_legend:
+        ax.legend(fontsize=8)
     ax.grid(True, axis="y", alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(OUTPUT_DIR / "seq_read_cat_qa_speedup.png", dpi=150)
-    plt.close(fig)
-    print("Saved: seq_read_cat_qa_speedup.png")
 
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     df = load_data()
+    schemas = sorted(df["schema"].unique())
+    n = len(schemas)
     print(f"Loaded {len(df)} rows from {CSV_PATH.name}")
     print(f"  Methods: {df['method_key'].unique().tolist()}")
+    print(f"  Schemas: {schemas}")
     print(f"  Query attr nums: {sorted(df['query_attr_num'].unique())}")
     print()
 
-    plot_time_by_qa(df)
-    plot_speedup_by_qa(df)
+    # Time plot: one row, n columns
+    fig1, axes1 = plt.subplots(1, n, figsize=(7 * n, 5), sharey=True)
+    if n == 1:
+        axes1 = [axes1]
+    for i, schema in enumerate(schemas):
+        sdf = df[df["schema"] == schema]
+        plot_time_by_qa(sdf, axes1[i], schema, show_legend=(i == n - 1))
+    fig1.suptitle("Sequential Read Time by Query Attribute Count (Categorical)", fontsize=14, y=1.02)
+    fig1.tight_layout()
+    fig1.savefig(OUTPUT_DIR / "seq_read_cat_time_by_qa.png", dpi=150, bbox_inches="tight")
+    plt.close(fig1)
+    print("Saved: seq_read_cat_time_by_qa.png")
+
+    # Speedup plot: one row, n columns
+    fig2, axes2 = plt.subplots(1, n, figsize=(7 * n, 5), sharey=True)
+    if n == 1:
+        axes2 = [axes2]
+    for i, schema in enumerate(schemas):
+        sdf = df[df["schema"] == schema]
+        plot_speedup_by_qa(sdf, axes2[i], schema, show_legend=(i == n - 1))
+    fig2.suptitle("Read Speedup by Query Attribute Count (Categorical)", fontsize=14, y=1.02)
+    fig2.tight_layout()
+    fig2.savefig(OUTPUT_DIR / "seq_read_cat_speedup.png", dpi=150, bbox_inches="tight")
+    plt.close(fig2)
+    print("Saved: seq_read_cat_speedup.png")
 
     print(f"\nAll plots saved to: {OUTPUT_DIR}")
 

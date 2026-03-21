@@ -1,0 +1,40 @@
+{
+  "exp_type": "write_seq",
+  "db_path_base": "/scratch/benchmark",
+  "common_params": {
+    "n": [
+      100000000
+    ],
+    "schema": [
+      "default_a16_c10.json",
+      "default_a16_c100.json",
+      "default_a16_c1000.json"
+    ]
+  },
+  "methods": [
+    {
+      "name": "no-index",
+      "binary": "build/bin/no-index",
+      "params": {}
+    },
+    {
+      "name": "bitlsm",
+      "binary": "build/bin/bit-lsm",
+      "params": {
+        "rho": [
+          0.1
+        ]
+      }
+    },
+    {
+      "name": "si-lu",
+      "binary": "build/bin/si-lu",
+      "params": {}
+    },
+    {
+      "name": "si-ck",
+      "binary": "build/bin/si-ck",
+      "params": {}
+    }
+  ]
+}

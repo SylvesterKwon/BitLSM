@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Plot seq_read_cont_qa results: read performance by number of query attributes.
-Reads directly from result/seq_read_cont_qa.csv.
+Plot seq_read_cont results: read performance by number of query attributes.
+Reads directly from result/seq_read_cont.csv.
 """
 
 import pandas as pd
@@ -10,7 +10,7 @@ import matplotlib.ticker as ticker
 import numpy as np
 from pathlib import Path
 
-CSV_PATH = Path(__file__).parent.parent / "result" / "seq_read_cont_qa.csv"
+CSV_PATH = Path(__file__).parent.parent / "result" / "seq_read_cont.csv"
 OUTPUT_DIR = Path(__file__).parent.parent / "result" / "plots"
 
 ENGINE_LABELS = {
@@ -97,9 +97,9 @@ def plot_time_by_qa_per_selectivity(df: pd.DataFrame):
 
     fig.suptitle("Sequential Read Time by Query Attribute Count", fontsize=14, y=1.01)
     fig.tight_layout()
-    fig.savefig(OUTPUT_DIR / "seq_read_cont_qa_time_by_qa.png", dpi=150, bbox_inches="tight")
+    fig.savefig(OUTPUT_DIR / "seq_read_cont_time_by_qa.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print("Saved: seq_read_cont_qa_time_by_qa.png")
+    print("Saved: seq_read_cont_time_by_qa.png")
 
 
 def plot_speedup_by_qa(df: pd.DataFrame):
@@ -165,9 +165,9 @@ def plot_speedup_by_qa(df: pd.DataFrame):
 
     fig.suptitle("Read Speedup by Query Attribute Count", fontsize=14, y=1.01)
     fig.tight_layout()
-    fig.savefig(OUTPUT_DIR / "seq_read_cont_qa_speedup.png", dpi=150, bbox_inches="tight")
+    fig.savefig(OUTPUT_DIR / "seq_read_cont_speedup.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print("Saved: seq_read_cont_qa_speedup.png")
+    print("Saved: seq_read_cont_speedup.png")
 
 
 def plot_time_by_selectivity_per_qa(df: pd.DataFrame):
@@ -202,9 +202,9 @@ def plot_time_by_selectivity_per_qa(df: pd.DataFrame):
 
     fig.suptitle("Read Time by Selectivity (per Query Attribute Count)", fontsize=14, y=1.01)
     fig.tight_layout()
-    fig.savefig(OUTPUT_DIR / "seq_read_cont_qa_time_by_sel.png", dpi=150, bbox_inches="tight")
+    fig.savefig(OUTPUT_DIR / "seq_read_cont_time_by_sel.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print("Saved: seq_read_cont_qa_time_by_sel.png")
+    print("Saved: seq_read_cont_time_by_sel.png")
 
 
 def main():
