@@ -118,21 +118,21 @@ Outputs: `build/bin/no-index`, `build/bin/bit-lsm`
 # Write — No-Index RocksDB
 ./build/bin/no-index \
   --exp_label seq_write --exp_type write_seq \
-  -n 100000000 --schema schema/default_a16.json \
+  -n 100000000 --schema schema/default_a16_c100.json \
   -d /scratch/no-index-exp \
   -o src/experiment/benchmark/result
 
 # Write — BitLSM
 ./build/bin/bit-lsm \
   --exp_label seq_write --exp_type write_seq \
-  -n 100000000 --schema schema/default_a16.json --rho 0.1 \
+  -n 100000000 --schema schema/default_a16_c100.json --rho 0.1 \
   -d /scratch/bitlsm-exp \
   -o src/experiment/benchmark/result
 
 # Read — No-Index RocksDB (full scan)
 ./build/bin/no-index \
   --exp_label seq_read_continuous --exp_type read_seq \
-  -n 100000000 --schema schema/default_a16.json \
+  -n 100000000 --schema schema/default_a16_c100.json \
   --selectivity 0.01 --query_attr_indices 1,3 \
   -d /scratch/no-index-exp \
   -o src/experiment/benchmark/result
@@ -140,7 +140,7 @@ Outputs: `build/bin/no-index`, `build/bin/bit-lsm`
 # Read — BitLSM (bitmap-indexed scan)
 ./build/bin/bit-lsm \
   --exp_label seq_read_continuous --exp_type read_seq \
-  -n 100000000 --schema schema/default_a16.json --rho 0.1 \
+  -n 100000000 --schema schema/default_a16_c100.json --rho 0.1 \
   --selectivity 0.01 --query_attr_indices 1,3 \
   -d /scratch/bitlsm-exp \
   -o src/experiment/benchmark/result
@@ -264,7 +264,7 @@ sudo python3 src/experiment/run.py \
 for rho in 0.05 0.1 0.2 0.5; do
   ./build/bin/bit-lsm \
     --exp_type write_seq -n 100000000 \
-    --schema src/experiment/benchmark/schema/default_a16.json \
+    --schema src/experiment/benchmark/schema/default_a16_c100.json \
     --rho $rho \
     -d /scratch/bitlsm-rho$rho \
     -o src/experiment/benchmark/result
@@ -274,7 +274,7 @@ done
 for s in 0.1 0.01 0.001; do
   ./build/bin/no-index \
     --exp_type read_seq -n 100000000 \
-    --schema src/experiment/benchmark/schema/default_a16.json \
+    --schema src/experiment/benchmark/schema/default_a16_c100.json \
     --selectivity $s --query_attr_indices 1,3 \
     -d /scratch/no-index-a16 \
     -o src/experiment/benchmark/result

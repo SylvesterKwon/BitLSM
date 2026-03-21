@@ -39,7 +39,7 @@ Values are lists; runner computes cartesian product. `schema` values are filenam
   "exp_label": "...",
   "exp_type": "write_seq",
   "db_path_base": "/scratch",
-  "common_params": { "n": [100000000], "schema": ["default_a16.json"] },
+  "common_params": { "n": [100000000], "schema": ["default_a16_c100.json"] },
   "methods": [
     { "name": "...", "binary": "build/bin/...", "params": { "<flag>": [0.05, 0.1] } }
   ]

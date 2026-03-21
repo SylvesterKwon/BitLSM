@@ -1,25 +1,29 @@
 {
   "attrs": [
     {
-      "type": "continuous"
+      "type": "categorical",
+      "cardinality": 10
     },
     {
       "type": "continuous"
     },
     {
-      "type": "continuous"
+      "type": "categorical",
+      "cardinality": 10
     },
     {
       "type": "continuous"
     },
     {
-      "type": "continuous"
+      "type": "categorical",
+      "cardinality": 10
     },
     {
       "type": "continuous"
     },
     {
-      "type": "continuous"
+      "type": "categorical",
+      "cardinality": 10
     },
     {
       "type": "continuous"

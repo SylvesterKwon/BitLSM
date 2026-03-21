@@ -74,7 +74,7 @@ DB_PARAMS = ["n", "schema", "rho"]
 def _path_safe(key: str, val) -> str:
     """Format a single key-value pair for path encoding.
 
-    For 'schema', extracts the filename stem (e.g. 'schema/default_a16.json' -> 'default_a16').
+    For 'schema', extracts the filename stem (e.g. 'schema/default_a16_c100.json' -> 'default_a16').
     """
     if key == "schema":
         return f"{key}_{os.path.splitext(os.path.basename(str(val)))[0]}"
@@ -115,6 +115,20 @@ def resolve_expected_selectivity(combo: dict) -> dict | None:
     or None if the combo should be skipped.
     """
     if "expected_selectivity" not in combo:
+        # No target selectivity -> point query (match exactly 1 value per attr)
+        schema_path = combo.get("schema", "")
+        indices = [int(x) for x in str(combo.get("query_attr_indices", "0")).split(",")]
+        if schema_path and os.path.exists(schema_path):
+            attrs = _load_schema_attrs(schema_path)
+            max_card = max(
+                (attrs[i].get("cardinality", 10)
+                 for i in indices
+                 if i < len(attrs) and attrs[i].get("type") == "categorical"),
+                default=10,
+            )
+            resolved = dict(combo)
+            resolved["selectivity"] = 1.0 / max_card
+            return resolved
         return combo
     resolved = dict(combo)
     expected_sel = resolved.pop("expected_selectivity")
@@ -178,7 +192,7 @@ def reset_hardware(db_path_base: str, prev_db_path: str = None, keep_db: bool = 
 
 
 def _schema_stem(schema_path: str) -> str:
-    """Extract stem from schema path: 'schema/default_a16.json' -> 'default_a16'."""
+    """Extract stem from schema path: 'schema/default_a16_c100.json' -> 'default_a16'."""
     return os.path.splitext(os.path.basename(schema_path))[0]
 
 
