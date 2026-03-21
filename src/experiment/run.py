@@ -15,6 +15,7 @@ Options:
     --hw-reset            Reset hardware state between runs (run script with sudo).
                           Runs: sync, drop_caches, fstrim on db_path_base.
     --keep-db             Do not delete DB directories between runs.
+    --start-from N        Start from the N-th experiment (1-indexed, default: 1).
     --daemon              Run in background via nohup (logs to logs/ as usual).
 """
 
@@ -244,7 +245,8 @@ def cooldown_sleep(seconds: int):
 
 
 def run(config_path: str, dry_run: bool, method_filter: list,
-        cooldown: int, hw_reset: bool, keep_db: bool, warmup: bool = False):
+        cooldown: int, hw_reset: bool, keep_db: bool, warmup: bool = False,
+        start_from: int = 1):
     with open(config_path) as f:
         config = json.load(f)
 
@@ -322,6 +324,9 @@ def run(config_path: str, dry_run: bool, method_filter: list,
 
             for combo in combos:
                 global_idx += 1
+                if global_idx < start_from:
+                    print(f"[{global_idx}/{total_runs}] [{name}] SKIP (--start-from {start_from})")
+                    continue
                 db_combo = {k: v for k, v in combo.items() if k in DB_PARAMS}
                 db_path = f"{db_path_base}/{name}/{encode_params(db_combo)}"
                 cmd_combo = resolve_expected_selectivity(combo)
@@ -424,6 +429,8 @@ def main():
     parser.add_argument("--warmup", action="store_true",
                         help="Run one warmup query per DB before measuring (read_seq only, "
                              "populates OS page cache)")
+    parser.add_argument("--start-from", type=int, default=1, metavar="N",
+                        help="Start from the N-th experiment (1-indexed, default: 1)")
     parser.add_argument("--daemon", action="store_true",
                         help="Run in background via nohup (logs to logs/ as usual)")
     args = parser.parse_args()
@@ -443,7 +450,7 @@ def main():
     method_filter = args.methods.split(",") if args.methods else []
     run(args.config, dry_run=args.dry_run, method_filter=method_filter,
         cooldown=args.cooldown, hw_reset=args.hw_reset, keep_db=args.keep_db,
-        warmup=args.warmup)
+        warmup=args.warmup, start_from=args.start_from)
 
 
 if __name__ == "__main__":

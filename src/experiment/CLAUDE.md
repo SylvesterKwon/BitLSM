@@ -56,6 +56,7 @@ python3 src/experiment/run.py <params.json> --hw-reset --cooldown 300         # 
 python3 src/experiment/run.py <params.json> --hw-reset --cooldown 300 --keep-db  # hw-reset without DB deletion
 python3 src/experiment/run.py <params.json> --hw-reset --cooldown 60 --daemon    # background run (no tmux needed)
 python3 src/experiment/run.py <params.json> --warmup                             # warmup per-DB page cache before read_seq
+python3 src/experiment/run.py <params.json> --start-from 5                      # resume from 5th experiment (1-indexed)
 ```
 
 Between-run sequence: `[warmup: 1 dummy query per unique db_path (read_seq only)] → experiment → [hw-reset: rm DB (unless --keep-db or read_seq), sync, drop_caches, fstrim] → [cooldown] → next`

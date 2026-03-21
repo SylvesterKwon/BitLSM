@@ -222,6 +222,11 @@ sudo python3 src/experiment/run.py \
   src/experiment/benchmark/exp_set/seq_write_default.json \
   --hw-reset --cooldown 60 --daemon
 
+# resume from a specific experiment number (1-indexed); use --dry-run to check numbering first
+python3 src/experiment/run.py \
+  src/experiment/benchmark/exp_set/seq_write_default.json \
+  --start-from 5 --hw-reset --cooldown 60 --daemon
+
 # hw-reset without deleting DB between runs (e.g., for preparing read test)
 sudo python3 src/experiment/run.py \
   src/experiment/benchmark/exp_set/seq_write_default.json \
