@@ -60,9 +60,11 @@ add_subdirectory(third_party/CRoaring)
 set(DEPS_ROOT "/opt/BitLSM/installed")
 set(FOLLY_DIR "${DEPS_ROOT}/folly")
 file(GLOB FMT_DIR "${DEPS_ROOT}/fmt-*")
-list(APPEND CMAKE_PREFIX_PATH 
+file(GLOB GLOG_DIR "${DEPS_ROOT}/glog-*")
+list(APPEND CMAKE_PREFIX_PATH
     "${FOLLY_DIR}"
     "${FMT_DIR}"
+    "${GLOG_DIR}"
 )
 
 ## CXXOPTS

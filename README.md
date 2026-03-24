@@ -1,77 +1,78 @@
 ## BitLSM
-WIP
 
 Based on RocksDB v10.9.0
 
+## Prerequisites
+
+- **Compiler**: GCC 11+
+- **CMake**: 3.10+
+
 ## Installation
-### 0. Install Git Submodule ([RocksDB](https://github.com/facebook/rocksdb) & [CRoaring](https://github.com/RoaringBitmap/CRoaring))
-```bash
-$ git submodule update --init --recursive
-```
-TODO: rocksdb 브랜치 설정 하도록 안내
-TODO: RoaringBitmap 의존성 소개
 
-### 1. 의존성 설치
-
-RocksDB dependency
+### 1. Initialize Git Submodules
 
 ```bash
-$ apt-get update && apt-get install -y \
-libsnappy-dev \ 
-zlib1g-dev \ 
-libbz2-dev \ 
-liblz4-dev \ 
-libzstd-dev
+git submodule update --init --recursive
 ```
 
-jemalloc
+### 2. Install System Dependencies
+
 ```bash
-sudo apt-get install -y libjemalloc-dev
+sudo apt-get update && sudo apt-get install -y \
+    libsnappy-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    liblz4-dev \
+    libzstd-dev \
+    libjemalloc-dev \
+    libssl-dev
 ```
 
-### 1-2. Facebook Folly
-Reference: https://github.com/facebook/folly?tab=readme-ov-file#build
+### 3. Build Facebook Folly
+
+BitLSM uses streaming quantile estimation (TDigest) to determine bin boundaries during bitmap index construction, and relies on [Facebook Folly](https://github.com/facebook/folly) for its TDigest implementation.
+
+Folly and its dependencies are installed under `/opt/BitLSM/installed/`.
+
 ```bash
-# 1. Clone the repo
-git clone https://github.com/facebook/folly
-cd folly
-# 2. Install dependencies
+git clone https://github.com/facebook/folly /tmp/folly
+cd /tmp/folly
 sudo ./build/fbcode_builder/getdeps.py install-system-deps --recursive
-# 3. Build, using system dependencies if available
-sudo python3 ./build/fbcode_builder/getdeps.py --allow-system-packages --scratch-path /opt/BitLSM build
+sudo python3 ./build/fbcode_builder/getdeps.py \
+    --allow-system-packages \
+    --scratch-path /opt/BitLSM \
+    --extra-cmake-defines '{"BUILD_TESTS": "OFF", "BUILD_BENCHMARKS": "OFF"}' \
+    --num-jobs 4 \
+    build
 ```
 
-- OpenSSL 관련 에러가 난다면
-    ```bash
-    sudo apt-get install libssl-dev
-    ```
+### 4. Build the Project
 
-
-TODO: sh로 만들기 (프로젝트 개발 완료후 일괄 설치 스크립트 생성 예정)
-
-### 2. Project build
 ```bash
-$ mkdir build && cd build
+cmake -B build
+ninja -C build -j$(nproc)
 ```
-```bash
-$ cmake ../
-```
-```bash
-$ make -j$(nproc)
-```
-혹은 build.sh 실행 (`$ ./build.sh`)
 
-### 3. 정상 실행 확인
-WIP
+### 5. Verify Build
 
-## Project structure
-WIP
-### Benchmark
-### Utility
+On successful build, executables are generated under `build/bin/`:
+
+```
+build/bin/
+  BitLSM          # Main executable
+  bit-lsm         # BitLSM experiment
+  no-index         # No-index baseline experiment
+  si-eager         # Secondary Index (Eager) experiment
+  si-lu            # Secondary Index (Lazy Update) experiment
+  si-ck            # Secondary Index (Compaction Key) experiment
+  ldb              # RocksDB ldb tool
+  sst_dump         # SST file dump tool
+```
 
 ## Misc.
-- SST dump
-예시:
-```
-./build/bin/sst_dump /scratch/random_bit_props_test/000304.sst --command=scan --show_properties
+
+### SST dump
+
+```bash
+./build/bin/sst_dump <sst_file_path> --command=scan --show_properties
 ```
