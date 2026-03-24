@@ -10,3 +10,4 @@ nohup.out
 log/
 .claude/
 *.png
+.python-version
