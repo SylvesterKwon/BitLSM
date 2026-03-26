@@ -6,6 +6,7 @@ import random
 import uuid
 import sys
 import os
+from datetime import datetime
 
 random.seed(42)
 
@@ -32,10 +33,10 @@ def gen_record():
         "improvement_surcharge": 1.0,
         "total_amount": round(random.uniform(3.0, 300.0), 2),
         "congestion_surcharge": round(random.choice([0.0, 2.5]), 2),
-        "airport_fee": round(random.choice([0.0, 1.75]), 2),
+        "Airport_fee": round(random.choice([0.0, 1.75]), 2),
         "cbd_congestion_fee": round(random.choice([0.0, 2.75]), 2),
-        "tpep_pickup_datetime": f"2024-01-{random.randint(1,28):02d} {random.randint(0,23):02d}:{random.randint(0,59):02d}:00",
-        "tpep_dropoff_datetime": f"2024-01-{random.randint(1,28):02d} {random.randint(0,23):02d}:{random.randint(0,59):02d}:00",
+        "tpep_pickup_datetime": datetime(2024, 1, random.randint(1,28), random.randint(0,23), random.randint(0,59)).timestamp(),
+        "tpep_dropoff_datetime": datetime(2024, 1, random.randint(1,28), random.randint(0,23), random.randint(0,59)).timestamp(),
     }
 
 

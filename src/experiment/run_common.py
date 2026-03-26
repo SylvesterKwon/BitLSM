@@ -175,15 +175,18 @@ def add_common_args(parser: argparse.ArgumentParser):
                         help="Do not delete DB directories between runs")
     parser.add_argument("--start-from", type=int, default=1, metavar="N",
                         help="Start from the N-th experiment (1-indexed, default: 1)")
-    parser.add_argument("--daemon", action="store_true",
-                        help="Run in background via nohup")
+    parser.add_argument("--daemon", action="store_true", default=True,
+                        help="Run in background via nohup (default: on)")
+    parser.add_argument("--no-daemon", dest="daemon", action="store_false",
+                        help="Run in foreground (disable daemon mode)")
 
 
 def maybe_run_as_daemon(args):
     """If --daemon is set, re-exec via nohup and exit. Otherwise return."""
     if not args.daemon:
         return
-    child_argv = [a for a in sys.argv if a != "--daemon"]
+    child_argv = [a for a in sys.argv if a not in ("--daemon", "--no-daemon")]
+    child_argv.append("--no-daemon")
     cmd = ["nohup", sys.executable] + child_argv
     proc = subprocess.Popen(
         cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

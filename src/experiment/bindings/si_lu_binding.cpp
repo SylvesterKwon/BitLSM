@@ -1,4 +1,4 @@
-#include "silu_binding.h"
+#include "si_lu_binding.h"
 #include <algorithm>
 #include <chrono>
 #include <cxxopts.hpp>

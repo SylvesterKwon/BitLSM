@@ -1,5 +1,6 @@
 #pragma once
 
+#include "binding.h"
 #include "bit_lsm_option.h"
 #include "bit_lsm_query.h"
 #include "bit_lsm_utils.h"
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <random>
 #include <set>
 #include <sstream>
@@ -106,19 +108,14 @@ inline BitLSMQuery build_read_query(const Schema& schema,
   return query;
 }
 
-// CRTP base class for benchmark experiments.
-// Derived must implement: Open, Put, Scan, Close
-// Derived must set: method_name, method_param_suffix (in constructor or Open)
-template <typename Derived>
 class BenchmarkExperiment {
  public:
-  string method_name;
-  string method_param_suffix;       // write CSV filename suffix
-  string read_param_suffix;         // read-only params (e.g. strategy)
+  explicit BenchmarkExperiment(std::unique_ptr<experiment::Binding> binding)
+      : binding_(std::move(binding)) {}
 
   int Run(int argc, char* argv[]) {
-    cxxopts::Options opts(self().method_name,
-                          self().method_name + " benchmark experiment");
+    cxxopts::Options opts(binding_->Name(),
+                          binding_->Name() + " benchmark experiment");
     opts.allow_unrecognised_options();
     // clang-format off
     opts.add_options()
@@ -150,7 +147,7 @@ class BenchmarkExperiment {
     string s_name = schema_stem(schema_path);
     bool read_mode = (exp_type == "read_seq");
 
-    self().Open(argc, argv, db_path, schema, read_mode);
+    binding_->Open(argc, argv, db_path, schema.options);
 
     if (read_mode) {
       string qi_str = result["query_attr_indices"].as<string>();
@@ -160,41 +157,42 @@ class BenchmarkExperiment {
         if (idx >= schema.options.attr_num) {
           cout << "SKIP: query attr index " << idx << " >= attr_num "
                << schema.options.attr_num << ", skipping experiment.\n";
-          self().Close();
+          binding_->Close();
           return 0;
         }
       }
 
       if (result.count("selectivity") == 0) {
         cerr << "ERROR: --selectivity required for read_seq\n";
-        self().Close();
+        binding_->Close();
         return 1;
       }
       double selectivity = result["selectivity"].as<double>();
 
       BitLSMQuery query = build_read_query(schema, query_indices, selectivity);
       cout << "QUERY: " << query.ToString() << "\n";
-      ReadResult rr = self().Scan(query, n);
-      self().Close();
+      auto sr = binding_->Scan(query);
+      binding_->Close();
 
-      cout << "RESULT:" << rr.time_elapsed_ms << "," << rr.records_matched
-           << "," << rr.selectivity_actual << "\n";
+      double sel_actual = n > 0 ? static_cast<double>(sr.matched) / n : 0.0;
+      cout << "RESULT:" << sr.elapsed_ms << "," << sr.matched
+           << "," << sel_actual << "\n";
     } else {
       vector<ProgressLog> progress_log;
       FillKVP(schema, n, progress_log);
-      self().Close();
+      binding_->Close();
       SaveWriteCSV(output_dir, exp_label, n, s_name, progress_log);
     }
 
     return 0;
   }
 
- protected:
-  Derived& self() { return static_cast<Derived&>(*this); }
+ private:
+  std::unique_ptr<experiment::Binding> binding_;
 
   void FillKVP(const Schema& schema, uint64_t n,
                vector<ProgressLog>& progress_log) {
-    cout << "creating " << n << " kvps into " << method_name
+    cout << "creating " << n << " kvps into " << binding_->Name()
          << " using Put API...\n";
 
     mt19937 gen(42);
@@ -233,7 +231,7 @@ class BenchmarkExperiment {
       for (size_t k = 0; k < 8; ++k)
         pk[k] = kCharSet[char_dist(gen)];
 
-      self().Put(pk, attrs, payload);
+      binding_->Put(pk, attrs, payload);
 
       if ((i + 1) % 1000000 == 0) {
         auto elapsed_ms =
@@ -257,9 +255,9 @@ class BenchmarkExperiment {
                     uint64_t n, const string& schema_name,
                     const vector<ProgressLog>& progress_log) {
     std::filesystem::create_directories(output_dir);
-    string filename = exp_label + "_" + self().method_name + "_n" +
+    string filename = exp_label + "_" + binding_->Name() + "_n" +
                       to_string(n) + "_schema_" + schema_name +
-                      self().method_param_suffix + ".csv";
+                      binding_->ParamSuffix() + ".csv";
     string full_path = output_dir + "/" + filename;
     ofstream f(full_path);
     f << "time_elapsed_ms,records_written\n";

@@ -187,17 +187,11 @@ foreach(EXP_SRC ${EXPERIMENT_SOURCES})
         ${EXP_DIR}             # 실험용 헤더
         ${EXP_PARENT_DIR}      # 실험 상위 헤더
     )
+    target_include_directories(${EXP_NAME} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/experiment/bindings
+    )
     target_link_directories(${EXP_NAME} PRIVATE /usr/local/lib)
-    target_link_libraries(${EXP_NAME} PRIVATE ${COMMON_LINK_LIBS})
+    target_link_libraries(${EXP_NAME} PRIVATE ${COMMON_LINK_LIBS} experiment_bindings)
 
     message(STATUS "Experiment executable added: ${EXP_NAME}")
 endforeach()
-
-# honk_player needs bindings library
-if(TARGET honk_player)
-    target_link_libraries(honk_player PRIVATE experiment_bindings)
-    target_include_directories(honk_player PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/experiment/bindings
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/experiment/benchmark
-    )
-endif()

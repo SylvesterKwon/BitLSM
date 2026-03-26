@@ -1,4 +1,4 @@
-#include "noindex_binding.h"
+#include "no_index_binding.h"
 #include "bit_lsm_utils.h"
 #include <chrono>
 #include <iostream>
