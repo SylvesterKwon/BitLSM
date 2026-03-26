@@ -1,0 +1,137 @@
+#include "binding.h"
+#include "json_record_parser.h"
+#include "taxi_schema.h"
+#include "tsv_parser.h"
+#include <chrono>
+#include <cxxopts.hpp>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <thread>
+
+using namespace std;
+
+int main(int argc, char* argv[]) {
+  cxxopts::Options opts("honk-player", "Taxi data workload driver");
+  opts.allow_unrecognised_options();
+  // clang-format off
+  opts.add_options()
+    ("binding", "Method: bitlsm|no-index|si-ck|si-lu",
+     cxxopts::value<string>())
+    ("workload", "TSV workload file path",
+     cxxopts::value<string>())
+    ("db_path", "DB storage path",
+     cxxopts::value<string>())
+    ("output_dir", "Result CSV output directory",
+     cxxopts::value<string>()->default_value("./result"));
+  // clang-format on
+
+  auto result = opts.parse(argc, argv);
+
+  if (!result.count("binding") || !result.count("workload") ||
+      !result.count("db_path")) {
+    cerr << "Required: --binding, --workload, --db_path\n";
+    return 1;
+  }
+
+  string binding_name = result["binding"].as<string>();
+  string workload_path = result["workload"].as<string>();
+  string db_path = result["db_path"].as<string>();
+  string output_dir = result["output_dir"].as<string>();
+
+  // Create binding
+  auto binding = experiment::CreateBinding(binding_name);
+  if (!binding) {
+    cerr << "Unknown binding: " << binding_name << "\n";
+    return 1;
+  }
+
+  // Open DB with taxi schema
+  auto taxi_opts = honk::BuildTaxiBitLSMOptions();
+  binding->Open(argc, argv, db_path, taxi_opts);
+
+  // Prepare output
+  filesystem::create_directories(output_dir);
+  string file_prefix =
+      output_dir + "/" + binding->Name() + binding->ParamSuffix();
+
+  ofstream write_csv(file_prefix + "_write_log.csv");
+  write_csv << "time_elapsed_ms,records_written\n";
+
+  ofstream read_csv(file_prefix + "_read_log.csv");
+  read_csv << "query_id,query_attr_num,filter_attrs,time_elapsed_ms,"
+              "records_matched,records_total,selectivity_actual\n";
+
+  // Prepare parsers (reusable buffers)
+  honk::RecordParser record_parser;
+  auto taxi_columns = honk::GetTaxiColumns();
+  auto col_map = honk::BuildColumnIndexMap();
+  vector<Attr> attrs;
+  string payload;
+
+  // TSV dispatch
+  honk::TSVReader reader(workload_path);
+  honk::Operation op;
+
+  uint64_t writes = 0, reads = 0;
+  auto wall_start = chrono::steady_clock::now();
+
+  while (reader.Next(op)) {
+    switch (op.type) {
+      case honk::OpType::WRITE:
+      case honk::OpType::UPDATE: {
+        auto& w = get<honk::WriteOp>(op.data);
+        record_parser.ParseRecord(w.json, attrs, payload);
+        binding->Put(w.pk, attrs, payload);
+        writes++;
+        if (writes % 1'000'000 == 0) {
+          auto now = chrono::steady_clock::now();
+          auto elapsed = chrono::duration_cast<chrono::milliseconds>(
+                             now - wall_start)
+                             .count();
+          write_csv << elapsed << "," << writes << "\n";
+          write_csv.flush();
+          cout << "[write] " << writes << " records, " << elapsed << "ms\n";
+        }
+        break;
+      }
+      case honk::OpType::READ: {
+        auto& r = get<honk::ReadOp>(op.data);
+        auto [query, attr_names, k] =
+            honk::ParseFilters(r.json, taxi_columns, col_map);
+        auto scan_result = binding->Scan(query);
+        double selectivity =
+            writes > 0
+                ? static_cast<double>(scan_result.matched) / writes
+                : 0.0;
+        read_csv << reads << "," << k << ",\"" << attr_names << "\","
+                 << scan_result.elapsed_ms << "," << scan_result.matched
+                 << "," << writes << "," << fixed << setprecision(6)
+                 << selectivity << "\n";
+        read_csv.flush();
+        reads++;
+        break;
+      }
+      case honk::OpType::PAUSE: {
+        auto& p = get<honk::PauseOp>(op.data);
+        cout << "[pause] " << p.seconds << "s\n";
+        this_thread::sleep_for(chrono::duration<double>(p.seconds));
+        break;
+      }
+    }
+  }
+
+  binding->Close();
+
+  auto total_elapsed = chrono::duration_cast<chrono::milliseconds>(
+                           chrono::steady_clock::now() - wall_start)
+                           .count();
+  cout << "\n=== Summary ===\n"
+       << "Binding: " << binding->Name() << binding->ParamSuffix() << "\n"
+       << "Total writes: " << writes << "\n"
+       << "Total reads: " << reads << "\n"
+       << "Total time: " << total_elapsed << "ms\n";
+
+  return 0;
+}

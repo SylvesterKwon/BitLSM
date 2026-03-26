@@ -160,8 +160,19 @@ target_link_libraries(workload_generator_lib PUBLIC
 )
 
 
+# EXPERIMENT BINDINGS (shared library, not standalone executables)
+file(GLOB BINDING_SOURCES "src/experiment/bindings/*.cpp")
+add_library(experiment_bindings STATIC ${BINDING_SOURCES})
+target_include_directories(experiment_bindings PRIVATE
+    ${COMMON_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/experiment/bindings
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/experiment/benchmark
+)
+target_link_libraries(experiment_bindings PUBLIC ${COMMON_LINK_LIBS})
+
 # EXPERIMENTS
 file(GLOB_RECURSE EXPERIMENT_SOURCES "src/experiment/*.cpp")
+list(FILTER EXPERIMENT_SOURCES EXCLUDE REGEX ".*/bindings/.*")
 foreach(EXP_SRC ${EXPERIMENT_SOURCES})
     get_filename_component(EXP_NAME ${EXP_SRC} NAME_WE) # 파일명 추출
     add_executable(${EXP_NAME} ${EXP_SRC}) # 실행 파일 생성
@@ -178,6 +189,15 @@ foreach(EXP_SRC ${EXPERIMENT_SOURCES})
     )
     target_link_directories(${EXP_NAME} PRIVATE /usr/local/lib)
     target_link_libraries(${EXP_NAME} PRIVATE ${COMMON_LINK_LIBS})
-    
+
     message(STATUS "Experiment executable added: ${EXP_NAME}")
 endforeach()
+
+# honk_player needs bindings library
+if(TARGET honk_player)
+    target_link_libraries(honk_player PRIVATE experiment_bindings)
+    target_include_directories(honk_player PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/experiment/bindings
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/experiment/benchmark
+    )
+endif()
