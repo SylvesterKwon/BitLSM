@@ -1,0 +1,28 @@
+{
+  "db_path_base": "/scratch/honk",
+  "workload": "/home/dohyun/Workloads/write_seq_2025_all.tsv",
+  "output_dir": "src/experiment/honk_player/result",
+  "common_params": {
+    "indexed_attrs": "payment_type,PULocationID,fare_amount,tpep_pickup_datetime"
+  },
+  "methods": [
+    {
+      "name": "no-index",
+      "params": {}
+    },
+    {
+      "name": "bitlsm",
+      "params": {
+        "rho": [0.2, 0.1, 0.05]
+      }
+    },
+    {
+      "name": "si-ck",
+      "params": {}
+    },
+    {
+      "name": "si-lu",
+      "params": {}
+    }
+  ]
+}

@@ -3,7 +3,7 @@
   "workload": "/home/dohyun/Workloads/write_seq_2025_all.tsv",
   "output_dir": "src/experiment/honk_player/result",
   "common_params": {
-    "indexed_attrs": "VendorID,tpep_pickup_datetime"
+    "indexed_attrs": "extra,tip_amount,trip_distance,fare_amount"
   },
   "methods": [
     {

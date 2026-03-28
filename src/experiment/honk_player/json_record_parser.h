@@ -58,17 +58,17 @@ class RecordParser {
     if (indexed_indices_.empty()) {
       for (uint32_t i = 0; i < attr_num_; i++) {
         if (columns_[i].type == AttrType::CATEGORICAL)
-          attrs[i] = std::string("0");
+          attrs[i] = std::string("Null");
         else
-          attrs[i] = 0.0;
+          attrs[i] = -1.0;
       }
     } else {
       for (uint32_t i = 0; i < attr_num_; i++) {
         uint32_t orig = indexed_indices_[i];
         if (columns_[orig].type == AttrType::CATEGORICAL)
-          attrs[i] = std::string("0");
+          attrs[i] = std::string("Null");
         else
-          attrs[i] = 0.0;
+          attrs[i] = -1.0;
       }
     }
 
@@ -84,13 +84,16 @@ class RecordParser {
       uint32_t orig_idx = found->second;
 
       auto val = field.value();
-      if (val.type() == simdjson::ondemand::json_type::null) continue;
+      bool is_null = (val.type() == simdjson::ondemand::json_type::null);
 
-      // Extract the value
+      // Extract the value (sentinel for null)
       AttrType atype = columns_[orig_idx].type;
       std::string str_val;
-      double dbl_val = 0.0;
-      if (atype == AttrType::CATEGORICAL) {
+      double dbl_val = -1.0;
+      if (is_null) {
+        if (atype == AttrType::CATEGORICAL)
+          str_val = "Null";
+      } else if (atype == AttrType::CATEGORICAL) {
         if (val.type() == simdjson::ondemand::json_type::string) {
           str_val = std::string(val.get_string().value());
         } else {
