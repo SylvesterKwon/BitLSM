@@ -85,6 +85,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
+## simdjson
+FetchContent_Declare(
+  simdjson
+  GIT_REPOSITORY https://github.com/simdjson/simdjson.git
+  GIT_TAG        v3.12.2
+)
+FetchContent_MakeAvailable(simdjson)
+
 # MAIN_SOURCE, LIB_SOURCES 설정
 set(MAIN_SOURCE "src/main.cpp")
 file(GLOB_RECURSE LIB_SOURCES "src/include/*.cpp")
@@ -168,7 +176,7 @@ target_include_directories(experiment_bindings PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/experiment/bindings
     ${CMAKE_CURRENT_SOURCE_DIR}/src/experiment/benchmark
 )
-target_link_libraries(experiment_bindings PUBLIC ${COMMON_LINK_LIBS})
+target_link_libraries(experiment_bindings PUBLIC ${COMMON_LINK_LIBS} simdjson)
 
 # EXPERIMENTS
 file(GLOB_RECURSE EXPERIMENT_SOURCES "src/experiment/*.cpp")

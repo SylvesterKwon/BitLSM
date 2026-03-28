@@ -11,3 +11,4 @@ log/
 .claude/
 *.png
 .python-version
+__pycache__/
