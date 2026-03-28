@@ -1,6 +1,7 @@
 #pragma once
 #include "bit_lsm.h"
 #include "taxi_schema.h"
+#include <cstring>
 #include <simdjson.h>
 #include <string>
 #include <unordered_map>
@@ -18,26 +19,60 @@ using bit_lsm::QueryCondition;
 class RecordParser {
   std::vector<TaxiColumn> columns_;
   std::unordered_map<std::string, uint32_t> col_map_;
+  // indexed_indices_: original column indices to extract as attrs.
+  // If empty, all columns are indexed (default behavior).
+  std::vector<uint32_t> indexed_indices_;
+  // reverse_map_: original_col_idx → position in attrs vector.
+  // Only populated when indexed_indices_ is non-empty.
+  std::unordered_map<uint32_t, uint32_t> reverse_map_;
   uint32_t attr_num_;
   simdjson::ondemand::parser parser_;  // reuses internal buffer across calls
 
  public:
-  RecordParser()
+  explicit RecordParser(const std::vector<uint32_t>& indexed_indices = {})
       : columns_(GetTaxiColumns()),
         col_map_(BuildColumnIndexMap()),
-        attr_num_(columns_.size()) {}
+        indexed_indices_(indexed_indices) {
+    if (indexed_indices_.empty()) {
+      attr_num_ = columns_.size();
+    } else {
+      attr_num_ = indexed_indices_.size();
+      for (uint32_t i = 0; i < indexed_indices_.size(); i++)
+        reverse_map_[indexed_indices_[i]] = i;
+    }
+  }
+
+  /// Append a length-prefixed field to buf: [4B attr_idx][4B len][len bytes]
+  static void AppendPayloadField(std::string& buf, uint32_t attr_idx,
+                                 const void* data, uint32_t len) {
+    buf.append(reinterpret_cast<const char*>(&attr_idx), 4);
+    buf.append(reinterpret_cast<const char*>(&len), 4);
+    buf.append(reinterpret_cast<const char*>(data), len);
+  }
 
   void ParseRecord(const std::string& json_str,
                    std::vector<Attr>& attrs,
                    std::string& payload) {
     attrs.resize(attr_num_);
     // Set defaults
-    for (uint32_t i = 0; i < attr_num_; i++) {
-      if (columns_[i].type == AttrType::CATEGORICAL)
-        attrs[i] = std::string("0");
-      else
-        attrs[i] = 0.0;
+    if (indexed_indices_.empty()) {
+      for (uint32_t i = 0; i < attr_num_; i++) {
+        if (columns_[i].type == AttrType::CATEGORICAL)
+          attrs[i] = std::string("0");
+        else
+          attrs[i] = 0.0;
+      }
+    } else {
+      for (uint32_t i = 0; i < attr_num_; i++) {
+        uint32_t orig = indexed_indices_[i];
+        if (columns_[orig].type == AttrType::CATEGORICAL)
+          attrs[i] = std::string("0");
+        else
+          attrs[i] = 0.0;
+      }
     }
+
+    payload.clear();
 
     simdjson::padded_string padded(json_str);
     auto doc = parser_.iterate(padded);
@@ -46,29 +81,56 @@ class RecordParser {
       std::string_view key = field.unescaped_key();
       auto found = col_map_.find(std::string(key));
       if (found == col_map_.end()) continue;
-      uint32_t idx = found->second;
+      uint32_t orig_idx = found->second;
 
       auto val = field.value();
       if (val.type() == simdjson::ondemand::json_type::null) continue;
 
-      if (columns_[idx].type == AttrType::CATEGORICAL) {
+      // Extract the value
+      AttrType atype = columns_[orig_idx].type;
+      std::string str_val;
+      double dbl_val = 0.0;
+      if (atype == AttrType::CATEGORICAL) {
         if (val.type() == simdjson::ondemand::json_type::string) {
-          attrs[idx] = std::string(val.get_string().value());
+          str_val = std::string(val.get_string().value());
         } else {
-          // Number → string (try int first, fallback to double)
           auto i64 = val.get_int64();
           if (!i64.error())
-            attrs[idx] = std::to_string(i64.value());
+            str_val = std::to_string(i64.value());
           else
-            attrs[idx] = std::to_string(val.get_double().value());
+            str_val = std::to_string(val.get_double().value());
         }
       } else {
-        // CONTINUOUS — numeric as double
-        attrs[idx] = val.get_double().value();
+        dbl_val = val.get_double().value();
+      }
+
+      // Route to attrs (indexed) or payload (non-indexed)
+      if (indexed_indices_.empty()) {
+        // All indexed
+        if (atype == AttrType::CATEGORICAL)
+          attrs[orig_idx] = str_val;
+        else
+          attrs[orig_idx] = dbl_val;
+      } else {
+        auto it = reverse_map_.find(orig_idx);
+        if (it != reverse_map_.end()) {
+          // Indexed attr
+          if (atype == AttrType::CATEGORICAL)
+            attrs[it->second] = str_val;
+          else
+            attrs[it->second] = dbl_val;
+        } else {
+          // Non-indexed → length-prefixed payload
+          if (atype == AttrType::CATEGORICAL) {
+            AppendPayloadField(payload, orig_idx,
+                               str_val.data(), str_val.size());
+          } else {
+            AppendPayloadField(payload, orig_idx,
+                               &dbl_val, sizeof(double));
+          }
+        }
       }
     }
-
-    payload = json_str;
   }
 };
 

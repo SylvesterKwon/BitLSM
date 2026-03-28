@@ -63,13 +63,17 @@ def encode_method_params(params: dict) -> str:
 
 
 def build_honk_command(method_name: str, workload: str, db_path: str,
-                       output_dir: str, combo: dict) -> list:
+                       output_dir: str, combo: dict,
+                       common_params: dict = None) -> list:
     """Build honk_player command line."""
     cmd = [BINARY,
            "--binding", method_name,
            "--workload", workload,
            "--db_path", db_path,
            "--output_dir", output_dir]
+    if common_params:
+        for key, val in common_params.items():
+            cmd += [f"--{key}", fmt(val)]
     for key, val in combo.items():
         cmd += [f"--{key}", fmt(val)]
     return cmd
@@ -81,10 +85,11 @@ def run(config_path: str, dry_run: bool, method_filter: list,
     with open(config_path) as f:
         config = json.load(f)
 
-    exp_label    = os.path.splitext(os.path.basename(config_path))[0]
-    db_path_base = config["db_path_base"]
-    workload     = config["workload"]
-    methods      = config["methods"]
+    exp_label     = os.path.splitext(os.path.basename(config_path))[0]
+    db_path_base  = config["db_path_base"]
+    workload      = config["workload"]
+    methods       = config["methods"]
+    common_params = config.get("common_params", {})
 
     # Output directory: CLI override > config > default
     if output_dir_override:
@@ -140,7 +145,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                     continue
 
                 db_path = f"{db_path_base}/{name}/{encode_method_params(combo)}"
-                cmd = build_honk_command(name, workload, db_path, output_dir, combo)
+                cmd = build_honk_command(name, workload, db_path, output_dir, combo, common_params)
 
                 print(f"[{global_idx}/{total_runs}] [{name}] {' '.join(cmd)}")
 

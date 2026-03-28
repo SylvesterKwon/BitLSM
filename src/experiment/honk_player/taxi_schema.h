@@ -14,8 +14,6 @@ struct TaxiColumn {
 };
 
 inline std::vector<TaxiColumn> GetTaxiColumns() {
-  // CATEGORICAL: eq-only columns (VendorID, RatecodeID, store_and_fwd_flag, payment_type)
-  // CONTINUOUS: range query가 사용되는 모든 numeric columns
   return {
       /* 0  */ {"VendorID", AttrType::CATEGORICAL},
       /* 1  */ {"tpep_pickup_datetime", AttrType::CONTINUOUS},
@@ -24,8 +22,8 @@ inline std::vector<TaxiColumn> GetTaxiColumns() {
       /* 4  */ {"trip_distance", AttrType::CONTINUOUS},
       /* 5  */ {"RatecodeID", AttrType::CATEGORICAL},
       /* 6  */ {"store_and_fwd_flag", AttrType::CATEGORICAL},
-      /* 7  */ {"PULocationID", AttrType::CONTINUOUS},
-      /* 8  */ {"DOLocationID", AttrType::CONTINUOUS},
+      /* 7  */ {"PULocationID", AttrType::CATEGORICAL},
+      /* 8  */ {"DOLocationID", AttrType::CATEGORICAL},
       /* 9  */ {"payment_type", AttrType::CATEGORICAL},
       /* 10 */ {"fare_amount", AttrType::CONTINUOUS},
       /* 11 */ {"extra", AttrType::CONTINUOUS},
@@ -48,13 +46,22 @@ inline std::unordered_map<std::string, uint32_t> BuildColumnIndexMap() {
   return m;
 }
 
-inline BitLSMOptions BuildTaxiBitLSMOptions() {
+/// Build BitLSMOptions for the given indexed column indices.
+/// If indexed_indices is empty, all columns are indexed.
+inline BitLSMOptions
+BuildTaxiBitLSMOptions(const std::vector<uint32_t>& indexed_indices = {}) {
   auto cols = GetTaxiColumns();
   BitLSMOptions opts;
-  opts.attr_num = cols.size();
-  for (auto& c : cols)
-    opts.attr_types.push_back(c.type);
+  if (indexed_indices.empty()) {
+    opts.attr_num = cols.size();
+    for (auto& c : cols)
+      opts.attr_types.push_back(c.type);
+  } else {
+    opts.attr_num = indexed_indices.size();
+    for (auto idx : indexed_indices)
+      opts.attr_types.push_back(cols[idx].type);
+  }
   return opts;
 }
 
-}  // namespace honk
+} // namespace honk

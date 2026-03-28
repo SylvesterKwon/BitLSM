@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <thread>
 
 using namespace std;
@@ -24,7 +25,9 @@ int main(int argc, char* argv[]) {
     ("db_path", "DB storage path",
      cxxopts::value<string>())
     ("output_dir", "Result CSV output directory",
-     cxxopts::value<string>()->default_value("./result"));
+     cxxopts::value<string>()->default_value("./result"))
+    ("indexed_attrs", "Comma-separated attr names to index (default: all)",
+     cxxopts::value<string>()->default_value(""));
   // clang-format on
 
   auto result = opts.parse(argc, argv);
@@ -40,6 +43,27 @@ int main(int argc, char* argv[]) {
   string db_path = result["db_path"].as<string>();
   string output_dir = result["output_dir"].as<string>();
 
+  // Parse indexed_attrs (field names → column indices)
+  auto all_columns = honk::GetTaxiColumns();
+  auto col_map = honk::BuildColumnIndexMap();
+  vector<uint32_t> indexed_indices;
+  string indexed_attrs_str = result["indexed_attrs"].as<string>();
+  if (!indexed_attrs_str.empty()) {
+    istringstream iss(indexed_attrs_str);
+    string token;
+    while (getline(iss, token, ',')) {
+      auto it = col_map.find(token);
+      if (it == col_map.end()) {
+        cerr << "Unknown attribute name: \"" << token << "\"\n";
+        cerr << "Available attributes:";
+        for (auto& c : all_columns) cerr << " " << c.name;
+        cerr << "\n";
+        return 1;
+      }
+      indexed_indices.push_back(it->second);
+    }
+  }
+
   // Create binding
   auto binding = experiment::CreateBinding(binding_name);
   if (!binding) {
@@ -48,7 +72,7 @@ int main(int argc, char* argv[]) {
   }
 
   // Open DB with taxi schema
-  auto taxi_opts = honk::BuildTaxiBitLSMOptions();
+  auto taxi_opts = honk::BuildTaxiBitLSMOptions(indexed_indices);
   binding->Open(argc, argv, db_path, taxi_opts);
 
   // Prepare output
@@ -64,9 +88,7 @@ int main(int argc, char* argv[]) {
               "records_matched,records_total,selectivity_actual\n";
 
   // Prepare parsers (reusable buffers)
-  honk::RecordParser record_parser;
-  auto taxi_columns = honk::GetTaxiColumns();
-  auto col_map = honk::BuildColumnIndexMap();
+  honk::RecordParser record_parser(indexed_indices);
   vector<Attr> attrs;
   string payload;
 
@@ -99,7 +121,7 @@ int main(int argc, char* argv[]) {
       case honk::OpType::READ: {
         auto& r = get<honk::ReadOp>(op.data);
         auto [query, attr_names, k] =
-            honk::ParseFilters(r.json, taxi_columns, col_map);
+            honk::ParseFilters(r.json, all_columns, col_map);
         auto scan_result = binding->Scan(query);
         double selectivity =
             writes > 0

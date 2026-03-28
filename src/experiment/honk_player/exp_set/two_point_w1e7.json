@@ -3,9 +3,33 @@
   "workload": "/home/dohyun/Datasets/two_point_w1e7_r1e3_a3/workload.tsv",
   "output_dir": "src/experiment/honk_player/result",
   "methods": [
-    {"name": "bitlsm",   "params": {"rho": [0.1]}},
-    {"name": "no-index",  "params": {}},
-    {"name": "si-ck",     "params": {"read_strategy": ["im"]}},
-    {"name": "si-lu",     "params": {"read_strategy": ["im"]}}
+    {
+      "name": "bitlsm",
+      "params": {
+        "rho": [
+          0.1
+        ]
+      }
+    },
+    {
+      "name": "no-index",
+      "params": {}
+    },
+    {
+      "name": "si-ck",
+      "params": {
+        "read_strategy": [
+          "im"
+        ]
+      }
+    },
+    {
+      "name": "si-lu",
+      "params": {
+        "read_strategy": [
+          "im"
+        ]
+      }
+    }
   ]
 }
