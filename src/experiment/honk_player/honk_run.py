@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from run_common import (
     add_common_args,
     cartesian_combinations,
+    clean_db,
     cooldown_sleep,
     fmt,
     maybe_run_as_daemon,
@@ -165,6 +166,8 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                     print(f"[{global_idx}/{total_runs}] [{wl_stem}][{name}] {' '.join(cmd)}")
 
                     if not dry_run:
+                        if not keep_db:
+                            clean_db(db_path)
                         os.makedirs(db_path, exist_ok=True)
                         os.makedirs(output_dir, exist_ok=True)
 
@@ -196,8 +199,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                         print()
 
                         if hw_reset:
-                            reset_hardware(db_path_base, prev_db_path=db_path,
-                                           keep_db=keep_db)
+                            reset_hardware(db_path_base)
                         if cooldown > 0 and global_idx < total_runs:
                             cooldown_sleep(cooldown)
 

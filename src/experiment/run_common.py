@@ -128,13 +128,15 @@ def cartesian_combinations(params: dict) -> list:
 # Hardware reset & cooldown
 # ---------------------------------------------------------------------------
 
-def reset_hardware(db_path_base: str, prev_db_path: str = None,
-                   keep_db: bool = False):
-    """Reset hardware state between runs: delete DB, sync, drop_caches, fstrim."""
-    if not keep_db and prev_db_path and os.path.exists(prev_db_path):
-        print(f"  [hw-reset] rm -rf {prev_db_path} ...")
-        subprocess.run(["rm", "-rf", prev_db_path], check=True)
+def clean_db(db_path: str):
+    """Remove a DB directory if it exists."""
+    if os.path.exists(db_path):
+        print(f"  [clean-db] rm -rf {db_path}")
+        subprocess.run(["rm", "-rf", db_path], check=True)
 
+
+def reset_hardware(db_path_base: str):
+    """Reset hardware state between runs: sync, drop_caches, fstrim."""
     print("  [hw-reset] sync + drop_caches ...")
     subprocess.run(["sync"], check=True)
     subprocess.run(["sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"], check=True)

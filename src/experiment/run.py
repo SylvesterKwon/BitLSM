@@ -30,6 +30,7 @@ from run_common import (
     TeeOutput,
     add_common_args,
     cartesian_combinations,
+    clean_db,
     cooldown_sleep,
     fmt,
     maybe_run_as_daemon,
@@ -290,6 +291,8 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                             warmed_up_dbs.add(db_path)
                             print(f"  [warmup] done")
                     else:
+                        if not keep_db:
+                            clean_db(db_path)
                         os.makedirs(db_path, exist_ok=True)
                     os.makedirs(output_dir, exist_ok=True)
                     rc, captured_output = run_process(cmd)
@@ -304,8 +307,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                             master_csv = os.path.join(output_dir, f"{exp_label}.csv")
                             _append_to_master_csv(master_csv, name, combo, result_data, master_fieldnames)
                     if hw_reset:
-                        reset_hardware(db_path_base, prev_db_path=db_path,
-                                       keep_db=(keep_db or is_read_only))
+                        reset_hardware(db_path_base)
                     if cooldown > 0 and global_idx < total_runs:
                         cooldown_sleep(cooldown)
 

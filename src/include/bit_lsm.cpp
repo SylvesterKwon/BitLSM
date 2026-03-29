@@ -5,6 +5,7 @@
 #include "rocksdb/options.h"
 #include "sabi.h"
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
 using namespace std;
@@ -28,8 +29,7 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
   Status s =
       DB::Open(rocksdb_options_, db_path, column_families, &cf_handles_, &db_);
   if (!s.ok())
-    cerr << "Failed to open DB: " << s.ToString() << "\n";
-  assert(s.ok());
+    throw std::runtime_error("Failed to open DB: " + s.ToString());
 }
 
 BitLSM::~BitLSM() {
@@ -40,7 +40,8 @@ BitLSM::~BitLSM() {
   WaitForCompactOptions wait_for_compact_options = WaitForCompactOptions();
   wait_for_compact_options.close_db = true;
   s = db_->WaitForCompact(wait_for_compact_options);
-  assert(s.ok());
+  if (!s.ok())
+    cerr << "Failed to close DB: " << s.ToString() << "\n";
   delete db_;
   cout << "DB successfully closed\n";
 }
