@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 
 # Allow importing run_common from the parent experiment directory
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -167,12 +168,25 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                         os.makedirs(db_path, exist_ok=True)
                         os.makedirs(output_dir, exist_ok=True)
 
-                        # Warmup: run once per db_path to populate OS page cache
+                        # Warmup: single read per db_path to populate OS page cache
                         if warmup and db_path not in warmed_up_dbs:
                             print(f"  [warmup] warming up {db_path} ...")
-                            rc, _ = run_process(cmd)
-                            if rc != 0:
-                                sys.exit(f"Warmup failed (exit {rc}): {' '.join(cmd)}")
+                            with open(workload) as wf:
+                                first_line = wf.readline()
+                            with tempfile.NamedTemporaryFile(
+                                mode="w", suffix=".tsv", delete=False
+                            ) as tmp:
+                                tmp.write(first_line)
+                                tmp_path = tmp.name
+                            try:
+                                warmup_cmd = build_honk_command(
+                                    name, tmp_path, db_path, output_dir,
+                                    combo, common_params)
+                                rc, _ = run_process(warmup_cmd)
+                                if rc != 0:
+                                    sys.exit(f"Warmup failed (exit {rc}): {' '.join(warmup_cmd)}")
+                            finally:
+                                os.unlink(tmp_path)
                             warmed_up_dbs.add(db_path)
                             print(f"  [warmup] done")
 
