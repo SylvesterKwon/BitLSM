@@ -77,8 +77,10 @@ int main(int argc, char* argv[]) {
 
   // Prepare output
   filesystem::create_directories(output_dir);
-  string file_prefix =
-      output_dir + "/" + binding->Name() + binding->ParamSuffix();
+  string workload_stem =
+      filesystem::path(workload_path).stem().string();
+  string file_prefix = output_dir + "/" + workload_stem + "_" +
+                        binding->Name() + binding->ParamSuffix();
 
   ofstream write_csv(file_prefix + "_write_log.csv");
   write_csv << "time_elapsed_ms,records_written\n";

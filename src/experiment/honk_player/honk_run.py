@@ -62,6 +62,11 @@ def encode_method_params(params: dict) -> str:
     return "_".join(f"{k}{fmt(v)}" for k, v in params.items())
 
 
+def workload_stem(path: str) -> str:
+    """Extract filename stem from a workload path."""
+    return os.path.splitext(os.path.basename(path))[0]
+
+
 def build_honk_command(method_name: str, workload: str, db_path: str,
                        output_dir: str, combo: dict,
                        common_params: dict = None) -> list:
@@ -87,7 +92,8 @@ def run(config_path: str, dry_run: bool, method_filter: list,
 
     exp_label     = os.path.splitext(os.path.basename(config_path))[0]
     db_path_base  = config["db_path_base"]
-    workload      = config["workload"]
+    raw_workload  = config["workload"]
+    workloads     = raw_workload if isinstance(raw_workload, list) else [raw_workload]
     methods       = config["methods"]
     common_params = config.get("common_params", {})
 
@@ -108,15 +114,18 @@ def run(config_path: str, dry_run: bool, method_filter: list,
             if not methods:
                 sys.exit(f"No methods matched: {method_filter}")
 
-        total_runs = sum(
+        method_combos = sum(
             len(cartesian_combinations(m.get("params", {})))
             for m in methods
         )
+        total_runs = len(workloads) * method_combos
         print(f"config   : {config_path}")
         print(f"label    : {exp_label}")
-        print(f"workload : {workload}")
+        print(f"axes     : {len(workloads)} workload(s) × {method_combos} method-combo(s)")
+        for w in workloads:
+            print(f"           - {workload_stem(w)}")
         print(f"output   : {output_dir}")
-        print(f"total    : {total_runs} run(s) across {len(methods)} method(s)")
+        print(f"total    : {total_runs} run(s)")
         print(f"cooldown : {cooldown}s between runs")
         print(f"hw-reset : {'on (sudo)' if hw_reset else 'off'}")
         print(f"keep-db  : {'on' if keep_db else 'off'}")
@@ -133,35 +142,37 @@ def run(config_path: str, dry_run: bool, method_filter: list,
             if cooldown > 0:
                 cooldown_sleep(cooldown)
 
-        for method in methods:
-            name          = method["name"]
-            method_params = method.get("params", {})
-            combos        = cartesian_combinations(method_params)
+        for workload in workloads:
+            for method in methods:
+                name          = method["name"]
+                method_params = method.get("params", {})
+                combos        = cartesian_combinations(method_params)
 
-            for combo in combos:
-                global_idx += 1
-                if global_idx < start_from:
-                    print(f"[{global_idx}/{total_runs}] [{name}] SKIP (--start-from {start_from})")
-                    continue
+                for combo in combos:
+                    global_idx += 1
+                    if global_idx < start_from:
+                        print(f"[{global_idx}/{total_runs}] [{name}] SKIP (--start-from {start_from})")
+                        continue
 
-                db_path = f"{db_path_base}/{name}/{encode_method_params(combo)}"
-                cmd = build_honk_command(name, workload, db_path, output_dir, combo, common_params)
+                    wl_stem = workload_stem(workload)
+                    db_path = f"{db_path_base}/{wl_stem}/{name}/{encode_method_params(combo)}"
+                    cmd = build_honk_command(name, workload, db_path, output_dir, combo, common_params)
 
-                print(f"[{global_idx}/{total_runs}] [{name}] {' '.join(cmd)}")
+                    print(f"[{global_idx}/{total_runs}] [{wl_stem}][{name}] {' '.join(cmd)}")
 
-                if not dry_run:
-                    os.makedirs(db_path, exist_ok=True)
-                    os.makedirs(output_dir, exist_ok=True)
-                    rc, _ = run_process(cmd)
-                    if rc != 0:
-                        sys.exit(f"Run failed (exit {rc}): {' '.join(cmd)}")
-                    print()
+                    if not dry_run:
+                        os.makedirs(db_path, exist_ok=True)
+                        os.makedirs(output_dir, exist_ok=True)
+                        rc, _ = run_process(cmd)
+                        if rc != 0:
+                            sys.exit(f"Run failed (exit {rc}): {' '.join(cmd)}")
+                        print()
 
-                    if hw_reset:
-                        reset_hardware(db_path_base, prev_db_path=db_path,
-                                       keep_db=keep_db)
-                    if cooldown > 0 and global_idx < total_runs:
-                        cooldown_sleep(cooldown)
+                        if hw_reset:
+                            reset_hardware(db_path_base, prev_db_path=db_path,
+                                           keep_db=keep_db)
+                        if cooldown > 0 and global_idx < total_runs:
+                            cooldown_sleep(cooldown)
 
     finally:
         teardown_logging(log_file, log_path)
