@@ -141,6 +141,7 @@ struct FilterResult {
   BitLSMQuery query;
   std::string attr_names;
   uint32_t k;
+  uint32_t hint_most_selective_attr = UINT32_MAX;  // oracle hint (UINT32_MAX = none)
 };
 
 /// Helper: extract a value as Attr from a simdjson value, given the attr type.
@@ -232,8 +233,20 @@ inline FilterResult ParseFilters(
     names_joined += attr_name_list[i];
   }
 
-  return {BitLSMQuery(std::move(clause_groups)), std::move(names_joined),
-          static_cast<uint32_t>(attr_name_list.size())};
+  BitLSMQuery query(std::move(clause_groups));
+
+  // Parse optional oracle hint: most_selective_attr
+  uint32_t hint_attr = UINT32_MAX;
+  auto hint_field = doc["most_selective_attr"].get_string();
+  if (!hint_field.error()) {
+    std::string hint_name(hint_field.value());
+    auto hit = col_map.find(hint_name);
+    if (hit != col_map.end())
+      hint_attr = hit->second;
+  }
+
+  return {std::move(query), std::move(names_joined),
+          static_cast<uint32_t>(attr_name_list.size()), hint_attr};
 }
 
 }  // namespace honk

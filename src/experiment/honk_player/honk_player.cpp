@@ -2,6 +2,7 @@
 #include "json_record_parser.h"
 #include "taxi_schema.h"
 #include "tsv_parser.h"
+#include <algorithm>
 #include <chrono>
 #include <cxxopts.hpp>
 #include <filesystem>
@@ -62,6 +63,16 @@ int main(int argc, char* argv[]) {
       }
       indexed_indices.push_back(it->second);
     }
+    // Rebuild col_map and all_columns with remapped indices so that
+    // ParseFilters produces attr_idx values matching the indexed attr space.
+    col_map.clear();
+    vector<honk::TaxiColumn> remapped_columns;
+    for (uint32_t i = 0; i < indexed_indices.size(); i++) {
+      auto& orig = all_columns[indexed_indices[i]];
+      col_map[orig.name] = i;
+      remapped_columns.push_back(orig);
+    }
+    all_columns = std::move(remapped_columns);
   }
 
   // Create binding
@@ -122,8 +133,17 @@ int main(int argc, char* argv[]) {
       }
       case honk::OpType::READ: {
         auto& r = get<honk::ReadOp>(op.data);
-        auto [query, attr_names, k] =
+        auto [query, attr_names, k, hint_attr] =
             honk::ParseFilters(r.json, all_columns, col_map);
+        // Oracle hint: move clauses for the most-selective attr to the front
+        // so that MapQueryToSILookups places it at si_lookups[0] for PF.
+        if (hint_attr != UINT32_MAX) {
+          auto& cg = query.clause_groups;
+          std::stable_partition(cg.begin(), cg.end(),
+              [hint_attr](const bit_lsm::OrClause& clause) {
+                return !clause.empty() && clause[0].attr_idx == hint_attr;
+              });
+        }
         auto scan_result = binding->Scan(query);
         double selectivity =
             writes > 0

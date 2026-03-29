@@ -52,8 +52,10 @@ inline SIQueryPlan MapQueryToSILookups(const bit_lsm::BitLSMQuery& query,
                                        const bit_lsm::BitLSMOptions& options) {
   SIQueryPlan plan;
 
-  // Group CONTINUOUS conditions by attr_idx to coalesce bounds
-  std::unordered_map<uint32_t, SILookup> range_map;
+  // Group CONTINUOUS conditions by attr_idx to coalesce bounds.
+  // Reserve a slot in si_lookups on first encounter so that clause_groups
+  // ordering (e.g. hint-based reorder) is preserved.
+  std::unordered_map<uint32_t, size_t> range_slot; // attr_idx → si_lookups index
 
   // Process each clause (AND between clauses, OR within a clause).
   for (const auto& clause : query.clause_groups) {
@@ -83,10 +85,17 @@ inline SIQueryPlan MapQueryToSILookups(const bit_lsm::BitLSMQuery& query,
       // Single-condition clause (common case: AND-only queries)
       const auto& cond = clause[0];
       if (options.attr_types[cond.attr_idx] == bit_lsm::AttrType::CONTINUOUS) {
-        auto& lk = range_map[cond.attr_idx];
-        lk.attr_idx = cond.attr_idx;
-        lk.type = SILookupType::kRangeScan;
-        lk.attr_type = bit_lsm::AttrType::CONTINUOUS;
+        // Reserve a slot on first encounter to preserve clause ordering
+        auto [it, inserted] = range_slot.emplace(cond.attr_idx,
+                                                  plan.si_lookups.size());
+        if (inserted) {
+          SILookup lk;
+          lk.attr_idx = cond.attr_idx;
+          lk.type = SILookupType::kRangeScan;
+          lk.attr_type = bit_lsm::AttrType::CONTINUOUS;
+          plan.si_lookups.push_back(std::move(lk));
+        }
+        auto& lk = plan.si_lookups[it->second];
         double val = std::get<double>(cond.value);
         switch (cond.op) {
         case bit_lsm::CompareOp::GREATER_EQUAL:
@@ -116,9 +125,6 @@ inline SIQueryPlan MapQueryToSILookups(const bit_lsm::BitLSMQuery& query,
       plan.post_filter_query.clause_groups.push_back(clause);
     }
   } // end for (clause)
-
-  for (auto& [_, lk] : range_map)
-    plan.si_lookups.push_back(std::move(lk));
 
   return plan;
 }
@@ -290,7 +296,8 @@ inline ReadResult ScanByPostFiltering(
     std::function<std::vector<std::string>(const SILookup&)> GetPKList) {
   auto start = std::chrono::high_resolution_clock::now();
 
-  // Use first SI lookup only
+  // Use first SI lookup only (caller may reorder clause_groups via
+  // most_selective_attr hint so that the most selective attr lands here).
   auto pk_list = GetPKList(plan.si_lookups[0]);
 
   // Build filter query: all conditions except those for the first SI lookup's
