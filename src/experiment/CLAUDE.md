@@ -109,12 +109,12 @@ python3 src/experiment/honk_player/honk_run.py <params.json> --dry-run
 | `--methods` | all | Comma-separated method filter |
 | `--cooldown N` | 0 | Seconds between runs |
 | `--hw-reset` | off | sync + drop_caches + fstrim between runs (sudo) |
-| `--keep-db` | off | Preserve DB directories between runs |
+| `--clean-db` | off | Delete DB directories before each write run |
 | `--start-from N` | 1 | Resume from N-th experiment (1-indexed) |
 | `--daemon` | **on** | Run in background via nohup |
 | `--no-daemon` | off | Run in foreground |
 
-Between-run sequence: `experiment → [hw-reset: rm DB (unless --keep-db), sync, drop_caches, fstrim] → [cooldown] → next`
+Between-run sequence: `[--clean-db: rm DB] → experiment → [hw-reset: sync, drop_caches, fstrim] → [cooldown] → next`
 
 Logs are saved to `logs/{timestamp}_{label}.log`.
 

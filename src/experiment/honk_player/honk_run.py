@@ -13,7 +13,7 @@ Options:
     --methods m1,m2       Run only the specified methods (comma-separated).
     --cooldown SECONDS    Wait between runs (default: 0).
     --hw-reset            Reset hardware state between runs (sudo required).
-    --keep-db             Do not delete DB directories between runs.
+    --clean-db            Delete DB directories before each run (default: keep).
     --start-from N        Start from the N-th experiment (1-indexed, default: 1).
     --daemon              Run in background via nohup.
     --output-dir DIR      Result CSV output directory (default: derived from config).
@@ -87,7 +87,7 @@ def build_honk_command(method_name: str, workload: str, db_path: str,
 
 
 def run(config_path: str, dry_run: bool, method_filter: list,
-        cooldown: int, hw_reset: bool, keep_db: bool,
+        cooldown: int, hw_reset: bool, clean_db_flag: bool,
         start_from: int = 1, output_dir_override: str = None,
         warmup: bool = False):
     with open(config_path) as f:
@@ -131,7 +131,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
         print(f"total    : {total_runs} run(s)")
         print(f"cooldown : {cooldown}s between runs")
         print(f"hw-reset : {'on (sudo)' if hw_reset else 'off'}")
-        print(f"keep-db  : {'on' if keep_db else 'off'}")
+        print(f"clean-db : {'on' if clean_db_flag else 'off'}")
         print(f"warmup   : {'on (per-db)' if warmup else 'off'}")
         if dry_run:
             print("mode     : dry-run\n")
@@ -166,7 +166,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                     print(f"[{global_idx}/{total_runs}] [{wl_stem}][{name}] {' '.join(cmd)}")
 
                     if not dry_run:
-                        if not keep_db:
+                        if clean_db_flag:
                             clean_db(db_path)
                         os.makedirs(db_path, exist_ok=True)
                         os.makedirs(output_dir, exist_ok=True)
@@ -223,7 +223,8 @@ def main():
 
     method_filter = parse_method_filter(args)
     run(args.config, dry_run=args.dry_run, method_filter=method_filter,
-        cooldown=args.cooldown, hw_reset=args.hw_reset, keep_db=args.keep_db,
+        cooldown=args.cooldown, hw_reset=args.hw_reset,
+        clean_db_flag=args.clean_db,
         start_from=args.start_from, output_dir_override=args.output_dir,
         warmup=args.warmup)
 

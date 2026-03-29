@@ -173,8 +173,8 @@ def add_common_args(parser: argparse.ArgumentParser):
                         help="Seconds to wait between runs (default: 0)")
     parser.add_argument("--hw-reset", action="store_true",
                         help="Reset hardware state between runs (sudo required)")
-    parser.add_argument("--keep-db", action="store_true",
-                        help="Do not delete DB directories between runs")
+    parser.add_argument("--clean-db", action="store_true",
+                        help="Delete DB directories before each write run")
     parser.add_argument("--start-from", type=int, default=1, metavar="N",
                         help="Start from the N-th experiment (1-indexed, default: 1)")
     parser.add_argument("--daemon", action="store_true", default=True,

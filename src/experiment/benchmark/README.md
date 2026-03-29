@@ -118,9 +118,9 @@ tail -f logs/<timestamp>_*.log
 ### Write then read workflow
 
 ```bash
-# 1. Write with --keep-db
+# 1. Write (DB is kept by default)
 sudo python3 src/experiment/run.py exp_set/seq_write_for_read.json \
-  --hw-reset --cooldown 60 --keep-db
+  --hw-reset --cooldown 60
 
 # 2. Read on the same DB (--warmup populates page cache first)
 sudo python3 src/experiment/run.py exp_set/seq_read_cont.json --warmup
