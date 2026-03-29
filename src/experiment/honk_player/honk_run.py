@@ -86,7 +86,8 @@ def build_honk_command(method_name: str, workload: str, db_path: str,
 
 def run(config_path: str, dry_run: bool, method_filter: list,
         cooldown: int, hw_reset: bool, keep_db: bool,
-        start_from: int = 1, output_dir_override: str = None):
+        start_from: int = 1, output_dir_override: str = None,
+        warmup: bool = False):
     with open(config_path) as f:
         config = json.load(f)
 
@@ -129,12 +130,14 @@ def run(config_path: str, dry_run: bool, method_filter: list,
         print(f"cooldown : {cooldown}s between runs")
         print(f"hw-reset : {'on (sudo)' if hw_reset else 'off'}")
         print(f"keep-db  : {'on' if keep_db else 'off'}")
+        print(f"warmup   : {'on (per-db)' if warmup else 'off'}")
         if dry_run:
             print("mode     : dry-run\n")
         else:
             print()
 
         global_idx = 0
+        warmed_up_dbs = set()
 
         if hw_reset and not dry_run:
             print("[pre-run] initial hw-reset ...")
@@ -155,7 +158,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                         continue
 
                     wl_stem = workload_stem(workload)
-                    db_path = f"{db_path_base}/{wl_stem}/{name}/{encode_method_params(combo)}"
+                    db_path = f"{db_path_base}/{name}/{encode_method_params(combo)}"
                     cmd = build_honk_command(name, workload, db_path, output_dir, combo, common_params)
 
                     print(f"[{global_idx}/{total_runs}] [{wl_stem}][{name}] {' '.join(cmd)}")
@@ -163,6 +166,16 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                     if not dry_run:
                         os.makedirs(db_path, exist_ok=True)
                         os.makedirs(output_dir, exist_ok=True)
+
+                        # Warmup: run once per db_path to populate OS page cache
+                        if warmup and db_path not in warmed_up_dbs:
+                            print(f"  [warmup] warming up {db_path} ...")
+                            rc, _ = run_process(cmd)
+                            if rc != 0:
+                                sys.exit(f"Warmup failed (exit {rc}): {' '.join(cmd)}")
+                            warmed_up_dbs.add(db_path)
+                            print(f"  [warmup] done")
+
                         rc, _ = run_process(cmd)
                         if rc != 0:
                             sys.exit(f"Run failed (exit {rc}): {' '.join(cmd)}")
@@ -183,6 +196,9 @@ def main():
         description="Run honk_player with all method × param combinations"
     )
     add_common_args(parser)
+    parser.add_argument("--warmup", action="store_true",
+                        help="Run one warmup query per DB before measuring "
+                             "(populates OS page cache)")
     parser.add_argument("--output-dir",
                         help="Result CSV output directory (overrides config)")
     args = parser.parse_args()
@@ -192,7 +208,8 @@ def main():
     method_filter = parse_method_filter(args)
     run(args.config, dry_run=args.dry_run, method_filter=method_filter,
         cooldown=args.cooldown, hw_reset=args.hw_reset, keep_db=args.keep_db,
-        start_from=args.start_from, output_dir_override=args.output_dir)
+        start_from=args.start_from, output_dir_override=args.output_dir,
+        warmup=args.warmup)
 
 
 if __name__ == "__main__":
