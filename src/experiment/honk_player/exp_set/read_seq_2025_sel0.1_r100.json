@@ -1,0 +1,46 @@
+{
+  "db_path_base": "/scratch/honk",
+  "workload": [
+    "/home/dohyun/Workloads/read_seq_2025_sel0.1_k1_r100.tsv",
+    "/home/dohyun/Workloads/read_seq_2025_sel0.1_k2_r100.tsv",
+    "/home/dohyun/Workloads/read_seq_2025_sel0.1_k3_r100.tsv"
+  ],
+  "output_dir": "src/experiment/honk_player/result",
+  "common_params": {
+    "indexed_attrs": "payment_type,PULocationID,fare_amount,tpep_pickup_datetime"
+  },
+  "methods": [
+    {
+      "name": "no-index",
+      "params": {}
+    },
+    {
+      "name": "bitlsm",
+      "params": {
+        "rho": [
+          0.2,
+          0.1,
+          0.05
+        ]
+      }
+    },
+    {
+      "name": "si-ck",
+      "params": {
+        "read_strategy": [
+          "im",
+          "pf"
+        ]
+      }
+    },
+    {
+      "name": "si-lu",
+      "params": {
+        "read_strategy": [
+          "im",
+          "pf"
+        ]
+      }
+    }
+  ]
+}

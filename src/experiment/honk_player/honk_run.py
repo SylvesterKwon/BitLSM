@@ -56,12 +56,18 @@ from run_common import (
 
 BINARY = "build/bin/honk_player"
 
+# Parameters that define a DB identity — used to build deterministic db_path.
+# Read-only parameters (e.g. read_strategy) are passed to the binary but
+# excluded from the path so that different read options share the same DB.
+DB_PARAMS = ["rho"]
+
 
 def encode_method_params(params: dict) -> str:
-    """Encode method params into a path-safe string, e.g. 'rho0.1' or 'read_strategy_im'."""
-    if not params:
+    """Encode DB-defining params into a path-safe string, e.g. 'rho0.1'."""
+    db_params = {k: v for k, v in params.items() if k in DB_PARAMS}
+    if not db_params:
         return "default"
-    return "_".join(f"{k}{fmt(v)}" for k, v in params.items())
+    return "_".join(f"{k}{fmt(v)}" for k, v in db_params.items())
 
 
 def workload_stem(path: str) -> str:

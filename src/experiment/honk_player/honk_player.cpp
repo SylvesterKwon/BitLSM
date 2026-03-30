@@ -93,12 +93,22 @@ int main(int argc, char* argv[]) {
   string file_prefix = output_dir + "/" + workload_stem + "_" +
                         binding->Name() + binding->ParamSuffix();
 
-  ofstream write_csv(file_prefix + "_write_log.csv");
-  write_csv << "time_elapsed_ms,records_written\n";
-
-  ofstream read_csv(file_prefix + "_read_log.csv");
-  read_csv << "query_id,query_attr_num,filter_attrs,time_elapsed_ms,"
-              "records_matched,records_total,selectivity_actual\n";
+  // CSV files are created lazily — only when the first write/read occurs.
+  ofstream write_csv;
+  ofstream read_csv;
+  auto ensure_write_csv = [&] {
+    if (!write_csv.is_open()) {
+      write_csv.open(file_prefix + "_write_log.csv");
+      write_csv << "time_elapsed_ms,records_written\n";
+    }
+  };
+  auto ensure_read_csv = [&] {
+    if (!read_csv.is_open()) {
+      read_csv.open(file_prefix + "_read_log.csv");
+      read_csv << "query_id,query_attr_num,filter_attrs,time_elapsed_ms,"
+                  "records_matched,records_total,selectivity_actual\n";
+    }
+  };
 
   // Prepare parsers (reusable buffers)
   honk::RecordParser record_parser(indexed_indices);
@@ -121,6 +131,7 @@ int main(int argc, char* argv[]) {
         binding->Put(w.pk, attrs, payload);
         writes++;
         if (writes % 1'000'000 == 0) {
+          ensure_write_csv();
           auto now = chrono::steady_clock::now();
           auto elapsed = chrono::duration_cast<chrono::milliseconds>(
                              now - wall_start)
@@ -145,6 +156,7 @@ int main(int argc, char* argv[]) {
               });
         }
         auto scan_result = binding->Scan(query);
+        ensure_read_csv();  // lazy open, called once
         double selectivity =
             writes > 0
                 ? static_cast<double>(scan_result.matched) / writes

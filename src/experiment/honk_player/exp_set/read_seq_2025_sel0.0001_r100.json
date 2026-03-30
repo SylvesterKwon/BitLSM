@@ -1,10 +1,10 @@
 {
   "db_path_base": "/scratch/honk",
   "workload": [
-    "/home/dohyun/Workloads/read_seq_2025_set_mix_k1_r100.tsv",
-    "/home/dohyun/Workloads/read_seq_2025_set_mix_k2_r100.tsv",
-    "/home/dohyun/Workloads/read_seq_2025_set_mix_k3_r100.tsv",
-    "/home/dohyun/Workloads/read_seq_2025_set_mix_k4_r100.tsv"
+    "/home/dohyun/Workloads/read_seq_2025_sel0.0001_k1_r100.tsv",
+    "/home/dohyun/Workloads/read_seq_2025_sel0.0001_k2_r100.tsv",
+    "/home/dohyun/Workloads/read_seq_2025_sel0.0001_k3_r100.tsv",
+    "/home/dohyun/Workloads/read_seq_2025_sel0.0001_k4_r100.tsv"
   ],
   "output_dir": "src/experiment/honk_player/result",
   "common_params": {
