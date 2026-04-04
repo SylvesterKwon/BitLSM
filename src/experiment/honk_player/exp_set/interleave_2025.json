@@ -1,0 +1,39 @@
+{
+  "db_path_base": "/scratch/honk_player_interleave",
+  "workload": "/home/dohyun/Workloads/read_under_ingestion_0.0001.tsv",
+  "output_dir": "src/experiment/honk_player/result",
+  "interleave": true,
+  "common_params": {
+    "indexed_attrs": "payment_type,PULocationID,fare_amount,tpep_pickup_datetime"
+  },
+  "methods": [
+    {
+      "name": "bitlsm",
+      "params": {
+        "rho": [
+          0.2,
+          0.1,
+          0.05
+        ]
+      }
+    },
+    {
+      "name": "si-ck",
+      "params": {
+        "read_strategy": [
+          "im",
+          "pf"
+        ]
+      }
+    },
+    {
+      "name": "si-lu",
+      "params": {
+        "read_strategy": [
+          "im",
+          "pf"
+        ]
+      }
+    }
+  ]
+}

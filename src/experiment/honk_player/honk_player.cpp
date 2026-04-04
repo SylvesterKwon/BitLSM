@@ -28,7 +28,9 @@ int main(int argc, char* argv[]) {
     ("output_dir", "Result CSV output directory",
      cxxopts::value<string>()->default_value("./result"))
     ("indexed_attrs", "Comma-separated attr names to index (default: all)",
-     cxxopts::value<string>()->default_value(""));
+     cxxopts::value<string>()->default_value(""))
+    ("interleave", "Interleave mode: single CSV, per-op us latency",
+     cxxopts::value<bool>()->default_value("false"));
   // clang-format on
 
   auto result = opts.parse(argc, argv);
@@ -43,6 +45,8 @@ int main(int argc, char* argv[]) {
   string workload_path = result["workload"].as<string>();
   string db_path = result["db_path"].as<string>();
   string output_dir = result["output_dir"].as<string>();
+
+  bool interleave_mode = result["interleave"].as<bool>();
 
   // Parse indexed_attrs (field names → column indices)
   auto all_columns = honk::GetTaxiColumns();
@@ -93,7 +97,19 @@ int main(int argc, char* argv[]) {
   string file_prefix = output_dir + "/" + workload_stem + "_" +
                         binding->Name() + binding->ParamSuffix();
 
-  // CSV files are created lazily — only when the first write/read occurs.
+  // Interleave mode: single CSV, opened on first operation
+  ofstream interleave_csv;
+  bool in_interleave_phase = false;
+  string interleave_path = output_dir + "/interleave_" +
+      binding->Name() + binding->ParamSuffix() + ".csv";
+  auto ensure_interleave_csv = [&] {
+    if (!interleave_csv.is_open()) {
+      interleave_csv.open(interleave_path);
+      interleave_csv << "elapsed_us,records_written,op_type,latency_us\n";
+    }
+  };
+
+  // Normal mode: CSV files are created lazily — only when the first write/read occurs.
   ofstream write_csv;
   ofstream read_csv;
   auto ensure_write_csv = [&] {
@@ -121,6 +137,8 @@ int main(int argc, char* argv[]) {
 
   uint64_t writes = 0, reads = 0;
   auto wall_start = chrono::steady_clock::now();
+  auto interleave_start = chrono::high_resolution_clock::now();
+  bool interleave_started = false;
 
   while (reader.Next(op)) {
     switch (op.type) {
@@ -128,17 +146,42 @@ int main(int argc, char* argv[]) {
       case honk::OpType::UPDATE: {
         auto& w = get<honk::WriteOp>(op.data);
         record_parser.ParseRecord(w.json, attrs, payload);
-        binding->Put(w.pk, attrs, payload);
-        writes++;
-        if (writes % 1'000'000 == 0) {
-          ensure_write_csv();
-          auto now = chrono::steady_clock::now();
-          auto elapsed = chrono::duration_cast<chrono::milliseconds>(
-                             now - wall_start)
-                             .count();
-          write_csv << elapsed << "," << writes << "\n";
-          write_csv.flush();
-          cout << "[write] " << writes << " records, " << elapsed << "ms\n";
+        if (interleave_mode) {
+          if (!interleave_started) {
+            interleave_start = chrono::high_resolution_clock::now();
+            interleave_started = true;
+          }
+          auto t0 = chrono::high_resolution_clock::now();
+          binding->Put(w.pk, attrs, payload);
+          auto t1 = chrono::high_resolution_clock::now();
+          auto latency = chrono::duration_cast<chrono::microseconds>(t1 - t0).count();
+          writes++;
+          if (writes % 1'000 == 0) {
+            ensure_interleave_csv();
+            auto elapsed = chrono::duration_cast<chrono::microseconds>(t1 - interleave_start).count();
+            interleave_csv << elapsed << "," << writes << ",PUT," << latency << "\n";
+          }
+          if (writes % 1'000'000 == 0) {
+            interleave_csv.flush();
+            auto now = chrono::steady_clock::now();
+            auto elapsed = chrono::duration_cast<chrono::milliseconds>(
+                               now - wall_start).count();
+            const char* phase = in_interleave_phase ? "interleave" : "pre-load";
+            cout << "[" << phase << "] " << writes << " records, " << elapsed << "ms\n";
+          }
+        } else {
+          binding->Put(w.pk, attrs, payload);
+          writes++;
+          if (writes % 1'000'000 == 0) {
+            ensure_write_csv();
+            auto now = chrono::steady_clock::now();
+            auto elapsed = chrono::duration_cast<chrono::milliseconds>(
+                               now - wall_start)
+                               .count();
+            write_csv << elapsed << "," << writes << "\n";
+            write_csv.flush();
+            cout << "[write] " << writes << " records, " << elapsed << "ms\n";
+          }
         }
         break;
       }
@@ -155,18 +198,34 @@ int main(int argc, char* argv[]) {
                 return !clause.empty() && clause[0].attr_idx == hint_attr;
               });
         }
-        auto scan_result = binding->Scan(query);
-        ensure_read_csv();  // lazy open, called once
-        double selectivity =
-            writes > 0
-                ? static_cast<double>(scan_result.matched) / writes
-                : 0.0;
-        read_csv << reads << "," << k << ",\"" << attr_names << "\","
-                 << scan_result.elapsed_ms << "," << scan_result.matched
-                 << "," << writes << "," << fixed << setprecision(6)
-                 << selectivity << "\n";
-        read_csv.flush();
-        reads++;
+        if (interleave_mode) {
+          if (!in_interleave_phase) {
+            in_interleave_phase = true;
+            cout << "[interleave] phase begins at " << writes << " records\n";
+          }
+          ensure_interleave_csv();
+          auto t0 = chrono::high_resolution_clock::now();
+          binding->Scan(query);
+          auto t1 = chrono::high_resolution_clock::now();
+          auto latency = chrono::duration_cast<chrono::microseconds>(t1 - t0).count();
+          auto elapsed = chrono::duration_cast<chrono::microseconds>(t1 - interleave_start).count();
+          interleave_csv << elapsed << "," << writes << ",QUERY," << latency << "\n";
+          reads++;
+          cout << "[interleave] QUERY #" << reads << " at " << writes << " records, " << latency << "us\n";
+        } else {
+          auto scan_result = binding->Scan(query);
+          ensure_read_csv();  // lazy open, called once
+          double selectivity =
+              writes > 0
+                  ? static_cast<double>(scan_result.matched) / writes
+                  : 0.0;
+          read_csv << reads << "," << k << ",\"" << attr_names << "\","
+                   << scan_result.elapsed_ms << "," << scan_result.matched
+                   << "," << writes << "," << fixed << setprecision(6)
+                   << selectivity << "\n";
+          read_csv.flush();
+          reads++;
+        }
         break;
       }
       case honk::OpType::PAUSE: {

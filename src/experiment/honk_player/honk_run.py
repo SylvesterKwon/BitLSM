@@ -77,13 +77,16 @@ def workload_stem(path: str) -> str:
 
 def build_honk_command(method_name: str, workload: str, db_path: str,
                        output_dir: str, combo: dict,
-                       common_params: dict = None) -> list:
+                       common_params: dict = None,
+                       interleave: bool = False) -> list:
     """Build honk_player command line."""
     cmd = [BINARY,
            "--binding", method_name,
            "--workload", workload,
            "--db_path", db_path,
            "--output_dir", output_dir]
+    if interleave:
+        cmd += ["--interleave"]
     if common_params:
         for key, val in common_params.items():
             cmd += [f"--{key}", fmt(val)]
@@ -105,6 +108,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
     workloads     = raw_workload if isinstance(raw_workload, list) else [raw_workload]
     methods       = config["methods"]
     common_params = config.get("common_params", {})
+    interleave    = config.get("interleave", False)
 
     # Output directory: CLI override > config > default
     if output_dir_override:
@@ -167,7 +171,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
 
                     wl_stem = workload_stem(workload)
                     db_path = f"{db_path_base}/{name}/{encode_method_params(combo)}"
-                    cmd = build_honk_command(name, workload, db_path, output_dir, combo, common_params)
+                    cmd = build_honk_command(name, workload, db_path, output_dir, combo, common_params, interleave=interleave)
 
                     print(f"[{global_idx}/{total_runs}] [{wl_stem}][{name}] {' '.join(cmd)}")
 
@@ -190,7 +194,7 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                             try:
                                 warmup_cmd = build_honk_command(
                                     name, tmp_path, db_path, output_dir,
-                                    combo, common_params)
+                                    combo, common_params, interleave=False)
                                 rc, _ = run_process(warmup_cmd)
                                 if rc != 0:
                                     sys.exit(f"Warmup failed (exit {rc}): {' '.join(warmup_cmd)}")
@@ -202,6 +206,8 @@ def run(config_path: str, dry_run: bool, method_filter: list,
                         rc, _ = run_process(cmd)
                         if rc != 0:
                             sys.exit(f"Run failed (exit {rc}): {' '.join(cmd)}")
+                        if interleave:
+                            clean_db(db_path)
                         print()
 
                         if hw_reset:
