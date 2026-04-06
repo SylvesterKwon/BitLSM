@@ -132,8 +132,7 @@ ${CROARING_SOURCE_DIR}/cpp/roaring
 
 # 라이브러리 링크
 set(COMMON_LINK_LIBS
-project_base_lib    
-workload_generator_lib
+project_base_lib
 roaring
 rocksdb
 Folly::folly
@@ -152,20 +151,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${COMMON_INCLUDE_DIRS})
 target_link_directories(${PROJECT_NAME} PRIVATE /usr/local/lib)
 target_link_libraries(${PROJECT_NAME} PRIVATE ${COMMON_LINK_LIBS})
 
-# WORKLOAD GENERATOR UTIL
-file(GLOB_RECURSE WORKLOAD_GENERATOR_SOURCES "src/workload_generator/*.cpp")
-add_library(workload_generator_lib STATIC ${WORKLOAD_GENERATOR_SOURCES})
-
-# 라이브러리가 사용할 헤더 경로 지정
-target_include_directories(workload_generator_lib PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/workload_generator
-    ${COMMON_INCLUDE_DIRS}
-)
-
-target_link_libraries(workload_generator_lib PUBLIC
-    # Threads::Threads 
-    # m
-)
 
 
 # EXPERIMENT BINDINGS (shared library, not standalone executables)
