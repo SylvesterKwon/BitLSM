@@ -1,9 +1,0 @@
-{
-  "attrs": [
-    {
-      "type": "categorical",
-      "cardinality": 100
-    }
-  ],
-  "payload_bytes": 32
-}
