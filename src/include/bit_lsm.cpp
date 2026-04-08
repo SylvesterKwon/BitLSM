@@ -54,11 +54,12 @@ Status BitLSM::Put(const string& key, const vector<Attr>& attrs,
         "The number of attrs does not match with db configuration.");
   }
 
-  // 2. Serialize value
-  EncodeValue(bit_lsm_options_, attrs, payload, serialized_value_buf_);
+  // 2. Serialize value (thread_local for concurrent Put safety)
+  thread_local string serialized_value_buf;
+  EncodeValue(bit_lsm_options_, attrs, payload, serialized_value_buf);
 
   // 3. Put Key-Value pair to RocksDB
-  return db_->Put(WriteOptions(), key, serialized_value_buf_);
+  return db_->Put(WriteOptions(), key, serialized_value_buf);
 }
 
 rocksdb::Status BitLSM::PutBatch(const vector<string>& pks,
