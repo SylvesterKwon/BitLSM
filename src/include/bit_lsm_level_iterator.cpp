@@ -71,7 +71,6 @@ void BitLSMLevelIterator::LoadFile(size_t idx) {
 
   // 4. Prepare new SABITableIterator
   cur_table_handle_ = new_table_handle;
-  // TODO: MVCC 를 위한 seqno 전달
   cur_sti_ = new SABITableIterator(bbt, options_, query_);
 }
 

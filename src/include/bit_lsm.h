@@ -12,7 +12,6 @@ namespace bit_lsm {
 
 class BitLSM {
 private:
-  // TODO: 멀티스레드 환경을 위한 커서 도입?
   rocksdb::DB* db_;
   std::string db_path_;
   std::vector<rocksdb::ColumnFamilyHandle*> cf_handles_;

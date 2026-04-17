@@ -118,8 +118,8 @@ void SABIBuilder::SetBinningPolicy() {
   }
 
   // Weight (importance) vector of attrs.
-  // TODO(TASK-85): 읽기 쿼리 집계해서 계산하도록 수정 (현재는 동등하게
-  // 들어온다고 가정하고 개발)
+  // TODO: aggregate read queries to compute weights (currently assumes uniform
+  // weights).
   vector<double> query_weight_vector(attr_buf_.size(), 1.0);
   int32_t remaining_budget = target_total_bitmaps_cnt;
   priority_queue<pair<double, uint32_t>> pq; // {diminishing returns, attr idx}
