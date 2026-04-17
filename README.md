@@ -1,6 +1,8 @@
 ## BitLSM
 
-Based on RocksDB v10.9.0
+BitLSM is an LSM-tree storage engine that efficiently supports multi-attribute conjunctive queries.
+
+Built on top of RocksDB v10.9.0.
 
 ## Prerequisites
 
@@ -51,28 +53,4 @@ sudo python3 ./build/fbcode_builder/getdeps.py \
 ```bash
 cmake -B build
 ninja -C build -j$(nproc)
-```
-
-### 5. Verify Build
-
-On successful build, executables are generated under `build/bin/`:
-
-```
-build/bin/
-  BitLSM          # Main executable
-  bit-lsm         # BitLSM experiment
-  no-index         # No-index baseline experiment
-  si-eager         # Secondary Index (Eager) experiment
-  si-lu            # Secondary Index (Lazy Update) experiment
-  si-ck            # Secondary Index (Compaction Key) experiment
-  ldb              # RocksDB ldb tool
-  sst_dump         # SST file dump tool
-```
-
-## Misc.
-
-### SST dump
-
-```bash
-./build/bin/sst_dump <sst_file_path> --command=scan --show_properties
 ```
