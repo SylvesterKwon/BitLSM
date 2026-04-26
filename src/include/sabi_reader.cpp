@@ -41,6 +41,7 @@ UserDefinedIndexBuilder::BlockHandle SABIUDIIterator::value() {
 
 SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
     : options_(options) {
+  using AlignedPtr = std::unique_ptr<char[], void (*)(void*)>;
   // 1. Read footer
   uint32_t index_entries_cnt_ = DecodeFixed32(
       index_block.data() + index_block.size() - 3 * sizeof(uint32_t));
@@ -120,6 +121,9 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
     posix_memalign(&aligned_ptr, 32, size);
     AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr), std::free);
     memcpy(managed_aligned_ptr.get(), raw_ptr, size);
+    // originally a member-held buffer as zero-copy backing for frozenView.
+    // NOTE: frozenView actually deep-clones. i don't konw if this intended or
+    // not. so this buffer is freed at end of iteration.
     if (i < bitmaps_cnt - 1) {
       bitmap_index.bitmaps[i] = Roaring::frozenView(
           reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
@@ -128,8 +132,6 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
       bitmap_index.tombstone_bitmap = Roaring::frozenView(
           reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
     }
-    managed_buffers_.push_back(
-        std::move(managed_aligned_ptr)); // move pointer ownership
   }
 
   // 4. Read index block related informaiton

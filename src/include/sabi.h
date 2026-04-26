@@ -87,8 +87,6 @@ public:
 class SABIReader : public rocksdb::UserDefinedIndexReader {
 private:
   BitLSMOptions options_;
-  using AlignedPtr = std::unique_ptr<char[], void (*)(void*)>;
-  std::vector<AlignedPtr> managed_buffers_;
 
 public:
   SABIReader(rocksdb::Slice& index_block, BitLSMOptions options_);
