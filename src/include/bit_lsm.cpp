@@ -32,6 +32,14 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
     throw std::runtime_error("Failed to open DB: " + s.ToString());
 }
 
+Status BitLSM::Flush(const FlushOptions& opts) {
+  return db_->Flush(opts);
+}
+
+Status BitLSM::WaitForCompact(const WaitForCompactOptions& opts) {
+  return db_->WaitForCompact(opts);
+}
+
 BitLSM::~BitLSM() {
   Status s;
   // Close DB gracefully
