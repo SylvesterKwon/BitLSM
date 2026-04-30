@@ -34,10 +34,8 @@ public:
   rocksdb::Status Delete(const std::string& key);
   std::unique_ptr<BitLSMIterator> NewIterator(BitLSMQuery& query);
 
-  rocksdb::Status
-  Flush(const rocksdb::FlushOptions& opts = rocksdb::FlushOptions());
-  rocksdb::Status WaitForCompact(const rocksdb::WaitForCompactOptions& opts =
-                                     rocksdb::WaitForCompactOptions());
+  // To use RocksDB API
+  rocksdb::DB* GetInternalDB() { return db_; }
 
   // For debug
   void Statistics();
