@@ -20,3 +20,4 @@ function(bitlsm_add_test name)
 endfunction()
 
 bitlsm_add_test(smoke_test)
+bitlsm_add_test(encode_decode_test)
