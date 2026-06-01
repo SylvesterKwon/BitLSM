@@ -33,13 +33,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /ccache
-          key: ccache-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
+          key: ccache-v2-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-
-            ccache-${{ runner.os }}-
+            ccache-v2-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-
+            ccache-v2-${{ runner.os }}-
 
+      # PORTABLE=1 builds RocksDB without -march=native. Its default
+      # (-march=native) yields CPU-specific objects that ccache would reuse
+      # across GitHub's heterogeneous runner CPUs, causing SIGILL (illegal
+      # instruction). Portable objects run on any runner. Production/benchmark
+      # builds outside CI still use -march=native.
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBITLSM_BUILD_TESTS=ON
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBITLSM_BUILD_TESTS=ON -DPORTABLE=1
 
       - name: Build
         run: cmake --build build -j"$(nproc)"
