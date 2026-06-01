@@ -7,7 +7,7 @@ Built on top of RocksDB v10.9.0.
 ## Prerequisites
 
 - **Compiler**: GCC 11+
-- **CMake**: 3.10+
+- **CMake**: 3.14+
 
 ## Installation
 
@@ -54,3 +54,27 @@ sudo python3 ./build/fbcode_builder/getdeps.py \
 cmake -B build
 ninja -C build -j$(nproc)
 ```
+
+## Testing
+
+Tests use GoogleTest (fetched automatically via CMake `FetchContent`) and are run with CTest.
+
+```bash
+# Configure with tests enabled (default ON) and build
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBITLSM_BUILD_TESTS=ON
+cmake --build build -j
+
+# Run all tests
+ctest --test-dir build --output-on-failure
+
+# Run a subset (regex on test name)
+ctest --test-dir build -R QueryEval -V
+```
+
+Environment knobs for the end-to-end DB tests:
+
+- `MEM_ENV=1` — run against an in-memory RocksDB Env (no disk, faster, fully isolated)
+- `TEST_TMPDIR=/path` — redirect the temp DB root (e.g. a tmpfs)
+- `KEEP_DB=1` — keep the test DB directory on disk for debugging (prints the path)
+
+Each end-to-end test gets a unique DB directory (`<tmp>/bitlsm_<test>_<pid>`) created and destroyed automatically by the `BitLSMTestBase` fixture, so tests never share on-disk state.
