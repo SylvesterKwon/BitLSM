@@ -21,3 +21,4 @@ endfunction()
 
 bitlsm_add_test(smoke_test)
 bitlsm_add_test(encode_decode_test)
+bitlsm_add_test(query_eval_test)
