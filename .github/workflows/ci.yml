@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/sylvesterkwon/bitlsm-ci:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      CCACHE_DIR: /ccache
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: /ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ hashFiles('.gitmodules') }}-
+            ccache-${{ runner.os }}-
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBITLSM_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Test (in-memory env)
+        run: MEM_ENV=1 ctest --test-dir build --output-on-failure
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s
