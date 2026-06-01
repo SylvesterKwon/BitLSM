@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.14)
 
 project(BitLSM VERSION 0.1 LANGUAGES CXX)
 
@@ -84,3 +84,14 @@ target_link_libraries(project_base_lib PUBLIC
 
 # 별칭 타겟 (외부 프로젝트에서 bitlsm::bitlsm으로 참조)
 add_library(bitlsm::bitlsm ALIAS project_base_lib)
+
+# Tests
+if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
+  option(BITLSM_BUILD_TESTS "Build BitLSM unit & integration tests" ON)
+else()
+  option(BITLSM_BUILD_TESTS "Build BitLSM unit & integration tests" OFF)
+endif()
+if(BITLSM_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
