@@ -1,0 +1,16 @@
+# The CI image (docker/ci.Dockerfile) clones Folly itself and copies nothing
+# from the repo, so keep the build context tiny — exclude heavy/irrelevant dirs.
+.git/
+build/
+build_*/
+third_party/
+.venv/
+.cache/
+.claude/
+docs/
+log/
+*.csv
+*.png
+*.pdf
+nohup.out
+__pycache__/
