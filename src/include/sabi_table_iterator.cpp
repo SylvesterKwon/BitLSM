@@ -156,16 +156,16 @@ SABITableIterator::GetBitmapForSingleCondition(
       // Case A: Given value is smaller than leftmost bin (virtual bin -1)
       target_bin_idx = -1;
     } else if (it == boundaries.end()) {
-      // Case B: Given value is larger than rightmost bin (virtual bin N)
-      target_bin_idx = static_cast<int32_t>(num_bins);
+      // Case B: value >= all boundaries -> last bin. The top bin is closed on
+      // the right, matching how the builder bins the maximum value.
+      target_bin_idx = static_cast<int32_t>(num_bins) - 1;
     } else {
       // Case C: Else
       target_bin_idx =
           static_cast<int32_t>(std::distance(boundaries.begin(), it)) - 1;
     }
-    // Why using virtual bin -1, N?: To unify range logic without complex
-    // branching. e.g., In case of N=10, [10,10]. Range will clamped into
-    // inverted range [10,9]. This means empty set.
+    // The virtual bin -1 (Case A) keeps the range math branch-free: e.g. LESS
+    // on a below-min value yields the inverted range [0,-1], i.e. the empty set.
 
     // Set raw range based on operator
     int32_t start_bin, end_bin;
