@@ -12,7 +12,8 @@ include(GoogleTest)
 
 # Shared test helpers (oracle + checked wrapper). Links gtest (NOT gtest_main).
 add_library(bitlsm_testutil STATIC
-  test_util/reference_db.cpp)
+  test_util/reference_db.cpp
+  test_util/checked_bitlsm.cpp)
 target_include_directories(bitlsm_testutil PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(bitlsm_testutil PUBLIC bitlsm::bitlsm GTest::gtest)
 
@@ -32,3 +33,4 @@ bitlsm_add_test(bitlsm_basic_test)
 bitlsm_add_test(bitlsm_query_test)
 bitlsm_add_test(sabi_blob_round_trip_test)
 bitlsm_add_test(reference_db_test)
+bitlsm_add_test(checked_bitlsm_test)
