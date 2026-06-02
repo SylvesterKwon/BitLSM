@@ -211,8 +211,16 @@ SABITableIterator::GetBitmapForSingleCondition(
 roaring::Roaring
 SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
   roaring::Roaring result;
-  if (query.clause_groups.empty())
+  if (query.clause_groups.empty()) {
+    // Empty query is treated as a full table scan.
+    uint32_t total = sabi_reader_->data_entries_cnt_psum.empty()
+                         ? 0
+                         : sabi_reader_->data_entries_cnt_psum.back();
+    result.addRange(0, total);
+    if (!sabi_reader_->bitmap_index.tombstone_bitmap.isEmpty())
+      result -= sabi_reader_->bitmap_index.tombstone_bitmap;
     return result;
+  }
 
   bool is_first_clause = true;
   vector<const roaring::Roaring*> bitmap_ptrs_buf;
