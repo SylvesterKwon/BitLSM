@@ -1,19 +1,22 @@
-#include "rocksdb/options.h"
-#include "table/block_based/block.h"
-#include "table/format.h"
 #include <bit_lsm_query.h>
+
 #include <cstdint>
 #include <iostream>
 #include <memory>
-#define TEST_CACHE_LINE_SIZE                                                   \
-  64 // To avoid compile error when using roaring.hh &
-     // block_based_table_reader.h together
+
+#include "rocksdb/options.h"
+#include "table/block_based/block.h"
+#include "table/format.h"
+#define TEST_CACHE_LINE_SIZE \
+  64  // To avoid compile error when using roaring.hh &
+      // block_based_table_reader.h together
+
+#include <bit_lsm_iterator.h>
 
 #include "roaring.hh"
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
-#include "table/block_based/block_based_table_reader_impl.h" // Required: provides NewDataBlockIterator<> template definition
-#include <bit_lsm_iterator.h>
+#include "table/block_based/block_based_table_reader_impl.h"  // Required: provides NewDataBlockIterator<> template definition
 
 using namespace std;
 using namespace rocksdb;
@@ -36,7 +39,7 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
   biter_.reset(new_biter);
 
   uint32_t cur_checkpoint =
-      UINT32_MAX; // UINT32_MAX means no valid checkpoint is used
+      UINT32_MAX;  // UINT32_MAX means no valid checkpoint is used
   uint32_t cur_offset = 0;
   uint32_t result_idx = 0;
 
@@ -46,7 +49,7 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
       cur_checkpoint = target_checkpoint;
       cur_offset = 0;
       biter_->SeekToRestartPoint(cur_checkpoint);
-      biter_->Next(); // need to call Next once to access real data
+      biter_->Next();  // need to call Next once to access real data
     }
     uint32_t target_offset = indexes[i] % block_restart_interval_;
     while (cur_offset < target_offset && biter_->Valid()) {
@@ -66,12 +69,15 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
 
 SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
                                      BitLSMOptions options, BitLSMQuery query)
-    : options_(options), bbt_(bbt), query_(std::move(query)),
+    : options_(options),
+      bbt_(bbt),
+      query_(std::move(query)),
       index_reader_(bbt_->get_rep()->index_reader.get()),
       sabi_reader_(static_cast<SABIReader*>(index_reader_->GetUDIReader())),
       // 1. Build query bitmap
       query_bitmap_(GetBitmapFromQuery(query_)),
-      bitmap_iter_(query_bitmap_.begin()), bitmap_end_(query_bitmap_.end()) {
+      bitmap_iter_(query_bitmap_.begin()),
+      bitmap_end_(query_bitmap_.end()) {
   // Sort query condition by attr_idx
   // This is for using forward scan while value validation
 
@@ -114,8 +120,7 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
 }
 
 // Build bitmap for a single QueryCondition (leaf node in CNF)
-roaring::Roaring
-SABITableIterator::GetBitmapForSingleCondition(
+roaring::Roaring SABITableIterator::GetBitmapForSingleCondition(
     const QueryCondition& cond, vector<const roaring::Roaring*>& buf) {
   roaring::Roaring cur_cond_bitmap;
   const AttrType& cur_attr_type = options_.attr_types[cond.attr_idx];
@@ -125,8 +130,7 @@ SABITableIterator::GetBitmapForSingleCondition(
     bitmap_offset += sabi_reader_->bitmap_index.bitmap_nums[i];
 
   if (cur_attr_type == AttrType::CATEGORICAL) {
-    if (cond.op != CompareOp::EQUAL)
-      assert(false);
+    if (cond.op != CompareOp::EQUAL) assert(false);
     const string& value = std::get<string>(cond.value);
     vector<pair<string, uint32_t>>& cur_attr_binning_policy =
         get<vector<pair<string, uint32_t>>>(
@@ -165,31 +169,31 @@ SABITableIterator::GetBitmapForSingleCondition(
           static_cast<int32_t>(std::distance(boundaries.begin(), it)) - 1;
     }
     // The virtual bin -1 (Case A) keeps the range math branch-free: e.g. LESS
-    // on a below-min value yields the inverted range [0,-1], i.e. the empty set.
+    // on a below-min value yields the inverted range [0,-1], i.e. the empty
+    // set.
 
     // Set raw range based on operator
     int32_t start_bin, end_bin;
     switch (cond.op) {
-    case CompareOp::EQUAL:
-      start_bin = target_bin_idx;
-      end_bin = target_bin_idx;
-      break;
-    case CompareOp::GREATER_EQUAL: // >= value
-    case CompareOp::GREATER:       // > value
-      start_bin = target_bin_idx;
-      end_bin = static_cast<int32_t>(num_bins) - 1;
-      break;
-    case CompareOp::LESS_EQUAL: // <= value
-    case CompareOp::LESS:       // < value
-      start_bin = 0;
-      end_bin = target_bin_idx;
-      break;
-    default:
-      assert(false);
+      case CompareOp::EQUAL:
+        start_bin = target_bin_idx;
+        end_bin = target_bin_idx;
+        break;
+      case CompareOp::GREATER_EQUAL:  // >= value
+      case CompareOp::GREATER:        // > value
+        start_bin = target_bin_idx;
+        end_bin = static_cast<int32_t>(num_bins) - 1;
+        break;
+      case CompareOp::LESS_EQUAL:  // <= value
+      case CompareOp::LESS:        // < value
+        start_bin = 0;
+        end_bin = target_bin_idx;
+        break;
+      default:
+        assert(false);
     }
     // Clamp range
-    if (start_bin < 0)
-      start_bin = 0;
+    if (start_bin < 0) start_bin = 0;
     if (static_cast<int32_t>(num_bins) <= end_bin)
       end_bin = static_cast<int32_t>(num_bins) - 1;
 
@@ -197,19 +201,17 @@ SABITableIterator::GetBitmapForSingleCondition(
     buf.clear();
     buf.reserve(end_bin - start_bin + 1);
     for (int32_t i = start_bin; i <= end_bin; ++i)
-      buf.push_back(
-          &(sabi_reader_->bitmap_index.bitmaps[bitmap_offset + i]));
+      buf.push_back(&(sabi_reader_->bitmap_index.bitmaps[bitmap_offset + i]));
     if (!buf.empty()) {
-      cur_cond_bitmap =
-          roaring::Roaring::fastunion(buf.size(), buf.data());
+      cur_cond_bitmap = roaring::Roaring::fastunion(buf.size(), buf.data());
     }
   }
   return cur_cond_bitmap;
 }
 
 // CNF bitmap evaluation: AND of OR clauses
-roaring::Roaring
-SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
+roaring::Roaring SABITableIterator::GetBitmapFromQuery(
+    const BitLSMQuery& query) {
   roaring::Roaring result;
   if (query.clause_groups.empty()) {
     // Empty query is treated as a full table scan.
@@ -236,7 +238,7 @@ SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
         clause_bitmap = std::move(cond_bitmap);
         is_first_cond = false;
       } else {
-        clause_bitmap |= cond_bitmap; // OR
+        clause_bitmap |= cond_bitmap;  // OR
       }
     }
 
@@ -248,8 +250,7 @@ SABITableIterator::GetBitmapFromQuery(const BitLSMQuery& query) {
       result &= clause_bitmap;
     }
 
-    if (result.isEmpty())
-      return result;
+    if (result.isEmpty()) return result;
   }
 
   // Filter tombstones
@@ -278,8 +279,7 @@ void SABITableIterator::LoadNextBlock() {
     local_indexes_.clear();
     while (bitmap_iter_ != bitmap_end_) {
       uint32_t global_id = *bitmap_iter_;
-      if (global_id >= global_end_idx)
-        break;
+      if (global_id >= global_end_idx) break;
       if (global_id >= global_start_idx)
         local_indexes_.push_back(global_id - global_start_idx);
 
@@ -287,8 +287,7 @@ void SABITableIterator::LoadNextBlock() {
     }
 
     // 3. Handle no row matching row for current block
-    if (local_indexes_.empty())
-      continue; // Move to next block
+    if (local_indexes_.empty()) continue;  // Move to next block
 
     // 4. Load data block
     keys_buffer_.clear(), values_buffer_.clear();
@@ -302,8 +301,7 @@ void SABITableIterator::LoadNextBlock() {
       // 5-1. Skip corrupted key
       ParsedInternalKey ikey;
       s = rocksdb::ParseInternalKey(keys_buffer_[i], &ikey, false);
-      if (!s.ok())
-        continue;
+      if (!s.ok()) continue;
 
       // 5-2. MVCC filtering
       if (ikey.sequence > options_.read_seqno) {

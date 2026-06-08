@@ -1,11 +1,13 @@
-#include "bit_lsm_utils.h"
-#include "util/coding.h"
 #include <folly/Range.h>
 #include <folly/stats/TDigest.h>
-#include <iostream>
-#include <queue>
 #include <sabi.h>
 #include <sys/types.h>
+
+#include <iostream>
+#include <queue>
+
+#include "bit_lsm_utils.h"
+#include "util/coding.h"
 
 using namespace std;
 using namespace rocksdb;
@@ -93,10 +95,10 @@ void SABIBuilder::SetBinningPolicy() {
 
   // 2. Set # of bitmaps for each attr
   vector<unordered_map<string_view, uint32_t>> cat_buf_map(
-      options_.attr_num); // map for counting each categorical attr's value
+      options_.attr_num);  // map for counting each categorical attr's value
   vector<uint32_t> cardinality(options_.attr_num, 0);
   uint32_t cardinality_ub =
-      target_total_bitmaps_cnt; // theoretically max bins for one attr
+      target_total_bitmaps_cnt;  // theoretically max bins for one attr
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
     if (options_.attr_types[i] == AttrType::CATEGORICAL) {
       const auto& str_vec = get<vector<string>>(attr_buf_[i]);
@@ -110,7 +112,7 @@ void SABIBuilder::SetBinningPolicy() {
       for (double val : double_vec) {
         unique_vals.insert(val);
         if (unique_vals.size() >= cardinality_ub) {
-          break; // Optimization: Upper bound 도달 시 탐색 즉시 종료
+          break;  // Optimization: Upper bound 도달 시 탐색 즉시 종료
         }
       }
       cardinality[i] = unique_vals.size();
@@ -122,7 +124,7 @@ void SABIBuilder::SetBinningPolicy() {
   // weights).
   vector<double> query_weight_vector(attr_buf_.size(), 1.0);
   int32_t remaining_budget = target_total_bitmaps_cnt;
-  priority_queue<pair<double, uint32_t>> pq; // {diminishing returns, attr idx}
+  priority_queue<pair<double, uint32_t>> pq;  // {diminishing returns, attr idx}
   uint32_t total_bitmaps_num = 0;
 
   for (uint32_t i = 0; i < bitmap_index_.bitmap_nums.size(); ++i) {
@@ -139,8 +141,7 @@ void SABIBuilder::SetBinningPolicy() {
   while (remaining_budget > 0 && pq.size() > 0) {
     auto [_, idx] = pq.top();
     pq.pop();
-    if (cardinality[idx] <= bitmap_index_.bitmap_nums[idx])
-      continue;
+    if (cardinality[idx] <= bitmap_index_.bitmap_nums[idx]) continue;
 
     bitmap_index_.bitmap_nums[idx]++;
     remaining_budget--;
@@ -170,7 +171,7 @@ void SABIBuilder::SetCategoricalPropertyBinningPolicy(
   priority_queue<pair<uint32_t, uint32_t>, vector<pair<uint32_t, uint32_t>>,
                  greater<pair<uint32_t, uint32_t>>>
       min_bin_pq;
-  vector<pair<string_view, uint32_t>> sorted_items; // sorted by cnt
+  vector<pair<string_view, uint32_t>> sorted_items;  // sorted by cnt
   for (const auto& [val, cnt] : buf_map[i]) {
     sorted_items.push_back({val, cnt});
   }
@@ -277,8 +278,7 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   // 3-2. Add bitmap index offset
   uint32_t bitmaps_offset_offset = index_blob_.size();
   PutFixed32(&index_blob_, bitmap_offsets.size());
-  for (uint32_t& oi : bitmap_offsets)
-    PutFixed32(&index_blob_, oi);
+  for (uint32_t& oi : bitmap_offsets) PutFixed32(&index_blob_, oi);
 
   // 3-3. Add bitmap binning policies
   vector<uint32_t> binning_policy_offset;
@@ -290,7 +290,8 @@ Status SABIBuilder::Finish(Slice* index_contents) {
       vector<pair<string, uint32_t>>& cur_binning_policy =
           std::get<vector<pair<string, uint32_t>>>(
               bitmap_index_.binning_policy[i]);
-      PutFixed32(&index_blob_, cur_binning_policy.size()); // policy entry count
+      PutFixed32(&index_blob_,
+                 cur_binning_policy.size());  // policy entry count
       for (auto& bi : cur_binning_policy) {
         PutLengthPrefixedSlice(&index_blob_, bi.first);
         PutFixed32(&index_blob_, bi.second);
@@ -298,7 +299,8 @@ Status SABIBuilder::Finish(Slice* index_contents) {
     } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
       vector<double>& cur_binning_policy =
           std::get<vector<double>>(bitmap_index_.binning_policy[i]);
-      PutFixed32(&index_blob_, cur_binning_policy.size()); // policy entry count
+      PutFixed32(&index_blob_,
+                 cur_binning_policy.size());  // policy entry count
       for (auto& bi : cur_binning_policy) {
         uint64_t val_encoded;
         // Prevent implicit double->uint64_t cast
@@ -314,8 +316,7 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   // 3-4. Add bitmap binning policy offset
   uint32_t binning_policy_offset_offset = index_blob_.size();
   PutFixed32(&index_blob_, binning_policy_offset.size());
-  for (uint32_t& oi : binning_policy_offset)
-    PutFixed32(&index_blob_, oi);
+  for (uint32_t& oi : binning_policy_offset) PutFixed32(&index_blob_, oi);
 
   // 3-5. Add footer
   PutFixed32(&index_blob_, index_entries_cnt_);
@@ -340,4 +341,4 @@ void SABIBuilder::Dump() {
   cout << "\n";
 }
 
-} // namespace bit_lsm
+}  // namespace bit_lsm

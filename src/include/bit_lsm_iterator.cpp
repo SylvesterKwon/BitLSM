@@ -1,10 +1,12 @@
+#include <bit_lsm_iterator.h>
+
+#include <cstdint>
+#include <iostream>
+
 #include "bit_lsm_option.h"
 #include "bit_lsm_utils.h"
 #include "rocksdb/db.h"
 #include "rocksdb/snapshot.h"
-#include <bit_lsm_iterator.h>
-#include <cstdint>
-#include <iostream>
 
 using namespace std;
 using namespace rocksdb;
@@ -12,14 +14,18 @@ using namespace bit_lsm;
 
 BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
                                BitLSMOptions options, BitLSMQuery query)
-    : db_(db), db_impl_(static_cast<DBImpl*>(db_)), cfh_(cfh),
+    : db_(db),
+      db_impl_(static_cast<DBImpl*>(db_)),
+      cfh_(cfh),
       // 1. Create snapshot
       snapshot_(db_->GetSnapshot()),
       // For now, we only support default CF for the sake of simplicity
       cfd_(db_impl_->GetVersionSet()->GetColumnFamilySet()->GetDefault()),
       // 2. Create SuperVersion
-      sv_(cfd_->GetReferencedSuperVersion(db_impl_)), options_(options),
-      query_(query), latest_user_key_added("") {
+      sv_(cfd_->GetReferencedSuperVersion(db_impl_)),
+      options_(options),
+      query_(query),
+      latest_user_key_added("") {
   // 3. Save snapshot's seqno to SABIOption
   options_.read_seqno = snapshot_->GetSequenceNumber();
 
@@ -40,8 +46,7 @@ BitLSMIterator::~BitLSMIterator() {
   }
 
   // 3. Release snapshot
-  if (snapshot_ != nullptr)
-    db_->ReleaseSnapshot(snapshot_);
+  if (snapshot_ != nullptr) db_->ReleaseSnapshot(snapshot_);
 }
 
 void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
@@ -72,8 +77,7 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       }
       smi_->Next();
     }
-    if (candidate_keys.empty())
-      break;
+    if (candidate_keys.empty()) break;
 
     // 4. MultiGet candidates from RocksDB
     vector<Slice> candidate_key_slices;
@@ -94,8 +98,7 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
     // 5. Cross check
     for (uint32_t i = 0; i < candidate_key_slices.size(); ++i) {
       // 5-1. Check given candidate key exists in DB
-      if (!statuses[i].ok())
-        continue;
+      if (!statuses[i].ok()) continue;
 
       // 5-2. Value validation
       if (query_.CheckCondition(pin_values[i], options_)) {
@@ -108,8 +111,7 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
   }
 
   // 6. Update valid_
-  if (!batch_keys_.empty())
-    valid_ = true;
+  if (!batch_keys_.empty()) valid_ = true;
 }
 
 void BitLSMIterator::SeekToFirst() {
@@ -118,7 +120,7 @@ void BitLSMIterator::SeekToFirst() {
   latest_user_key_added.clear();
 
   // 2. Prepare next batch
-  FetchNextBatch(1024); // TODO: parameterize it.
+  FetchNextBatch(1024);  // TODO: parameterize it.
 }
 
 void BitLSMIterator::Next() {

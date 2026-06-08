@@ -1,16 +1,17 @@
 #pragma once
 
-#define TEST_CACHE_LINE_SIZE 64 // To avoid compile error
+#define TEST_CACHE_LINE_SIZE 64  // To avoid compile error
+
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <variant>
 
 #include "bit_lsm_option.h"
 #include "roaring.hh"
 #include "rocksdb/options.h"
 #include "rocksdb/user_defined_index.h"
 #include "table/format.h"
-#include <cstddef>
-#include <cstdint>
-#include <memory>
-#include <variant>
 
 namespace bit_lsm {
 
@@ -20,7 +21,7 @@ struct BitmapIndex {
   roaring::Roaring tombstone_bitmap;
 
   // Binned bitmap index policy
-  std::vector<uint32_t> bitmap_nums; // # of bitmaps for each attr
+  std::vector<uint32_t> bitmap_nums;  // # of bitmaps for each attr
   // continuous binning policy: vector<double>
   // categorical binning policy: vector<pair<string,uint32_t>>
   std::vector<std::variant<std::vector<double>,
@@ -33,8 +34,7 @@ class SABIReader;
 class SABIFactory;
 
 class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
-
-private:
+ private:
   BitLSMOptions options_;
 
   // Buffer
@@ -42,9 +42,9 @@ private:
       attr_buf_;
 
   // Statistics
-  uint64_t total_data_entries_size_uncomp_ = 0; // total size of KVPs (bytes)
-  uint32_t data_entries_cnt_ = 0;  // total number of KVPs in current table
-  uint32_t index_entries_cnt_ = 0; // total number of index entries added
+  uint64_t total_data_entries_size_uncomp_ = 0;  // total size of KVPs (bytes)
+  uint32_t data_entries_cnt_ = 0;   // total number of KVPs in current table
+  uint32_t index_entries_cnt_ = 0;  // total number of index entries added
 
   // Bitmap Index
   BitmapIndex bitmap_index_;
@@ -60,7 +60,7 @@ private:
   void SetContinuousPropertyBinningPolicy(uint32_t i);
   void CalculateBitmapIndex();
 
-public:
+ public:
   SABIBuilder(BitLSMOptions options);
   rocksdb::Slice AddIndexEntry(
       const rocksdb::Slice& last_key_in_current_block,
@@ -75,7 +75,7 @@ public:
 
 // Not used. It's only for implementing UDI interface
 class SABIUDIIterator : public rocksdb::UserDefinedIndexIterator {
-public:
+ public:
   SABIUDIIterator(const SABIReader* reader);
   void Prepare(const rocksdb::ScanOptions scan_opts[], size_t num_opts);
   rocksdb::Status SeekAndGetResult(const rocksdb::Slice& target,
@@ -85,32 +85,32 @@ public:
 };
 
 class SABIReader : public rocksdb::UserDefinedIndexReader {
-private:
+ private:
   BitLSMOptions options_;
   using AlignedPtr = std::unique_ptr<char[], void (*)(void*)>;
   std::vector<AlignedPtr> managed_buffers_;
 
-public:
+ public:
   SABIReader(rocksdb::Slice& index_block, BitLSMOptions options_);
   BitmapIndex bitmap_index;
   std::vector<uint32_t> data_entries_cnt_psum;
   std::vector<rocksdb::BlockHandle> block_handles;
-  std::unique_ptr<rocksdb::UserDefinedIndexIterator>
-  NewIterator(const rocksdb::ReadOptions& read_options);
+  std::unique_ptr<rocksdb::UserDefinedIndexIterator> NewIterator(
+      const rocksdb::ReadOptions& read_options);
   size_t ApproximateMemoryUsage() const;
   void Dump();
 };
 
 class SABIFactory : public rocksdb::UserDefinedIndexFactory {
-private:
+ private:
   BitLSMOptions options_;
 
-public:
+ public:
   SABIFactory(BitLSMOptions options) : options_(options) {};
   const char* Name() const override;
   rocksdb::UserDefinedIndexBuilder* NewBuilder() const override;
-  std::unique_ptr<rocksdb::UserDefinedIndexReader>
-  NewReader(rocksdb::Slice& index_block_) const override;
+  std::unique_ptr<rocksdb::UserDefinedIndexReader> NewReader(
+      rocksdb::Slice& index_block_) const override;
 };
 
-} // namespace bit_lsm
+}  // namespace bit_lsm

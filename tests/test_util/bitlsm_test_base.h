@@ -1,19 +1,20 @@
 #pragma once
 
-#include "bit_lsm.h"
-#include "bit_lsm_option.h"
 #include <gtest/gtest.h>
 #include <rocksdb/db.h>
 #include <rocksdb/env.h>
 #include <rocksdb/options.h>
 #include <rocksdb/table.h>
+#include <unistd.h>
 
 #include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <string_view>
-#include <unistd.h>
+
+#include "bit_lsm.h"
+#include "bit_lsm_option.h"
 
 namespace bit_lsm {
 

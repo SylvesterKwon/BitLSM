@@ -1,17 +1,19 @@
 #pragma once
 
-#include "bit_lsm_iterator.h"
-#include "bit_lsm_query.h"
 #include <rocksdb/options.h>
 #include <rocksdb/table.h>
+
 #include <string>
+
+#include "bit_lsm_iterator.h"
+#include "bit_lsm_query.h"
 
 using Attr = std::variant<double, std::string>;
 
 namespace bit_lsm {
 
 class BitLSM {
-private:
+ private:
   rocksdb::DB* db_;
   std::string db_path_;
   std::vector<rocksdb::ColumnFamilyHandle*> cf_handles_;
@@ -20,7 +22,7 @@ private:
 
   // Helper functions
 
-public:
+ public:
   BitLSM(const std::string& db_path, const BitLSMOptions& bit_lsm_options,
          const rocksdb::Options& rocksdb_options,
          const rocksdb::BlockBasedTableOptions& table_options);
@@ -41,4 +43,4 @@ public:
   void Statistics();
   // ...
 };
-} // namespace bit_lsm
+}  // namespace bit_lsm

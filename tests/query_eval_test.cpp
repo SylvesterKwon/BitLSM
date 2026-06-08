@@ -1,10 +1,12 @@
+#include <gtest/gtest.h>
+#include <rocksdb/slice.h>
+
+#include <string>
+#include <vector>
+
 #include "bit_lsm_option.h"
 #include "bit_lsm_query.h"
 #include "bit_lsm_utils.h"
-#include <gtest/gtest.h>
-#include <rocksdb/slice.h>
-#include <string>
-#include <vector>
 
 using namespace bit_lsm;
 
@@ -18,7 +20,8 @@ BitLSMOptions MakeOptions(std::vector<AttrType> types) {
   return options;
 }
 // 연속형 1개 + 범주형 1개 스키마로 한 행을 인코딩.
-std::string Encode2(const BitLSMOptions& options, double cont, const std::string& cat) {
+std::string Encode2(const BitLSMOptions& options, double cont,
+                    const std::string& cat) {
   std::string out;
   EncodeValue(options, {cont, cat}, "p", out);
   return out;
@@ -35,13 +38,18 @@ TEST(QueryEval, EmptyQueryMatchesAll) {
 }
 
 TEST(QueryEval, ContinuousGreaterEqual) {
-  BitLSMOptions options = MakeOptions({AttrType::CONTINUOUS, AttrType::CATEGORICAL});
-  BitLSMQuery query(std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
+  BitLSMOptions options =
+      MakeOptions({AttrType::CONTINUOUS, AttrType::CATEGORICAL});
+  BitLSMQuery query(
+      std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
 
-  EXPECT_TRUE(query.CheckCondition(rocksdb::Slice(Encode2(options, 15.0, "x")), options));
-  EXPECT_FALSE(query.CheckCondition(rocksdb::Slice(Encode2(options, 5.0, "x")), options));
+  EXPECT_TRUE(query.CheckCondition(rocksdb::Slice(Encode2(options, 15.0, "x")),
+                                   options));
+  EXPECT_FALSE(query.CheckCondition(rocksdb::Slice(Encode2(options, 5.0, "x")),
+                                    options));
   // >= 는 경계값 포함.
-  EXPECT_TRUE(query.CheckCondition(rocksdb::Slice(Encode2(options, 10.0, "x")), options));
+  EXPECT_TRUE(query.CheckCondition(rocksdb::Slice(Encode2(options, 10.0, "x")),
+                                   options));
 }
 
 TEST(QueryEval, OrClauseSameAttribute) {
@@ -65,13 +73,17 @@ TEST(QueryEval, OrClauseSameAttribute) {
 }
 
 TEST(QueryEval, AndOfClausesMixedTypes) {
-  BitLSMOptions options = MakeOptions({AttrType::CONTINUOUS, AttrType::CATEGORICAL});
+  BitLSMOptions options =
+      MakeOptions({AttrType::CONTINUOUS, AttrType::CATEGORICAL});
   // (a0 >= 10) AND (a1 == "apple")
   BitLSMQuery query(std::vector<OrClause>{
       OrClause{{0, CompareOp::GREATER_EQUAL, 10.0}},
       OrClause{{1, CompareOp::EQUAL, std::string("apple")}}});
 
-  EXPECT_TRUE(query.CheckCondition(rocksdb::Slice(Encode2(options, 15.0, "apple")), options));
-  EXPECT_FALSE(query.CheckCondition(rocksdb::Slice(Encode2(options, 15.0, "banana")), options));
-  EXPECT_FALSE(query.CheckCondition(rocksdb::Slice(Encode2(options, 5.0, "apple")), options));
+  EXPECT_TRUE(query.CheckCondition(
+      rocksdb::Slice(Encode2(options, 15.0, "apple")), options));
+  EXPECT_FALSE(query.CheckCondition(
+      rocksdb::Slice(Encode2(options, 15.0, "banana")), options));
+  EXPECT_FALSE(query.CheckCondition(
+      rocksdb::Slice(Encode2(options, 5.0, "apple")), options));
 }

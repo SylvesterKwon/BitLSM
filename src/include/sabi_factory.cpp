@@ -18,9 +18,9 @@ UserDefinedIndexBuilder* SABIFactory::NewBuilder() const {
   return new SABIBuilder(options_);
 }
 
-unique_ptr<UserDefinedIndexReader>
-SABIFactory::NewReader(Slice& index_block_) const {
+unique_ptr<UserDefinedIndexReader> SABIFactory::NewReader(
+    Slice& index_block_) const {
   return unique_ptr<SABIReader>(new SABIReader(index_block_, options_));
 }
 
-} // namespace bit_lsm
+}  // namespace bit_lsm

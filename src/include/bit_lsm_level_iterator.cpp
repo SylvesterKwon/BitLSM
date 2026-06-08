@@ -1,13 +1,15 @@
+#include <bit_lsm_iterator.h>
+#include <bit_lsm_query.h>
+
+#include <cstdint>
+#include <iostream>
+
 #include "db/column_family.h"
 #include "db/version_set.h"
 #include "rocksdb/options.h"
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
 #include "table/format.h"
-#include <bit_lsm_iterator.h>
-#include <bit_lsm_query.h>
-#include <cstdint>
-#include <iostream>
 
 using namespace std;
 using namespace rocksdb;
@@ -17,19 +19,24 @@ using namespace roaring;
 BitLSMLevelIterator::BitLSMLevelIterator(SuperVersion* sv, uint32_t level,
                                          BitLSMOptions options,
                                          BitLSMQuery query)
-    : sv_(sv), cfd_(sv->cfd), level_(level), options_(options),
-      query_(std::move(query)), v_(sv->current), tc_(cfd_->table_cache()),
+    : sv_(sv),
+      cfd_(sv->cfd),
+      level_(level),
+      options_(options),
+      query_(std::move(query)),
+      v_(sv->current),
+      tc_(cfd_->table_cache()),
       storage_info_(v_->storage_info()),
       icmp_(storage_info_->InternalComparator()),
       cf_opts_(sv_->mutable_cf_options),
-      files_(storage_info_->LevelFiles(level_)), cur_file_idx_(0),
-      cur_table_handle_(nullptr), cur_sti_(nullptr) {}
+      files_(storage_info_->LevelFiles(level_)),
+      cur_file_idx_(0),
+      cur_table_handle_(nullptr),
+      cur_sti_(nullptr) {}
 
 BitLSMLevelIterator::~BitLSMLevelIterator() {
-  if (cur_sti_)
-    delete cur_sti_;
-  if (cur_table_handle_)
-    tc_->get_cache().Release(cur_table_handle_);
+  if (cur_sti_) delete cur_sti_;
+  if (cur_table_handle_) tc_->get_cache().Release(cur_table_handle_);
 }
 
 void BitLSMLevelIterator::LoadFile(size_t idx) {

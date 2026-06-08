@@ -1,10 +1,12 @@
+#include <bit_lsm_iterator.h>
+#include <bit_lsm_query.h>
+
+#include <cstdint>
+#include <iostream>
+
 #include "db/version_set.h"
 #include "rocksdb/options.h"
 #include "sabi.h"
-#include <bit_lsm_iterator.h>
-#include <bit_lsm_query.h>
-#include <cstdint>
-#include <iostream>
 
 using namespace std;
 using namespace rocksdb;
@@ -60,8 +62,7 @@ BitLSMMemTableIterator::BitLSMMemTableIterator(rocksdb::MemTable* mem,
 BitLSMMemTableIterator::~BitLSMMemTableIterator() {
   // Since iter_'s memory space is managed by arena, use destruct instead of
   // delete
-  if (iter_ != nullptr)
-    iter_->~InternalIterator();
+  if (iter_ != nullptr) iter_->~InternalIterator();
 }
 
 void BitLSMMemTableIterator::SeekToFirst() {

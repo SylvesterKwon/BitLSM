@@ -1,3 +1,8 @@
+#include <bit_lsm_iterator.h>
+#include <bit_lsm_query.h>
+
+#include <iostream>
+
 #include "db/column_family.h"
 #include "db/memtable.h"
 #include "db/version_set.h"
@@ -5,9 +10,6 @@
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
 #include "table/format.h"
-#include <bit_lsm_iterator.h>
-#include <bit_lsm_query.h>
-#include <iostream>
 
 using namespace std;
 using namespace rocksdb;
@@ -16,11 +18,16 @@ using namespace bit_lsm;
 BitLSMMergingIterator::BitLSMMergingIterator(SuperVersion* sv,
                                              BitLSMOptions options,
                                              BitLSMQuery query)
-    : sv_(sv), cfd_(sv_->cfd), options_(options), query_(std::move(query)),
-      v_(sv_->current), tc_(cfd_->table_cache()),
+    : sv_(sv),
+      cfd_(sv_->cfd),
+      options_(options),
+      query_(std::move(query)),
+      v_(sv_->current),
+      tc_(cfd_->table_cache()),
       storage_info_(v_->storage_info()),
       icmp_(storage_info_->InternalComparator()),
-      cf_opts_(sv->mutable_cf_options), heap_(IteratorComparator(icmp_)) {
+      cf_opts_(sv->mutable_cf_options),
+      heap_(IteratorComparator(icmp_)) {
   // 1. Add MemTable iterators
   // 1-1. Active MemTable
   rocksdb::ReadOnlyMemTable* active_mem = sv_->mem;
@@ -69,27 +76,23 @@ BitLSMMergingIterator::BitLSMMergingIterator(SuperVersion* sv,
 
 BitLSMMergingIterator::~BitLSMMergingIterator() {
   // 1. Free children iterators
-  for (auto* ch : ch_iters_)
-    delete ch;
+  for (auto* ch : ch_iters_) delete ch;
   ch_iters_.clear();
 
   // 2. Release cache for L0 SST
-  for (auto* handle : l0_handles_)
-    tc_->get_cache().Release(handle);
+  for (auto* handle : l0_handles_) tc_->get_cache().Release(handle);
   l0_handles_.clear();
 }
 
 void BitLSMMergingIterator::SeekToFirst() {
   // 1. Clear existing heap
-  while (!heap_.empty())
-    heap_.pop();
+  while (!heap_.empty()) heap_.pop();
   valid_ = false;
 
   // 2. Propagate SeekToFirst & Register to heap
   for (auto* child : ch_iters_) {
     child->SeekToFirst();
-    if (child->Valid())
-      heap_.push(child);
+    if (child->Valid()) heap_.push(child);
   }
 
   // 3. Set current iterator
@@ -106,8 +109,7 @@ void BitLSMMergingIterator::Next() {
   SABIInternalIterator* top_iter = heap_.top();
   heap_.pop();
   top_iter->Next();
-  if (top_iter->Valid())
-    heap_.push(top_iter);
+  if (top_iter->Valid()) heap_.push(top_iter);
 
   // 2. Update valid_
   valid_ = !heap_.empty();

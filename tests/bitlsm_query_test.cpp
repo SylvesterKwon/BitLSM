@@ -1,10 +1,12 @@
-#include "test_util/bitlsm_test_base.h"
-#include "test_util/status_matchers.h"
 #include <gtest/gtest.h>
 #include <rocksdb/db.h>
+
 #include <set>
 #include <string>
 #include <vector>
+
+#include "test_util/bitlsm_test_base.h"
+#include "test_util/status_matchers.h"
 
 using namespace bit_lsm;
 
@@ -25,7 +27,8 @@ TEST_F(BitLSMTestBase, FilteredQueryInMemtable) {
   BITLSM_ASSERT_OK(db.Put("pk2", {5.0, std::string("banana")}, "p2"));
   BITLSM_ASSERT_OK(db.Put("pk3", {25.0, std::string("apple")}, "p3"));
 
-  BitLSMQuery query(std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
+  BitLSMQuery query(
+      std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
   EXPECT_EQ(ScanKeys(db, query), (std::set<std::string>{"pk1", "pk3"}));
 }
 
@@ -39,6 +42,7 @@ TEST_F(BitLSMTestBase, FilteredQueryAfterFlush) {
   // memtable → SST. FlushOptions 기본값은 완료까지 대기.
   BITLSM_ASSERT_OK(db.GetInternalDB()->Flush(rocksdb::FlushOptions()));
 
-  BitLSMQuery query(std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
+  BitLSMQuery query(
+      std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
   EXPECT_EQ(ScanKeys(db, query), (std::set<std::string>{"pk1", "pk3"}));
 }
