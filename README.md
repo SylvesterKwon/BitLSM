@@ -78,3 +78,20 @@ Environment knobs for the end-to-end DB tests:
 - `KEEP_DB=1` — keep the test DB directory on disk for debugging (prints the path)
 
 Each end-to-end test gets a unique DB directory (`<tmp>/bitlsm_<test>_<pid>`) created and destroyed automatically by the `BitLSMTestBase` fixture, so tests never share on-disk state.
+
+## Code Style
+
+This project uses [clang-format](https://clang.llvm.org/docs/ClangFormat.html) enforced via [pre-commit](https://pre-commit.com/).
+
+Set up the hook once after cloning:
+
+```bash
+pip install pre-commit   # or: pipx install pre-commit
+pre-commit install
+```
+
+Now every commit auto-formats changed C++ files. To format the whole tree manually:
+
+```bash
+pre-commit run --all-files
+```
