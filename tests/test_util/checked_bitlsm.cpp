@@ -1,8 +1,9 @@
 #include "test_util/checked_bitlsm.h"
 
-#include "bit_lsm_utils.h"  // DecodeAttr (production read path)
 #include <cstring>
 #include <sstream>
+
+#include "bit_lsm_utils.h"  // DecodeAttr (production read path)
 
 namespace bit_lsm {
 namespace {
@@ -10,9 +11,11 @@ namespace {
 // Independent payload extractor from the documented value layout:
 // [attr_cnt:u32][offset[0..N]:u32][payload_offset:u32][data...]
 std::string PayloadOf(std::string_view buf, std::uint32_t attr_cnt) {
-  std::uint32_t payload_off_pos = sizeof(std::uint32_t) + attr_cnt * sizeof(std::uint32_t);
+  std::uint32_t payload_off_pos =
+      sizeof(std::uint32_t) + attr_cnt * sizeof(std::uint32_t);
   std::uint32_t payload_off;
-  std::memcpy(&payload_off, buf.data() + payload_off_pos, sizeof(std::uint32_t));
+  std::memcpy(&payload_off, buf.data() + payload_off_pos,
+              sizeof(std::uint32_t));
   return std::string(buf.substr(payload_off));
 }
 
@@ -66,7 +69,8 @@ std::string CheckedBitLSM::Context() const {
   rocksdb::Status s = engine_->Delete(key);
   if (!s.ok())
     return ::testing::AssertionFailure()
-           << "engine Delete(" << key << ") failed: " << s.ToString() << Context();
+           << "engine Delete(" << key << ") failed: " << s.ToString()
+           << Context();
   return ::testing::AssertionSuccess();
 }
 
@@ -74,7 +78,8 @@ std::string CheckedBitLSM::Context() const {
     const std::vector<std::string>& keys,
     const std::vector<std::vector<Attr>>& attrs_list,
     const std::vector<std::string>& payloads) {
-  // Mirror in order so duplicate keys within the batch are latest-wins on both sides.
+  // Mirror in order so duplicate keys within the batch are latest-wins on both
+  // sides.
   for (std::size_t i = 0; i < keys.size(); ++i) {
     ref_.Put(keys[i], attrs_list[i], payloads[i]);
     trace_.push_back("Batch.Put(" + keys[i] + ")");
@@ -90,7 +95,8 @@ std::string CheckedBitLSM::Context() const {
   trace_.push_back("Flush()");
   rocksdb::Status s = engine_->GetInternalDB()->Flush(rocksdb::FlushOptions());
   if (!s.ok())
-    return ::testing::AssertionFailure() << "Flush failed: " << s.ToString() << Context();
+    return ::testing::AssertionFailure()
+           << "Flush failed: " << s.ToString() << Context();
   return ::testing::AssertionSuccess();
 }
 
@@ -99,7 +105,8 @@ std::string CheckedBitLSM::Context() const {
   rocksdb::Status s = engine_->GetInternalDB()->CompactRange(
       rocksdb::CompactRangeOptions(), nullptr, nullptr);
   if (!s.ok())
-    return ::testing::AssertionFailure() << "CompactRange failed: " << s.ToString() << Context();
+    return ::testing::AssertionFailure()
+           << "CompactRange failed: " << s.ToString() << Context();
   return ::testing::AssertionSuccess();
 }
 
@@ -134,7 +141,8 @@ std::map<std::string, Record> CheckedBitLSM::ScanEngine(BitLSMQuery& query) {
     auto it = actual.find(k);
     if (it == actual.end()) {
       ok = false;
-      diff << "  MISSING (only in reference): " << k << " " << RecordToString(er) << "\n";
+      diff << "  MISSING (only in reference): " << k << " "
+           << RecordToString(er) << "\n";
     } else if (!(it->second == er)) {
       ok = false;
       diff << "  MISMATCH " << k << " ref=" << RecordToString(er)
@@ -144,13 +152,15 @@ std::map<std::string, Record> CheckedBitLSM::ScanEngine(BitLSMQuery& query) {
   for (const auto& [k, ar] : actual) {
     if (expected.find(k) == expected.end()) {
       ok = false;
-      diff << "  EXTRA (only in engine): " << k << " " << RecordToString(ar) << "\n";
+      diff << "  EXTRA (only in engine): " << k << " " << RecordToString(ar)
+           << "\n";
     }
   }
   if (ok) return ::testing::AssertionSuccess();
   return ::testing::AssertionFailure()
-         << "query " << query.ToString() << " mismatch (expected " << expected.size()
-         << " rows, engine returned " << actual.size() << "):\n"
+         << "query " << query.ToString() << " mismatch (expected "
+         << expected.size() << " rows, engine returned " << actual.size()
+         << "):\n"
          << diff.str() << Context();
 }
 

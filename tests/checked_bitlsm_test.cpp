@@ -1,13 +1,17 @@
-#include "test_util/bitlsm_test_base.h"
 #include "test_util/checked_bitlsm.h"
+
 #include <gtest/gtest.h>
+
 #include <string>
 #include <vector>
 
+#include "test_util/bitlsm_test_base.h"
+
 using namespace bit_lsm;
 
-// Workload: same data as the legacy FilteredQuery tests, driven through the core.
-// Threat: the verification core itself must agree with the engine on known-good data.
+// Workload: same data as the legacy FilteredQuery tests, driven through the
+// core. Threat: the verification core itself must agree with the engine on
+// known-good data.
 TEST_F(BitLSMTestBase, CoreAgreesInMemtableAndAfterFlush) {
   BitLSMOptions opt = DefaultOptions();  // {CONTINUOUS, CATEGORICAL}
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -16,11 +20,12 @@ TEST_F(BitLSMTestBase, CoreAgreesInMemtableAndAfterFlush) {
   ASSERT_TRUE(db.Put("pk2", {5.0, std::string("banana")}, "p2"));
   ASSERT_TRUE(db.Put("pk3", {25.0, std::string("apple")}, "p3"));
 
-  BitLSMQuery q(std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
-  ASSERT_TRUE(db.VerifyQuery(q));      // memtable path
+  BitLSMQuery q(
+      std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
+  ASSERT_TRUE(db.VerifyQuery(q));  // memtable path
   ASSERT_TRUE(db.VerifyFullScan());
 
-  ASSERT_TRUE(db.Flush());             // memtable -> SST (SABI bitmap path)
+  ASSERT_TRUE(db.Flush());  // memtable -> SST (SABI bitmap path)
   ASSERT_TRUE(db.VerifyQuery(q));
   ASSERT_TRUE(db.VerifyFullScan());
 }

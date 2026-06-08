@@ -18,21 +18,31 @@ bool ReferenceDB::MatchCondition(const QueryCondition& cond,
     double lhs = std::get<double>(a);
     double rhs = std::get<double>(cond.value);
     switch (cond.op) {
-      case CompareOp::EQUAL:         return lhs == rhs;
-      case CompareOp::LESS:          return lhs <  rhs;
-      case CompareOp::LESS_EQUAL:    return lhs <= rhs;
-      case CompareOp::GREATER:       return lhs >  rhs;
-      case CompareOp::GREATER_EQUAL: return lhs >= rhs;
+      case CompareOp::EQUAL:
+        return lhs == rhs;
+      case CompareOp::LESS:
+        return lhs < rhs;
+      case CompareOp::LESS_EQUAL:
+        return lhs <= rhs;
+      case CompareOp::GREATER:
+        return lhs > rhs;
+      case CompareOp::GREATER_EQUAL:
+        return lhs >= rhs;
     }
   } else {
     const std::string& lhs = std::get<std::string>(a);
     const std::string& rhs = std::get<std::string>(cond.value);
     switch (cond.op) {
-      case CompareOp::EQUAL:         return lhs == rhs;
-      case CompareOp::LESS:          return lhs <  rhs;
-      case CompareOp::LESS_EQUAL:    return lhs <= rhs;
-      case CompareOp::GREATER:       return lhs >  rhs;
-      case CompareOp::GREATER_EQUAL: return lhs >= rhs;
+      case CompareOp::EQUAL:
+        return lhs == rhs;
+      case CompareOp::LESS:
+        return lhs < rhs;
+      case CompareOp::LESS_EQUAL:
+        return lhs <= rhs;
+      case CompareOp::GREATER:
+        return lhs > rhs;
+      case CompareOp::GREATER_EQUAL:
+        return lhs >= rhs;
     }
   }
   return false;
@@ -44,7 +54,10 @@ bool ReferenceDB::Match(const BitLSMQuery& query,
   for (const OrClause& clause : query.clause_groups) {
     bool clause_ok = false;
     for (const QueryCondition& cond : clause) {
-      if (MatchCondition(cond, attrs)) { clause_ok = true; break; }
+      if (MatchCondition(cond, attrs)) {
+        clause_ok = true;
+        break;
+      }
     }
     if (!clause_ok) return false;
   }

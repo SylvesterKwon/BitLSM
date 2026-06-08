@@ -1,12 +1,14 @@
 #include "bit_lsm.h"
+
+#include <iostream>
+#include <stdexcept>
+#include <string>
+
 #include "bit_lsm_iterator.h"
 #include "bit_lsm_option.h"
 #include "bit_lsm_utils.h"
 #include "rocksdb/options.h"
 #include "sabi.h"
-#include <iostream>
-#include <stdexcept>
-#include <string>
 
 using namespace std;
 using namespace rocksdb;
@@ -28,20 +30,17 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
       {ColumnFamilyDescriptor(kDefaultColumnFamilyName, cf_opts)});
   Status s =
       DB::Open(rocksdb_options_, db_path, column_families, &cf_handles_, &db_);
-  if (!s.ok())
-    throw std::runtime_error("Failed to open DB: " + s.ToString());
+  if (!s.ok()) throw std::runtime_error("Failed to open DB: " + s.ToString());
 }
 
 BitLSM::~BitLSM() {
   Status s;
   // Close DB gracefully
-  for (auto handle : cf_handles_)
-    db_->DestroyColumnFamilyHandle(handle);
+  for (auto handle : cf_handles_) db_->DestroyColumnFamilyHandle(handle);
   WaitForCompactOptions wait_for_compact_options = WaitForCompactOptions();
   wait_for_compact_options.close_db = true;
   s = db_->WaitForCompact(wait_for_compact_options);
-  if (!s.ok())
-    cerr << "Failed to close DB: " << s.ToString() << "\n";
+  if (!s.ok()) cerr << "Failed to close DB: " << s.ToString() << "\n";
   delete db_;
   cout << "DB successfully closed\n";
 }
@@ -98,7 +97,7 @@ unique_ptr<BitLSMIterator> BitLSM::NewIterator(BitLSMQuery& query) {
   }
 
   return std::make_unique<BitLSMIterator>(db_,
-                                          cf_handles_[0], // Default CF
+                                          cf_handles_[0],  // Default CF
                                           bit_lsm_options_, query);
 }
 

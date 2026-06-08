@@ -1,15 +1,16 @@
 #pragma once
 
-#include "bit_lsm.h"
-#include "bit_lsm_option.h"
-#include "bit_lsm_utils.h"
-#include "rocksdb/options.h"
 #include <chrono>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
 #include <string>
 #include <vector>
+
+#include "bit_lsm.h"
+#include "bit_lsm_option.h"
+#include "bit_lsm_utils.h"
+#include "rocksdb/options.h"
 
 using namespace std;
 using namespace rocksdb;
@@ -30,11 +31,10 @@ inline string random_string(size_t length) {
   return res;
 }
 
-inline void
-put_thread_worker(bit_lsm::BitLSM* db, uint32_t thread_id, uint64_t n,
-                  uint32_t payload_size, bit_lsm::BitLSMOptions options,
-                  atomic<uint64_t>& global_auto_increment,
-                  chrono::_V2::system_clock::time_point start_time) {
+inline void put_thread_worker(
+    bit_lsm::BitLSM* db, uint32_t thread_id, uint64_t n, uint32_t payload_size,
+    bit_lsm::BitLSMOptions options, atomic<uint64_t>& global_auto_increment,
+    chrono::_V2::system_clock::time_point start_time) {
   rocksdb::WriteOptions wo;
   mt19937 gen(thread_id);
   uniform_int_distribution<int> cat_dist(0, 99);
@@ -44,8 +44,7 @@ put_thread_worker(bit_lsm::BitLSM* db, uint32_t thread_id, uint64_t n,
 
   while (true) {
     uint64_t current_pk_val = global_auto_increment++;
-    if (current_pk_val >= n)
-      break;
+    if (current_pk_val >= n) break;
 
     vector<Attr> attrs(options.attr_num);
     for (uint32_t j = 0; j < options.attr_num; ++j) {
@@ -80,8 +79,7 @@ inline void fill_kvp_multi_thread(bit_lsm::BitLSM* db, uint32_t num_threads,
                                   uint32_t seed = 42, bool debug = false) {
   Status s;
 
-  if (debug)
-    cout << "creating " << n << " kvps into BitLSM using Put API...\n";
+  if (debug) cout << "creating " << n << " kvps into BitLSM using Put API...\n";
   chrono::_V2::system_clock::time_point start_time =
       chrono::high_resolution_clock::now();
   vector<thread> workers;
@@ -90,8 +88,7 @@ inline void fill_kvp_multi_thread(bit_lsm::BitLSM* db, uint32_t num_threads,
   for (int i = 0; i < num_threads; ++i)
     workers.emplace_back(put_thread_worker, db, i, n, payload_size, options,
                          std::ref(global_auto_increment), start_time);
-  for (auto& t : workers)
-    t.join();
+  for (auto& t : workers) t.join();
   if (debug) {
     cout << "✅ created " << n << " kvps. (total:"
          << chrono::duration_cast<chrono::milliseconds>(
@@ -111,7 +108,7 @@ inline void fill_kvp(bit_lsm::BitLSM* db, uint64_t n, uint32_t attr_num,
   if (debug)
     cout << "creating " << n << " kvps into BitLSM using Batch API...\n";
 
-  const uint64_t batch_size = 1e6; // 100만 건씩 묶어서 처리
+  const uint64_t batch_size = 1e6;  // 100만 건씩 묶어서 처리
   uint64_t total_batch = (n + batch_size - 1) / batch_size;
   uint64_t auto_increment = 0;
 
@@ -131,9 +128,9 @@ inline void fill_kvp(bit_lsm::BitLSM* db, uint64_t n, uint32_t attr_num,
       vector<Attr> attrs(attr_num);
       for (uint32_t j = 0; j < attr_num; ++j) {
         if (j % 2 == 0) {
-          attrs[j] = to_string(rand() % 100); // Categorical
+          attrs[j] = to_string(rand() % 100);  // Categorical
         } else {
-          attrs[j] = (double)rand() / RAND_MAX * 100.0; // Continuous
+          attrs[j] = (double)rand() / RAND_MAX * 100.0;  // Continuous
         }
       }
 
@@ -180,9 +177,9 @@ inline void fill_single_kvp(bit_lsm::BitLSM* db, const string& key,
   vector<Attr> attrs(attr_num);
   for (uint32_t j = 0; j < attr_num; ++j) {
     if (j % 2 == 0) {
-      attrs[j] = to_string(rand() % 100); // Categorical
+      attrs[j] = to_string(rand() % 100);  // Categorical
     } else {
-      attrs[j] = (double)rand() / RAND_MAX * 100.0; // Continuous
+      attrs[j] = (double)rand() / RAND_MAX * 100.0;  // Continuous
     }
   }
 

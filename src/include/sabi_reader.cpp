@@ -1,11 +1,13 @@
+#include <folly/Range.h>
+#include <sabi.h>
+#include <sys/types.h>
+
+#include <cstdint>
+#include <iostream>
+
 #include "table/format.h"
 #include "util/coding.h"
 #include "util/coding_lean.h"
-#include <cstdint>
-#include <folly/Range.h>
-#include <iostream>
-#include <sabi.h>
-#include <sys/types.h>
 
 using namespace std;
 using namespace rocksdb;
@@ -104,7 +106,7 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
       DecodeFixed32(index_block.data() + bitmap_indexoffset_offset);
   uint32_t bitmaps_cnt = bitmap_offset_cnt - 1;
   bitmap_index.bitmaps.resize(bitmaps_cnt -
-                              1); // the last bitmap is for tombstone
+                              1);  // the last bitmap is for tombstone
   vector<uint32_t> bitmap_offsets(bitmap_offset_cnt);
   for (uint32_t i = 0; i < bitmap_offset_cnt; ++i) {
     bitmap_offsets[i] =
@@ -129,7 +131,7 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
           reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
     }
     managed_buffers_.push_back(
-        std::move(managed_aligned_ptr)); // move pointer ownership
+        std::move(managed_aligned_ptr));  // move pointer ownership
   }
 
   // 4. Read index block related informaiton
@@ -147,8 +149,8 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
   // Dump();
 }
 
-unique_ptr<UserDefinedIndexIterator>
-SABIReader::NewIterator(const ReadOptions& read_options) {
+unique_ptr<UserDefinedIndexIterator> SABIReader::NewIterator(
+    const ReadOptions& read_options) {
   return make_unique<SABIUDIIterator>(this);
 };
 
@@ -168,4 +170,4 @@ void SABIReader::Dump() {
   cout << "\n";
 }
 
-} // namespace bit_lsm
+}  // namespace bit_lsm

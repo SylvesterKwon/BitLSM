@@ -1,12 +1,13 @@
 #pragma once
 
-#include "bit_lsm_option.h"
-#include "rocksdb/slice.h"
 #include <cstdint>
 #include <sstream>
 #include <string>
 #include <variant>
 #include <vector>
+
+#include "bit_lsm_option.h"
+#include "rocksdb/slice.h"
 
 namespace bit_lsm {
 
@@ -24,7 +25,7 @@ struct QueryCondition {
   uint32_t attr_idx;
   CompareOp op;
   std::variant<double, std::string>
-      value; // double for continuous, string for categorical
+      value;  // double for continuous, string for categorical
 };
 
 // A clause is a group of conditions combined with OR.
@@ -36,13 +37,12 @@ using OrClause = std::vector<QueryCondition>;
 struct BitLSMQuery {
   std::vector<OrClause> clause_groups;
 
-  // Legacy: flat conditions constructor (all AND, each condition becomes its own
-  // clause)
+  // Legacy: flat conditions constructor (all AND, each condition becomes its
+  // own clause)
   explicit BitLSMQuery() = default;
   explicit BitLSMQuery(std::vector<QueryCondition> conditions) {
     clause_groups.reserve(conditions.size());
-    for (auto& c : conditions)
-      clause_groups.push_back({std::move(c)});
+    for (auto& c : conditions) clause_groups.push_back({std::move(c)});
   }
   explicit BitLSMQuery(std::vector<OrClause> groups)
       : clause_groups(std::move(groups)) {}
@@ -54,15 +54,21 @@ struct BitLSMQuery {
   std::string ToString() const {
     auto op_str = [](CompareOp op) -> const char* {
       switch (op) {
-      case CompareOp::EQUAL: return "=";
-      case CompareOp::LESS: return "<";
-      case CompareOp::LESS_EQUAL: return "<=";
-      case CompareOp::GREATER: return ">";
-      case CompareOp::GREATER_EQUAL: return ">=";
+        case CompareOp::EQUAL:
+          return "=";
+        case CompareOp::LESS:
+          return "<";
+        case CompareOp::LESS_EQUAL:
+          return "<=";
+        case CompareOp::GREATER:
+          return ">";
+        case CompareOp::GREATER_EQUAL:
+          return ">=";
       }
       return "?";
     };
-    auto val_str = [](const std::variant<double, std::string>& v) -> std::string {
+    auto val_str =
+        [](const std::variant<double, std::string>& v) -> std::string {
       if (std::holds_alternative<double>(v)) {
         std::ostringstream oss;
         oss << std::get<double>(v);
@@ -87,4 +93,4 @@ struct BitLSMQuery {
   }
 };
 
-} // namespace bit_lsm
+}  // namespace bit_lsm

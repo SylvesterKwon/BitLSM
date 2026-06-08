@@ -1,12 +1,14 @@
 #pragma once
 
-#include "bit_lsm.h"
-#include "test_util/reference_db.h"
-#include <cstdint>
 #include <gtest/gtest.h>
+
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
+
+#include "bit_lsm.h"
+#include "test_util/reference_db.h"
 
 namespace bit_lsm {
 
@@ -39,7 +41,10 @@ class CheckedBitLSM {
 
   // Direct access for meta-tests / advanced drivers.
   ReferenceDB& reference() { return ref_; }
-  void set_seed(std::uint64_t seed) { seed_ = seed; has_seed_ = true; }
+  void set_seed(std::uint64_t seed) {
+    seed_ = seed;
+    has_seed_ = true;
+  }
 
  private:
   std::map<std::string, Record> ScanEngine(BitLSMQuery& query);

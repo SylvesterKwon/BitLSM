@@ -1,4 +1,5 @@
 #include "test_util/reference_db.h"
+
 #include <gtest/gtest.h>
 
 using namespace bit_lsm;
@@ -15,29 +16,43 @@ BitLSMOptions Opt2() {
 }  // namespace
 
 // Workload: evaluate Match on continuous conditions with all five operators.
-// Threat: a wrong oracle silently invalidates EVERY differential test built on it.
+// Threat: a wrong oracle silently invalidates EVERY differential test built on
+// it.
 TEST(ReferenceDBTest, MatchContinuousOps) {
   ReferenceDB ref(Opt2());
   std::vector<Attr> attrs{10.0, std::string("x")};
-  EXPECT_TRUE(ref.Match(BitLSMQuery(std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}}), attrs));
-  EXPECT_FALSE(ref.Match(BitLSMQuery(std::vector<QueryCondition>{{0, CompareOp::GREATER, 10.0}}), attrs));
-  EXPECT_TRUE(ref.Match(BitLSMQuery(std::vector<QueryCondition>{{0, CompareOp::LESS_EQUAL, 10.0}}), attrs));
-  EXPECT_FALSE(ref.Match(BitLSMQuery(std::vector<QueryCondition>{{0, CompareOp::LESS, 10.0}}), attrs));
-  EXPECT_TRUE(ref.Match(BitLSMQuery(std::vector<QueryCondition>{{0, CompareOp::EQUAL, 10.0}}), attrs));
+  EXPECT_TRUE(ref.Match(BitLSMQuery(std::vector<QueryCondition>{
+                            {0, CompareOp::GREATER_EQUAL, 10.0}}),
+                        attrs));
+  EXPECT_FALSE(ref.Match(
+      BitLSMQuery(std::vector<QueryCondition>{{0, CompareOp::GREATER, 10.0}}),
+      attrs));
+  EXPECT_TRUE(ref.Match(BitLSMQuery(std::vector<QueryCondition>{
+                            {0, CompareOp::LESS_EQUAL, 10.0}}),
+                        attrs));
+  EXPECT_FALSE(ref.Match(
+      BitLSMQuery(std::vector<QueryCondition>{{0, CompareOp::LESS, 10.0}}),
+      attrs));
+  EXPECT_TRUE(ref.Match(
+      BitLSMQuery(std::vector<QueryCondition>{{0, CompareOp::EQUAL, 10.0}}),
+      attrs));
 }
 
-// Workload: CNF with an OR-clause and an AND-clause; a contradiction; empty query.
-// Threat: AND/OR nesting wrong → oracle disagrees with engine for the wrong reason.
+// Workload: CNF with an OR-clause and an AND-clause; a contradiction; empty
+// query. Threat: AND/OR nesting wrong → oracle disagrees with engine for the
+// wrong reason.
 TEST(ReferenceDBTest, MatchCnfAndOr) {
   ReferenceDB ref(Opt2());
   std::vector<Attr> attrs{10.0, std::string("x")};
   BitLSMQuery q(std::vector<OrClause>{
-      {{0, CompareOp::EQUAL, 10.0}, {0, CompareOp::EQUAL, 20.0}},  // (a0=10 OR a0=20)
-      {{1, CompareOp::EQUAL, std::string("x")}}});                 // AND (a1='x')
+      {{0, CompareOp::EQUAL, 10.0},
+       {0, CompareOp::EQUAL, 20.0}},                // (a0=10 OR a0=20)
+      {{1, CompareOp::EQUAL, std::string("x")}}});  // AND (a1='x')
   EXPECT_TRUE(ref.Match(q, attrs));
 
-  BitLSMQuery contra(std::vector<OrClause>{
-      {{0, CompareOp::GREATER, 5.0}}, {{0, CompareOp::LESS, 3.0}}});  // a0>5 AND a0<3
+  BitLSMQuery contra(
+      std::vector<OrClause>{{{0, CompareOp::GREATER, 5.0}},
+                            {{0, CompareOp::LESS, 3.0}}});  // a0>5 AND a0<3
   EXPECT_FALSE(ref.Match(contra, attrs));
 
   EXPECT_TRUE(ref.Match(BitLSMQuery(), attrs));  // empty matches all

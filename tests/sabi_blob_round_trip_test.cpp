@@ -1,13 +1,15 @@
+#include <gtest/gtest.h>
+#include <rocksdb/slice.h>
+#include <rocksdb/user_defined_index.h>
+
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "bit_lsm_option.h"
 #include "bit_lsm_utils.h"
 #include "sabi.h"
 #include "test_util/status_matchers.h"
-#include <gtest/gtest.h>
-#include <rocksdb/slice.h>
-#include <rocksdb/user_defined_index.h>
-#include <string>
-#include <utility>
-#include <vector>
 
 using namespace bit_lsm;
 using UDIB = rocksdb::UserDefinedIndexBuilder;
@@ -45,7 +47,8 @@ TEST(SabiBlobRoundTrip, BuildsAndParses) {
   }
 
   // 모든 키를 담는 단일 데이터 블록 하나를 등록.
-  // offset/size 는 빌더가 PutFixed32 로 직렬화하므로 32비트에 들어가는 작은 값을 쓴다.
+  // offset/size 는 빌더가 PutFixed32 로 직렬화하므로 32비트에 들어가는 작은
+  // 값을 쓴다.
   std::string scratch;
   UDIB::BlockHandle block_handle{/*offset=*/100, /*size=*/4096};
   builder.AddIndexEntry(rocksdb::Slice(keys.back()),
@@ -63,7 +66,8 @@ TEST(SabiBlobRoundTrip, BuildsAndParses) {
   EXPECT_EQ(reader.block_handles[0].offset(), 100u);
   EXPECT_EQ(reader.block_handles[0].size(), 4096u);
   ASSERT_EQ(reader.data_entries_cnt_psum.size(), 1u);
-  EXPECT_EQ(reader.data_entries_cnt_psum[0], 4u);  // AddIndexEntry 시점까지 4개 키
+  EXPECT_EQ(reader.data_entries_cnt_psum[0],
+            4u);  // AddIndexEntry 시점까지 4개 키
 
   // 비닝 정책과 속성별 bin 수: 둘 다 attr_num 개, bin 수는 각각 최소 1.
   ASSERT_EQ(reader.bitmap_index.binning_policy.size(), options.attr_num);

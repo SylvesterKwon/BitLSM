@@ -1,6 +1,5 @@
 #pragma once
 
-#include "bit_lsm_option.h"
 #include <cstdint>
 #include <cstring>
 #include <iomanip>
@@ -9,6 +8,8 @@
 #include <string_view>
 #include <variant>
 #include <vector>
+
+#include "bit_lsm_option.h"
 
 using Attr = std::variant<double, std::string>;
 
@@ -56,8 +57,7 @@ inline void EncodeValue(const BitLSMOptions& options,
   // Put payload & offset
   uint32_t payload_offset = static_cast<uint32_t>(data_ptr - base_ptr);
   std::memcpy(base_ptr + offset_write_pos, &payload_offset, sizeof(uint32_t));
-  if (!payload.empty())
-    std::memcpy(data_ptr, payload.data(), payload.size());
+  if (!payload.empty()) std::memcpy(data_ptr, payload.data(), payload.size());
 }
 
 using AttrView = std::variant<double, std::string_view>;
@@ -90,8 +90,7 @@ inline AttrView DecodeAttr(AttrType type, std::string_view buffer,
 
 inline void TEST_DumpValue(BitLSMOptions options, rocksdb::Slice input) {
   for (uint32_t i = 0; i < options.attr_num; ++i) {
-    if (i)
-      std::cout << " / ";
+    if (i) std::cout << " / ";
     AttrView av = DecodeAttr(options.attr_types[i], input.ToStringView(), i);
     if (options.attr_types[i] == AttrType::CONTINUOUS) {
       std::cout << std::fixed << std::setprecision(6) << std::get<double>(av);
@@ -102,4 +101,4 @@ inline void TEST_DumpValue(BitLSMOptions options, rocksdb::Slice input) {
   std::cout << "\n";
 }
 
-} // namespace bit_lsm
+}  // namespace bit_lsm
