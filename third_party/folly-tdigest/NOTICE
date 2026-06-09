@@ -1,0 +1,25 @@
+BitLSM bundles a subset of Facebook's Folly library
+(https://github.com/facebook/folly) in order to use folly::TDigest without
+depending on the full Folly build.
+
+Folly is licensed under the Apache License, Version 2.0 (see LICENSE).
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+Vendored VERBATIM from facebook/folly @ ef07b7666e6a580a936987fc0f8727c1c51cc374:
+  include/folly/stats/TDigest.h
+  include/folly/stats/detail/DoubleRadixSort.h
+  include/folly/algorithm/BinaryHeap.h
+  src/TDigest.cpp
+  src/DoubleRadixSort.cpp
+
+The following headers are NOT from Folly. They are minimal compatibility shims
+authored for BitLSM that re-implement only the small folly/glog interfaces the
+files above reference, so the rest of Folly is not required:
+  include/folly/Range.h
+  include/folly/Utility.h
+  include/folly/Overload.h
+  include/folly/Portability.h
+  include/folly/lang/Exception.h
+  include/folly/lang/Builtin.h
+  include/folly/memory/Malloc.h
+  include/glog/logging.h
