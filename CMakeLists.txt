@@ -74,20 +74,9 @@ set(CROARING_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/CRoaring)
 set(ENABLE_ROARING_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/CRoaring)
 
-# Folly
-set(DEPS_ROOT "/opt/BitLSM/installed")
-set(FOLLY_DIR "${DEPS_ROOT}/folly")
-file(GLOB FMT_DIR "${DEPS_ROOT}/fmt-*")
-file(GLOB GLOG_DIR "${DEPS_ROOT}/glog-*")
-list(APPEND CMAKE_PREFIX_PATH
-    "${FOLLY_DIR}"
-    "${FMT_DIR}"
-    "${GLOG_DIR}"
-)
+# folly TDigest (vendored; replaces the full Folly dependency)
+add_subdirectory(third_party/folly-tdigest)
 
-# 패키지 검색
-find_package(folly CONFIG REQUIRED)
-find_package(gflags REQUIRED) # for folly
 find_package(Threads REQUIRED)
 find_library(JEMALLOC_LIB jemalloc REQUIRED)
 
@@ -109,7 +98,7 @@ target_include_directories(project_base_lib PUBLIC
 target_link_libraries(project_base_lib PUBLIC
     roaring
     rocksdb
-    Folly::folly
+    folly_tdigest
 )
 
 # 별칭 타겟 (외부 프로젝트에서 bitlsm::bitlsm으로 참조)
