@@ -1,6 +1,10 @@
 [submodule "rocksdb"]
 	path = third_party/rocksdb
-	url = https://github.com/SylvesterKwon/rocksdb-for-BitLSM.git
+	url = https://github.com/facebook/rocksdb.git
+	# Our patch (patches/rocksdb-bitlsm.patch) is applied to the work tree at build
+	# time, leaving it permanently "dirty". Ignore that so the superproject status
+	# stays clean; a real change to the pinned commit still shows.
+	ignore = dirty
 [submodule "third_party/CRoaring"]
 	path = third_party/CRoaring
 	url = https://github.com/RoaringBitmap/CRoaring.git

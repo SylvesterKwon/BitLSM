@@ -24,6 +24,36 @@ message(STATUS "Active CXX Flags : ${CMAKE_CXX_FLAGS_${UPPER_BUILD_TYPE}}")
 message(STATUS "=======================================================")
 
 # RocksDB
+# Apply BitLSM's additions onto the pinned vanilla facebook/rocksdb submodule
+# (idempotent: re-runs skip an already-patched tree).
+find_package(Git REQUIRED)
+set(ROCKSDB_SRC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rocksdb")
+set(ROCKSDB_PATCH "${CMAKE_CURRENT_SOURCE_DIR}/patches/rocksdb-bitlsm.patch")
+execute_process(
+  COMMAND ${GIT_EXECUTABLE} -C ${ROCKSDB_SRC} apply --reverse --check ${ROCKSDB_PATCH}
+  RESULT_VARIABLE ROCKSDB_PATCH_REVERSIBLE
+  OUTPUT_QUIET ERROR_QUIET)
+if(ROCKSDB_PATCH_REVERSIBLE EQUAL 0)
+  message(STATUS "RocksDB BitLSM patch: already applied, skipping")
+else()
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} -C ${ROCKSDB_SRC} apply --check ${ROCKSDB_PATCH}
+    RESULT_VARIABLE ROCKSDB_PATCH_APPLICABLE
+    OUTPUT_QUIET ERROR_QUIET)
+  if(NOT ROCKSDB_PATCH_APPLICABLE EQUAL 0)
+    message(FATAL_ERROR
+      "patches/rocksdb-bitlsm.patch does not apply cleanly onto the pinned RocksDB "
+      "submodule. Upstream likely drifted; update the pin or regenerate the patch.")
+  endif()
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} -C ${ROCKSDB_SRC} apply ${ROCKSDB_PATCH}
+    RESULT_VARIABLE ROCKSDB_PATCH_RESULT)
+  if(NOT ROCKSDB_PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to apply patches/rocksdb-bitlsm.patch")
+  endif()
+  message(STATUS "RocksDB BitLSM patch: applied")
+endif()
+
 set(WITH_TESTS OFF CACHE BOOL "" FORCE)
 set(WITH_BENCHMARK_TOOLS OFF CACHE BOOL "" FORCE)
 set(WITH_CORE_TOOLS OFF CACHE BOOL "" FORCE)

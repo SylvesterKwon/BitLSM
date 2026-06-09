@@ -1,0 +1,131 @@
+diff --git a/db/memtable_list.h b/db/memtable_list.h
+index eb42e1c7276a9772b4db50a0d2a775422b532b0d..5498ca8b3769aad7fcd1bc0c9e3486a6c4d1034e 100644
+--- a/db/memtable_list.h
++++ b/db/memtable_list.h
+@@ -155,6 +155,9 @@ class MemTableListVersion {
+   // is enabled.
+   const Slice& GetNewestUDT() const;
+ 
++  // SABI
++  std::list<ReadOnlyMemTable*> GetMemTables() { return memlist_; };
++
+  private:
+   friend class MemTableList;
+ 
+diff --git a/include/rocksdb/user_defined_index.h b/include/rocksdb/user_defined_index.h
+index 395f9fbf35306b366872df5a0cd24701c621b017..7775465672ab4bf2b6cd1858b5a13150d30f2b71 100644
+--- a/include/rocksdb/user_defined_index.h
++++ b/include/rocksdb/user_defined_index.h
+@@ -40,6 +40,9 @@ class UserDefinedIndexBuilder {
+   enum ValueType {
+     kValue,
+     kTypeMax,
++    // BitLSM: We added deletion type support in UDI
++    kTypeDeletion,
++    kTypeSingleDeletion,
+   };
+ 
+   // File offset and size of the data block
+diff --git a/table/block_based/block.h b/table/block_based/block.h
+index 7d7011d40571bd7694ea6515aed74d43de3752d6..5a09084e06e90a317a3e41fba148c39e5ce2bf76 100644
+--- a/table/block_based/block.h
++++ b/table/block_based/block.h
+@@ -384,6 +384,8 @@ class BlockIter : public InternalIteratorBase<TValue> {
+     return key_;
+   }
+ 
++  uint32_t get_num_restarts_() const { return num_restarts_; }  // SABI
++
+ #ifndef NDEBUG
+   ~BlockIter() override {
+     // Assert that the BlockIter is never deleted while Pinning is Enabled.
+diff --git a/table/block_based/block_based_table_reader.h b/table/block_based/block_based_table_reader.h
+index b20d0db194e63c9f06145f35ba09078758b8e84f..c424bf7805e78438832a42722e085c9dfae47708 100644
+--- a/table/block_based/block_based_table_reader.h
++++ b/table/block_based/block_based_table_reader.h
+@@ -20,6 +20,7 @@
+ #include "file/filename.h"
+ #include "rocksdb/slice_transform.h"
+ #include "rocksdb/table_properties.h"
++#include "rocksdb/user_defined_index.h"
+ #include "table/block_based/block.h"
+ #include "table/block_based/block_based_table_factory.h"
+ #include "table/block_based/block_cache.h"
+@@ -38,6 +39,10 @@
+ #include "util/coro_utils.h"
+ #include "util/hash_containers.h"
+ 
++namespace sabi {
++class BlockBasedTableSABIFilter;
++}
++
+ namespace ROCKSDB_NAMESPACE {
+ 
+ class Cache;
+@@ -256,6 +261,7 @@ class BlockBasedTable : public TableReader {
+     }
+     virtual void EraseFromCacheBeforeDestruction(
+         uint32_t /*uncache_aggressiveness*/) {}
++    virtual UserDefinedIndexReader* GetUDIReader() { return nullptr; }  // SABI
+   };
+ 
+   class IndexReaderCommon;
+@@ -354,6 +360,8 @@ class BlockBasedTable : public TableReader {
+   void operator=(const TableReader&) = delete;
+ 
+  private:
++  friend class sabi::BlockBasedTableSABIFilter;
++
+   friend class MockedBlockBasedTable;
+   friend class BlockBasedTableReaderTestVerifyChecksum_ChecksumMismatch_Test;
+   BlockCacheTracer* const block_cache_tracer_;
+diff --git a/table/block_based/user_defined_index_wrapper.h b/table/block_based/user_defined_index_wrapper.h
+index b65ba147e2fc7ab948ecda02fde336658eec3574..2b5754ea57e92974ea3bc8330281dffcb89c3ad6 100644
+--- a/table/block_based/user_defined_index_wrapper.h
++++ b/table/block_based/user_defined_index_wrapper.h
+@@ -101,9 +101,13 @@ class UserDefinedIndexBuilderWrapper : public IndexBuilder {
+             "compression");
+       } else {
+         status_ = ParseInternalKey(key, &pkey, /*lof_err_key*/ false);
+-        if (status_.ok() && pkey.type != ValueType::kTypeValue) {
++        // BitLSM: We added deletion type support in UDI
++        if (status_.ok() && pkey.type != ValueType::kTypeValue &&
++            pkey.type != ValueType::kTypeDeletion &&
++            pkey.type != ValueType::kTypeSingleDeletion) {
+           status_ = Status::InvalidArgument(
+-              "user_defined_index_factory only supported with Puts");
++              "user_defined_index_factory only supported with Puts, Deletes "
++              "and SingleDeletes");
+         }
+       }
+     }
+@@ -119,9 +123,16 @@ class UserDefinedIndexBuilderWrapper : public IndexBuilder {
+     // enforce it in the future by allowing UDIs only for read only
+     // bulkloaded use cases, and only allow ingestion of files with
+     // sequence number 0.
+-    user_defined_index_builder_->OnKeyAdded(
+-        pkey.user_key, UserDefinedIndexBuilder::ValueType::kValue,
+-        value.value());
++
++    // BitLSM: We added deletion type support in UDI
++    UserDefinedIndexBuilder::ValueType udi_type =
++        UserDefinedIndexBuilder::ValueType::kValue;
++    if (pkey.type == ValueType::kTypeDeletion)
++      udi_type = UserDefinedIndexBuilder::ValueType::kTypeDeletion;
++    else if (pkey.type == ValueType::kTypeSingleDeletion)
++      udi_type = UserDefinedIndexBuilder::ValueType::kTypeSingleDeletion;
++    user_defined_index_builder_->OnKeyAdded(pkey.user_key, udi_type,
++                                            value.value());
+   }
+ 
+   Status Finish(IndexBlocks* index_blocks,
+@@ -318,6 +329,9 @@ class UserDefinedIndexReaderWrapper : public BlockBasedTable::IndexReader {
+     reader_->EraseFromCacheBeforeDestruction(uncache_aggressiveness);
+   }
+ 
++  // SABI
++  UserDefinedIndexReader* GetUDIReader() override { return udi_reader_.get(); }
++
+  private:
+   std::string name_;
+   std::unique_ptr<BlockBasedTable::IndexReader> reader_;
