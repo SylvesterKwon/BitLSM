@@ -8,6 +8,7 @@
 
 #include "bit_lsm_option.h"
 #include "rocksdb/slice.h"
+#include "rocksdb/status.h"
 
 namespace bit_lsm {
 
@@ -49,6 +50,11 @@ struct BitLSMQuery {
 
   // Validate given slice with given query condition & options
   bool CheckCondition(rocksdb::Slice slice, const BitLSMOptions& options);
+
+  // Structural validation against a schema: rejects empty clauses,
+  // out-of-range attr_idx, value/attr type mismatches, and non-EQUAL
+  // operators on categorical attributes. OK() means safe to evaluate.
+  rocksdb::Status Validate(const BitLSMOptions& options) const;
 
   // Human-readable query string (e.g., "(a0='2' OR a0='7') AND (a2>='10.5')")
   std::string ToString() const {

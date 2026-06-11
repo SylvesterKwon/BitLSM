@@ -82,4 +82,37 @@ bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
   }
   return true;
 }
+
+rocksdb::Status BitLSMQuery::Validate(const BitLSMOptions& options) const {
+  for (size_t ci = 0; ci < clause_groups.size(); ++ci) {
+    const OrClause& clause = clause_groups[ci];
+    if (clause.empty())
+      return rocksdb::Status::InvalidArgument("clause " + std::to_string(ci) +
+                                              " is empty");
+    for (const QueryCondition& cond : clause) {
+      if (cond.attr_idx >= options.attr_types.size())
+        return rocksdb::Status::InvalidArgument(
+            "attr_idx " + std::to_string(cond.attr_idx) +
+            " out of range (attr_num=" +
+            std::to_string(options.attr_types.size()) + ")");
+      AttrType type = options.attr_types[cond.attr_idx];
+      if (type == AttrType::CONTINUOUS &&
+          !std::holds_alternative<double>(cond.value))
+        return rocksdb::Status::InvalidArgument(
+            "attr " + std::to_string(cond.attr_idx) +
+            " is CONTINUOUS but value is not double");
+      if (type == AttrType::CATEGORICAL) {
+        if (!std::holds_alternative<std::string>(cond.value))
+          return rocksdb::Status::InvalidArgument(
+              "attr " + std::to_string(cond.attr_idx) +
+              " is CATEGORICAL but value is not string");
+        if (cond.op != CompareOp::EQUAL)
+          return rocksdb::Status::InvalidArgument(
+              "categorical attr " + std::to_string(cond.attr_idx) +
+              " supports only EQUAL");
+      }
+    }
+  }
+  return rocksdb::Status::OK();
+}
 }  // namespace bit_lsm
