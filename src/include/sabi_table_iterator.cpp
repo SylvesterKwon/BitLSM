@@ -78,10 +78,6 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
       query_bitmap_(GetBitmapFromQuery(query_)),
       bitmap_iter_(query_bitmap_.begin()),
       bitmap_end_(query_bitmap_.end()) {
-  // Sort query condition by attr_idx
-  // This is for using forward scan while value validation
-
-  // Query is sorted in attr_idx order
   block_restart_interval_ =
       bbt->get_rep()->table_options.block_restart_interval;
 

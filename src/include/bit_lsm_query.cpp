@@ -61,10 +61,19 @@ bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
 
   for (const auto& clause : clause_groups) {
     bool clause_pass = false;
-    AttrType attr_type = options.attr_types[clause[0].attr_idx];
-    AttrView attr_val = DecodeAttr(attr_type, buffer, clause[0].attr_idx);
+    // Conditions in a clause may reference different attributes (full CNF).
+    // NewIterator sorts each clause by attr_idx, so caching the last decoded
+    // attribute keeps same-attr clauses at one decode per clause.
+    uint32_t cached_idx = UINT32_MAX;
+    AttrType cached_type = AttrType::CATEGORICAL;
+    AttrView cached_val;
     for (const auto& cond : clause) {
-      if (EvalCondition(cond, attr_type, attr_val)) {
+      if (cond.attr_idx != cached_idx) {
+        cached_idx = cond.attr_idx;
+        cached_type = options.attr_types[cond.attr_idx];
+        cached_val = DecodeAttr(cached_type, buffer, cond.attr_idx);
+      }
+      if (EvalCondition(cond, cached_type, cached_val)) {
         clause_pass = true;
         break;  // OR short-circuit
       }
