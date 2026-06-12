@@ -96,12 +96,12 @@ rocksdb::Status BitLSMQuery::Validate(const BitLSMOptions& options) const {
             " out of range (attr_num=" +
             std::to_string(options.attr_types.size()) + ")");
       AttrType type = options.attr_types[cond.attr_idx];
-      if (type == AttrType::CONTINUOUS &&
-          !std::holds_alternative<double>(cond.value))
-        return rocksdb::Status::InvalidArgument(
-            "attr " + std::to_string(cond.attr_idx) +
-            " is CONTINUOUS but value is not double");
-      if (type == AttrType::CATEGORICAL) {
+      if (type == AttrType::CONTINUOUS) {
+        if (!std::holds_alternative<double>(cond.value))
+          return rocksdb::Status::InvalidArgument(
+              "attr " + std::to_string(cond.attr_idx) +
+              " is CONTINUOUS but value is not double");
+      } else if (type == AttrType::CATEGORICAL) {
         if (!std::holds_alternative<std::string>(cond.value))
           return rocksdb::Status::InvalidArgument(
               "attr " + std::to_string(cond.attr_idx) +
