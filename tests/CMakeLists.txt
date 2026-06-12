@@ -13,7 +13,8 @@ include(GoogleTest)
 # Shared test helpers (oracle + checked wrapper). Links gtest (NOT gtest_main).
 add_library(bitlsm_testutil STATIC
   test_util/reference_db.cpp
-  test_util/checked_bitlsm.cpp)
+  test_util/checked_bitlsm.cpp
+  test_util/generators.cpp)
 target_include_directories(bitlsm_testutil PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(bitlsm_testutil PUBLIC bitlsm::bitlsm GTest::gtest)
 
@@ -37,3 +38,18 @@ bitlsm_add_test(checked_bitlsm_test)
 bitlsm_add_test(write_semantics_test)
 bitlsm_add_test(binning_boundary_test)
 bitlsm_add_test(tdigest_test)
+bitlsm_add_test(cross_attr_query_test)
+bitlsm_add_test(query_validation_test)
+bitlsm_add_test(generators_test)
+bitlsm_add_test(randomized_diff_test)
+
+# stress 티어: 큰 시드/스텝 예산. PR CI 는 -LE stress 로 제외하고
+# 로컬에서 ctest -L stress 로 실행한다.
+function(bitlsm_add_stress_test name)
+  add_executable(${name} ${name}.cpp)
+  target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(${name} PRIVATE bitlsm::bitlsm bitlsm_testutil GTest::gtest_main)
+  gtest_discover_tests(${name} DISCOVERY_TIMEOUT 120 PROPERTIES LABELS stress)
+endfunction()
+
+bitlsm_add_stress_test(randomized_diff_stress_test)

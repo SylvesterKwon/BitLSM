@@ -62,7 +62,7 @@ jobs:
         run: cmake --build build -j"$(nproc)"
 
       - name: Test (in-memory env)
-        run: MEM_ENV=1 ctest --test-dir build --output-on-failure
+        run: MEM_ENV=1 ctest --test-dir build -LE stress --no-tests=error --output-on-failure
 
       - name: ccache stats
         if: always()

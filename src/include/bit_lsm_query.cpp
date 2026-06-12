@@ -61,10 +61,19 @@ bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
 
   for (const auto& clause : clause_groups) {
     bool clause_pass = false;
-    AttrType attr_type = options.attr_types[clause[0].attr_idx];
-    AttrView attr_val = DecodeAttr(attr_type, buffer, clause[0].attr_idx);
+    // Conditions in a clause may reference different attributes (full CNF).
+    // NewIterator sorts each clause by attr_idx, so caching the last decoded
+    // attribute keeps same-attr clauses at one decode per clause.
+    uint32_t cached_idx = UINT32_MAX;
+    AttrType cached_type = AttrType::CATEGORICAL;
+    AttrView cached_val;
     for (const auto& cond : clause) {
-      if (EvalCondition(cond, attr_type, attr_val)) {
+      if (cond.attr_idx != cached_idx) {
+        cached_idx = cond.attr_idx;
+        cached_type = options.attr_types[cond.attr_idx];
+        cached_val = DecodeAttr(cached_type, buffer, cond.attr_idx);
+      }
+      if (EvalCondition(cond, cached_type, cached_val)) {
         clause_pass = true;
         break;  // OR short-circuit
       }
@@ -72,5 +81,38 @@ bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
     if (!clause_pass) return false;  // AND short-circuit
   }
   return true;
+}
+
+rocksdb::Status BitLSMQuery::Validate(const BitLSMOptions& options) const {
+  for (size_t ci = 0; ci < clause_groups.size(); ++ci) {
+    const OrClause& clause = clause_groups[ci];
+    if (clause.empty())
+      return rocksdb::Status::InvalidArgument("clause " + std::to_string(ci) +
+                                              " is empty");
+    for (const QueryCondition& cond : clause) {
+      if (cond.attr_idx >= options.attr_types.size())
+        return rocksdb::Status::InvalidArgument(
+            "attr_idx " + std::to_string(cond.attr_idx) +
+            " out of range (attr_num=" +
+            std::to_string(options.attr_types.size()) + ")");
+      AttrType type = options.attr_types[cond.attr_idx];
+      if (type == AttrType::CONTINUOUS) {
+        if (!std::holds_alternative<double>(cond.value))
+          return rocksdb::Status::InvalidArgument(
+              "attr " + std::to_string(cond.attr_idx) +
+              " is CONTINUOUS but value is not double");
+      } else if (type == AttrType::CATEGORICAL) {
+        if (!std::holds_alternative<std::string>(cond.value))
+          return rocksdb::Status::InvalidArgument(
+              "attr " + std::to_string(cond.attr_idx) +
+              " is CATEGORICAL but value is not string");
+        if (cond.op != CompareOp::EQUAL)
+          return rocksdb::Status::InvalidArgument(
+              "categorical attr " + std::to_string(cond.attr_idx) +
+              " supports only EQUAL");
+      }
+    }
+  }
+  return rocksdb::Status::OK();
 }
 }  // namespace bit_lsm

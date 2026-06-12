@@ -88,7 +88,12 @@ Status BitLSM::Delete(const string& key) {
 }
 
 unique_ptr<BitLSMIterator> BitLSM::NewIterator(BitLSMQuery& query) {
-  // Sort conditions within each OR clause by attr_idx
+  // Invalid queries (see BitLSMQuery::Validate) get nullptr; callers needing
+  // the reason call Validate directly.
+  if (!query.Validate(bit_lsm_options_).ok()) return nullptr;
+
+  // Sort conditions within each OR clause by attr_idx so same-attr conditions
+  // are adjacent — guarantees CheckCondition's per-clause decode cache hits.
   for (auto& clause : query.clause_groups) {
     std::sort(clause.begin(), clause.end(),
               [](const QueryCondition& a, const QueryCondition& b) {

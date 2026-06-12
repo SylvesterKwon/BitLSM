@@ -113,6 +113,11 @@ std::string CheckedBitLSM::Context() const {
 std::map<std::string, Record> CheckedBitLSM::ScanEngine(BitLSMQuery& query) {
   std::map<std::string, Record> out;
   auto it = engine_->NewIterator(query);
+  if (!it) {
+    ADD_FAILURE() << "NewIterator returned nullptr (invalid query?) for "
+                  << query.ToString() << Context();
+    return out;
+  }
   for (it->SeekToFirst(); it->Valid(); it->Next()) {
     std::string key = it->key().ToString();
     std::string_view val = it->value().ToStringView();
