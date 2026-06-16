@@ -70,9 +70,16 @@ add_subdirectory(third_party/rocksdb)
 set(ROCKSDB_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/rocksdb)
 
 ## CRoaring
-set(CROARING_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/CRoaring)
+include(FetchContent)
 set(ENABLE_ROARING_TESTS OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/CRoaring)
+FetchContent_Declare(
+    croaring
+    GIT_REPOSITORY https://github.com/RoaringBitmap/CRoaring.git
+    GIT_TAG v4.7.0
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(croaring)
+set(CROARING_SOURCE_DIR ${croaring_SOURCE_DIR})
 
 # folly TDigest (vendored; replaces the full Folly dependency)
 add_subdirectory(third_party/folly-tdigest)

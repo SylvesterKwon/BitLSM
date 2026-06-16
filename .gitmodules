@@ -5,6 +5,3 @@
 	# time, leaving it permanently "dirty". Ignore that so the superproject status
 	# stays clean; a real change to the pinned commit still shows.
 	ignore = dirty
-[submodule "third_party/CRoaring"]
-	path = third_party/CRoaring
-	url = https://github.com/RoaringBitmap/CRoaring.git
