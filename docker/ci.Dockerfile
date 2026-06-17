@@ -1,9 +1,10 @@
 # CI base image for BitLSM.
 # Provides the toolchain plus the handful of system libraries RocksDB links;
-# everything else BitLSM needs is vendored in-tree (RocksDB, CRoaring, and
-# folly TDigest), so the image no longer builds Facebook Folly. The PR workflow
-# runs inside this image and only builds RocksDB + the project + tests (with
-# ccache). Ubuntu 22.04 matches the local dev host (gcc 11, cmake 3.22).
+# RocksDB and folly TDigest are vendored in-tree and CRoaring is fetched at
+# configure time via CMake FetchContent, so the image no longer builds Facebook
+# Folly. The PR workflow runs inside this image and only builds RocksDB + the
+# project + tests (with ccache). Ubuntu 22.04 matches the local dev host
+# (gcc 11, cmake 3.22).
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
