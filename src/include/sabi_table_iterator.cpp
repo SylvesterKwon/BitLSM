@@ -74,12 +74,20 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
       query_(std::move(query)),
       index_reader_(bbt_->get_rep()->index_reader.get()),
       sabi_reader_(static_cast<SABIReader*>(index_reader_->GetUDIReader())),
-      // 1. Build query bitmap
-      query_bitmap_(GetBitmapFromQuery(query_)),
+      query_bitmap_(),
       bitmap_iter_(query_bitmap_.begin()),
       bitmap_end_(query_bitmap_.end()) {
   block_restart_interval_ =
       bbt->get_rep()->table_options.block_restart_interval;
+
+  // Early exit: skip all bitmap work and block fetches if the query is
+  // provably unsatisfiable against this SSTable's min/max boundaries.
+  if (!sabi_reader_->QueryCanMatch(query_, options_)) return;
+
+  // 1. Build query bitmap
+  query_bitmap_ = GetBitmapFromQuery(query_);
+  bitmap_iter_ = query_bitmap_.begin();
+  bitmap_end_ = query_bitmap_.end();
 
   // 2. Get target block handles (binary search)
   int64_t last_added_block_idx = -1;

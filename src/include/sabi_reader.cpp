@@ -1,6 +1,8 @@
 #include <sabi.h>
 #include <sys/types.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 
@@ -11,6 +13,61 @@
 using namespace std;
 using namespace rocksdb;
 using namespace roaring;
+
+namespace {
+
+// Returns true only when `cond` is provably unsatisfiable against the SST
+// described by `bm` and `opts`. Returns false if uncertain or unsupported.
+bool ConditionImpossible(const bit_lsm::QueryCondition& cond,
+                         const bit_lsm::BitLSMOptions& opts,
+                         const bit_lsm::BitmapIndex& bm) {
+  uint32_t idx = cond.attr_idx;
+  if (idx >= bm.binning_policy.size()) return false;
+  if (idx >= opts.attr_types.size()) return false;
+
+  if (opts.attr_types[idx] == bit_lsm::AttrType::CONTINUOUS) {
+    if (!std::holds_alternative<std::vector<double>>(bm.binning_policy[idx]))
+      return false;
+    const auto& bounds = std::get<std::vector<double>>(bm.binning_policy[idx]);
+    if (bounds.size() < 2) return false;
+    double mn = bounds.front(), mx = bounds.back();
+    if (std::isnan(mn) || std::isnan(mx)) return false;
+
+    if (!std::holds_alternative<double>(cond.value)) return false;
+    double val = std::get<double>(cond.value);
+
+    switch (cond.op) {
+      case bit_lsm::CompareOp::GREATER:
+        return val >= mx;
+      case bit_lsm::CompareOp::GREATER_EQUAL:
+        return val > mx;
+      case bit_lsm::CompareOp::LESS:
+        return val <= mn;
+      case bit_lsm::CompareOp::LESS_EQUAL:
+        return val < mn;
+      case bit_lsm::CompareOp::EQUAL:
+        return val < mn || val > mx;
+    }
+  } else if (opts.attr_types[idx] == bit_lsm::AttrType::CATEGORICAL) {
+    if (cond.op != bit_lsm::CompareOp::EQUAL) return false;
+    if (!std::holds_alternative<std::vector<std::pair<std::string, uint32_t>>>(
+            bm.binning_policy[idx]))
+      return false;
+    if (!std::holds_alternative<std::string>(cond.value)) return false;
+    const auto& entries =
+        std::get<std::vector<std::pair<std::string, uint32_t>>>(
+            bm.binning_policy[idx]);
+    const std::string& val = std::get<std::string>(cond.value);
+    auto it =
+        std::lower_bound(entries.begin(), entries.end(), val,
+                         [](const std::pair<std::string, uint32_t>& e,
+                            const std::string& v) { return e.first < v; });
+    return !(it != entries.end() && it->first == val);
+  }
+  return false;
+}
+
+}  // namespace
 
 namespace bit_lsm {
 
@@ -167,6 +224,24 @@ void SABIReader::Dump() {
   for (uint32_t i = 0; i < bitmap_index.bitmap_nums.size(); ++i)
     cout << "\t" << bitmap_index.bitmap_nums[i] << ", ";
   cout << "\n";
+}
+
+bool SABIReader::QueryCanMatch(const BitLSMQuery& q,
+                               const BitLSMOptions& opts) const {
+  for (const auto& clause : q.clause_groups) {
+    if (clause.empty()) continue;  // empty clause is trivially satisfiable
+    // Clause (OR) is impossible iff every condition in it is individually
+    // impossible against this SST's binning boundaries.
+    bool clause_impossible = true;
+    for (const auto& cond : clause) {
+      if (!ConditionImpossible(cond, opts, bitmap_index)) {
+        clause_impossible = false;
+        break;
+      }
+    }
+    if (clause_impossible) return false;
+  }
+  return true;
 }
 
 }  // namespace bit_lsm
