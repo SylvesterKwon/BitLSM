@@ -8,6 +8,7 @@
 #include <variant>
 
 #include "bit_lsm_option.h"
+#include "bit_lsm_query.h"
 #include "roaring.hh"
 #include "rocksdb/options.h"
 #include "rocksdb/user_defined_index.h"
@@ -98,6 +99,10 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   std::unique_ptr<rocksdb::UserDefinedIndexIterator> NewIterator(
       const rocksdb::ReadOptions& read_options);
   size_t ApproximateMemoryUsage() const;
+  // Returns false only when the query is provably unsatisfiable in this SST
+  // (safe to skip all bitmap work and block fetches). Never returns false
+  // for a query that could actually match a row.
+  bool QueryCanMatch(const BitLSMQuery& q, const BitLSMOptions& opts) const;
   void Dump();
 };
 
