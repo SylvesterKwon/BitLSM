@@ -17,13 +17,13 @@ using namespace bit_lsm;
 using namespace roaring;
 
 BitLSMLevelIterator::BitLSMLevelIterator(SuperVersion* sv, uint32_t level,
-                                         BitLSMOptions options,
-                                         BitLSMQuery query)
+                                         const BitLSMOptions& options,
+                                         const BitLSMQuery& query)
     : sv_(sv),
       cfd_(sv->cfd),
       level_(level),
       options_(options),
-      query_(std::move(query)),
+      query_(query),
       v_(sv->current),
       tc_(cfd_->table_cache()),
       storage_info_(v_->storage_info()),

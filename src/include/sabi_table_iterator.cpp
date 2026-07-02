@@ -68,10 +68,11 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
 }
 
 SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
-                                     BitLSMOptions options, BitLSMQuery query)
+                                     const BitLSMOptions& options,
+                                     const BitLSMQuery& query)
     : options_(options),
       bbt_(bbt),
-      query_(std::move(query)),
+      query_(query),
       index_reader_(bbt_->get_rep()->index_reader.get()),
       sabi_reader_(static_cast<SABIReader*>(index_reader_->GetUDIReader())),
       query_bitmap_(),

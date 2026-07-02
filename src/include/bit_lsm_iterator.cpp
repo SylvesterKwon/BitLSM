@@ -13,7 +13,8 @@ using namespace rocksdb;
 using namespace bit_lsm;
 
 BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
-                               BitLSMOptions options, BitLSMQuery query)
+                               const BitLSMOptions& options,
+                               const BitLSMQuery& query)
     : db_(db),
       db_impl_(static_cast<DBImpl*>(db_)),
       cfh_(cfh),

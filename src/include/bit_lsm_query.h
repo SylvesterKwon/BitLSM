@@ -49,7 +49,7 @@ struct BitLSMQuery {
       : clause_groups(std::move(groups)) {}
 
   // Validate given slice with given query condition & options
-  bool CheckCondition(rocksdb::Slice slice, const BitLSMOptions& options);
+  bool CheckCondition(rocksdb::Slice slice, const BitLSMOptions& options) const;
 
   // Structural validation against a schema: rejects empty clauses,
   // out-of-range attr_idx, value/attr type mismatches, and non-EQUAL
