@@ -219,14 +219,19 @@ void SABIBuilder::CalculateBitmapIndex() {
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
     if (options_.attr_types[i] == AttrType::CATEGORICAL) {
       const CatAttrBuf& cat = get<CatAttrBuf>(attr_buf_[i]);
+      // Row ids are monotonic per bin, so a bulk context per bin lets
+      // CRoaring skip the container lookup on nearly every add.
+      vector<roaring::BulkContext> bin_ctxs(bitmap_index_.bitmap_nums[i]);
       for (uint32_t j = 0; j < cat.row_ids.size(); ++j) {
-        uint32_t bin_idx = bin_idx_offset + cat.bin_by_id[cat.row_ids[j]];
-        bitmap_index_.bitmaps[bin_idx].add(j);
+        uint32_t local_bin = cat.bin_by_id[cat.row_ids[j]];
+        bitmap_index_.bitmaps[bin_idx_offset + local_bin].addBulk(
+            bin_ctxs[local_bin], j);
       }
     } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
       const vector<double>& cur_attr_buf = get<vector<double>>(attr_buf_[i]);
       vector<double>& binning =
           get<vector<double>>(bitmap_index_.binning_policy[i]);
+      vector<roaring::BulkContext> bin_ctxs(bitmap_index_.bitmap_nums[i]);
       for (uint32_t j = 0; j < cur_attr_buf.size(); ++j) {
         auto it =
             std::upper_bound(binning.begin(), binning.end(), cur_attr_buf[j]);
@@ -236,8 +241,8 @@ void SABIBuilder::CalculateBitmapIndex() {
         if (local_bin_idx >= bitmap_index_.bitmap_nums[i])
           local_bin_idx = bitmap_index_.bitmap_nums[i] - 1;
 
-        uint32_t bin_idx = bin_idx_offset + local_bin_idx;
-        bitmap_index_.bitmaps[bin_idx].add(j);
+        bitmap_index_.bitmaps[bin_idx_offset + local_bin_idx].addBulk(
+            bin_ctxs[local_bin_idx], j);
       }
     } else {
       assert(false);
