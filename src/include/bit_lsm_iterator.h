@@ -3,6 +3,7 @@
 #include <bit_lsm_query.h>
 
 #include <cstdint>
+#include <deque>
 #include <queue>
 
 #include "bit_lsm_option.h"
@@ -163,7 +164,11 @@ class SABITableIterator : public SABIInternalIterator {
   std::unique_ptr<rocksdb::DataBlockIter> biter_;
 
   // Internal status for iterating
-  roaring::Roaring query_bitmap_;  // bitmap for current iteration
+  // The query bitmap is either borrowed from the SABIReader's frozen bitmaps
+  // (zero-copy; reader outlives this iterator via the table cache handle) or
+  // owned by bitmap_pool_. query_bitmap_ always points at the live bitmap.
+  std::deque<roaring::Roaring> bitmap_pool_;  // owns materialized bitmaps
+  const roaring::Roaring* query_bitmap_;      // bitmap for current iteration
   roaring::Roaring::const_iterator bitmap_iter_;  // bitmap iterator
   roaring::Roaring::const_iterator bitmap_end_;
   std::vector<std::pair<uint32_t,
@@ -182,11 +187,18 @@ class SABITableIterator : public SABIInternalIterator {
       std::vector<rocksdb::PinnableSlice>& out_keys,
       std::vector<rocksdb::PinnableSlice>& out_values);
 
+  // A bitmap that is either borrowed from the SABIReader (owned == nullptr)
+  // or owned by bitmap_pool_ (owned points to the pool entry).
+  struct BitmapRef {
+    const roaring::Roaring* ptr;
+    roaring::Roaring* owned;
+  };
   // Get bitmap for a single QueryCondition (leaf node in CNF)
-  roaring::Roaring GetBitmapForSingleCondition(
+  BitmapRef GetBitmapForSingleCondition(
       const QueryCondition& cond, std::vector<const roaring::Roaring*>& buf);
-  // Get bitmap for a full query (CNF: AND of OR clauses)
-  roaring::Roaring GetBitmapFromQuery(const BitLSMQuery& query);
+  // Build bitmap for a full query (CNF: AND of OR clauses) into
+  // query_bitmap_ (borrowing reader bitmaps where possible)
+  void BuildQueryBitmap(const BitLSMQuery& query);
   // Fill buffer by loading next data block
   void LoadNextBlock();
 

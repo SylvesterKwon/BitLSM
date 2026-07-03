@@ -23,6 +23,9 @@ using namespace rocksdb;
 using namespace bit_lsm;
 using namespace roaring;
 
+// Shared empty bitmap for query results that match nothing; never mutated.
+static const roaring::Roaring kEmptyBitmap;
+
 void SABITableIterator::GetAllByIndexesFromDataBlock(
     const BlockHandle& bh, vector<uint32_t>& indexes,
     vector<PinnableSlice>& out_keys, vector<PinnableSlice>& out_values) {
@@ -75,9 +78,9 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
       query_(query),
       index_reader_(bbt_->get_rep()->index_reader.get()),
       sabi_reader_(static_cast<SABIReader*>(index_reader_->GetUDIReader())),
-      query_bitmap_(),
-      bitmap_iter_(query_bitmap_.begin()),
-      bitmap_end_(query_bitmap_.end()) {
+      query_bitmap_(&kEmptyBitmap),
+      bitmap_iter_(query_bitmap_->begin()),
+      bitmap_end_(query_bitmap_->end()) {
   block_restart_interval_ =
       bbt->get_rep()->table_options.block_restart_interval;
 
@@ -86,15 +89,15 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
   if (!sabi_reader_->QueryCanMatch(query_, options_)) return;
 
   // 1. Build query bitmap
-  query_bitmap_ = GetBitmapFromQuery(query_);
-  bitmap_iter_ = query_bitmap_.begin();
-  bitmap_end_ = query_bitmap_.end();
+  BuildQueryBitmap(query_);
+  bitmap_iter_ = query_bitmap_->begin();
+  bitmap_end_ = query_bitmap_->end();
 
   // 2. Get target block handles (binary search)
   int64_t last_added_block_idx = -1;
   auto psum_begin = sabi_reader_->data_entries_cnt_psum.begin();
   auto psum_end = sabi_reader_->data_entries_cnt_psum.end();
-  for (uint32_t target_idx : query_bitmap_) {
+  for (uint32_t target_idx : *query_bitmap_) {
     // cout << "target_idx: " << target_idx << "\n";
     // target_idx is 0-based index, psum array is 1-based count array
     // so upper_bound is always right
@@ -125,9 +128,8 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
 }
 
 // Build bitmap for a single QueryCondition (leaf node in CNF)
-roaring::Roaring SABITableIterator::GetBitmapForSingleCondition(
+SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
     const QueryCondition& cond, vector<const roaring::Roaring*>& buf) {
-  roaring::Roaring cur_cond_bitmap;
   const AttrType& cur_attr_type = options_.attr_types[cond.attr_idx];
 
   uint32_t bitmap_offset = 0;
@@ -146,10 +148,10 @@ roaring::Roaring SABITableIterator::GetBitmapForSingleCondition(
           return policy_entry.first < val;
         });
     if (it != cur_attr_binning_policy.end() && it->first == value) {
-      uint32_t local_bin_idx = it->second;
-      cur_cond_bitmap =
-          sabi_reader_->bitmap_index.bitmaps[bitmap_offset + local_bin_idx];
+      return {&sabi_reader_->bitmap_index.bitmaps[bitmap_offset + it->second],
+              nullptr};
     }
+    return {&kEmptyBitmap, nullptr};
   } else if (cur_attr_type == AttrType::CONTINUOUS) {
     const double& value = std::get<double>(cond.value);
     const vector<double>& boundaries = std::get<vector<double>>(
@@ -202,67 +204,94 @@ roaring::Roaring SABITableIterator::GetBitmapForSingleCondition(
     if (static_cast<int32_t>(num_bins) <= end_bin)
       end_bin = static_cast<int32_t>(num_bins) - 1;
 
+    if (start_bin > end_bin) return {&kEmptyBitmap, nullptr};
+    if (start_bin == end_bin) {
+      return {&sabi_reader_->bitmap_index.bitmaps[bitmap_offset + start_bin],
+              nullptr};
+    }
+
     // Merge bitmap (OR)
     buf.clear();
     buf.reserve(end_bin - start_bin + 1);
     for (int32_t i = start_bin; i <= end_bin; ++i)
       buf.push_back(&(sabi_reader_->bitmap_index.bitmaps[bitmap_offset + i]));
-    if (!buf.empty()) {
-      cur_cond_bitmap = roaring::Roaring::fastunion(buf.size(), buf.data());
-    }
+    bitmap_pool_.emplace_back(
+        roaring::Roaring::fastunion(buf.size(), buf.data()));
+    return {&bitmap_pool_.back(), &bitmap_pool_.back()};
   }
-  return cur_cond_bitmap;
+  return {&kEmptyBitmap, nullptr};
 }
 
-// CNF bitmap evaluation: AND of OR clauses
-roaring::Roaring SABITableIterator::GetBitmapFromQuery(
-    const BitLSMQuery& query) {
-  roaring::Roaring result;
+// CNF bitmap evaluation: AND of OR clauses. Sets query_bitmap_, borrowing
+// reader-owned bitmaps where possible and materializing into bitmap_pool_
+// only when a union/intersection/tombstone-filter result must be computed.
+void SABITableIterator::BuildQueryBitmap(const BitLSMQuery& query) {
+  const roaring::Roaring& tombstone =
+      sabi_reader_->bitmap_index.tombstone_bitmap;
+
   if (query.clause_groups.empty()) {
     // Empty query is treated as a full table scan.
     uint32_t total = sabi_reader_->data_entries_cnt_psum.empty()
                          ? 0
                          : sabi_reader_->data_entries_cnt_psum.back();
+    bitmap_pool_.emplace_back();
+    roaring::Roaring& result = bitmap_pool_.back();
     result.addRange(0, total);
-    if (!sabi_reader_->bitmap_index.tombstone_bitmap.isEmpty())
-      result -= sabi_reader_->bitmap_index.tombstone_bitmap;
-    return result;
+    if (!tombstone.isEmpty()) result -= tombstone;
+    query_bitmap_ = &result;
+    return;
   }
 
-  bool is_first_clause = true;
   vector<const roaring::Roaring*> bitmap_ptrs_buf;
+  const roaring::Roaring* acc = nullptr;  // accumulated AND of clauses
+  roaring::Roaring* acc_mut = nullptr;    // non-null when acc is pool-owned
 
   for (const auto& clause : query.clause_groups) {
     // OR within clause: union bitmaps of all conditions
-    roaring::Roaring clause_bitmap;
-    bool is_first_cond = true;
-    for (const auto& cond : clause) {
-      roaring::Roaring cond_bitmap =
-          GetBitmapForSingleCondition(cond, bitmap_ptrs_buf);
-      if (is_first_cond) {
-        clause_bitmap = std::move(cond_bitmap);
-        is_first_cond = false;
-      } else {
-        clause_bitmap |= cond_bitmap;  // OR
-      }
+    BitmapRef clause_bm;
+    if (clause.size() == 1) {
+      clause_bm = GetBitmapForSingleCondition(clause[0], bitmap_ptrs_buf);
+    } else {
+      vector<const roaring::Roaring*> cond_ptrs;
+      cond_ptrs.reserve(clause.size());
+      for (const auto& cond : clause)
+        cond_ptrs.push_back(
+            GetBitmapForSingleCondition(cond, bitmap_ptrs_buf).ptr);
+      bitmap_pool_.emplace_back(*cond_ptrs[0] | *cond_ptrs[1]);
+      roaring::Roaring& clause_union = bitmap_pool_.back();
+      for (size_t i = 2; i < cond_ptrs.size(); ++i)
+        clause_union |= *cond_ptrs[i];
+      clause_bm = {&clause_union, &clause_union};
     }
 
     // AND between clauses
-    if (is_first_clause) {
-      result = std::move(clause_bitmap);
-      is_first_clause = false;
+    if (acc == nullptr) {
+      acc = clause_bm.ptr;
+      acc_mut = clause_bm.owned;
+    } else if (acc_mut != nullptr) {
+      *acc_mut &= *clause_bm.ptr;
     } else {
-      result &= clause_bitmap;
+      bitmap_pool_.emplace_back(*acc & *clause_bm.ptr);
+      acc_mut = &bitmap_pool_.back();
+      acc = acc_mut;
     }
 
-    if (result.isEmpty()) return result;
+    if (acc->isEmpty()) {
+      query_bitmap_ = &kEmptyBitmap;
+      return;
+    }
   }
 
   // Filter tombstones
-  if (!sabi_reader_->bitmap_index.tombstone_bitmap.isEmpty())
-    result -= sabi_reader_->bitmap_index.tombstone_bitmap;
-
-  return result;
+  if (!tombstone.isEmpty()) {
+    if (acc_mut != nullptr) {
+      *acc_mut -= tombstone;
+    } else {
+      bitmap_pool_.emplace_back(*acc - tombstone);
+      acc = &bitmap_pool_.back();
+    }
+  }
+  query_bitmap_ = acc;
 }
 
 void SABITableIterator::LoadNextBlock() {
@@ -345,7 +374,7 @@ void SABITableIterator::SeekToFirst() {
   buffer_idx_ = 0;
   keys_buffer_.clear();
   values_buffer_.clear();
-  bitmap_iter_ = query_bitmap_.begin();
+  bitmap_iter_ = query_bitmap_->begin();
   LoadNextBlock();
 }
 
