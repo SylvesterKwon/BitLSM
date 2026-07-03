@@ -24,7 +24,11 @@ using namespace bit_lsm;
 using namespace roaring;
 
 // Shared empty bitmap for query results that match nothing; never mutated.
-static const roaring::Roaring kEmptyBitmap;
+// Function-local static so use during static init/teardown stays safe.
+static const roaring::Roaring& EmptyBitmap() {
+  static const roaring::Roaring kEmptyBitmap;
+  return kEmptyBitmap;
+}
 
 void SABITableIterator::GetAllByIndexesFromDataBlock(
     const BlockHandle& bh, vector<uint32_t>& indexes,
@@ -78,7 +82,7 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
       query_(query),
       index_reader_(bbt_->get_rep()->index_reader.get()),
       sabi_reader_(static_cast<SABIReader*>(index_reader_->GetUDIReader())),
-      query_bitmap_(&kEmptyBitmap),
+      query_bitmap_(&EmptyBitmap()),
       bitmap_iter_(query_bitmap_->begin()),
       bitmap_end_(query_bitmap_->end()) {
   block_restart_interval_ =
@@ -151,7 +155,7 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
       return {&sabi_reader_->bitmap_index.bitmaps[bitmap_offset + it->second],
               nullptr};
     }
-    return {&kEmptyBitmap, nullptr};
+    return {&EmptyBitmap(), nullptr};
   } else if (cur_attr_type == AttrType::CONTINUOUS) {
     const double& value = std::get<double>(cond.value);
     const vector<double>& boundaries = std::get<vector<double>>(
@@ -204,7 +208,7 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
     if (static_cast<int32_t>(num_bins) <= end_bin)
       end_bin = static_cast<int32_t>(num_bins) - 1;
 
-    if (start_bin > end_bin) return {&kEmptyBitmap, nullptr};
+    if (start_bin > end_bin) return {&EmptyBitmap(), nullptr};
     if (start_bin == end_bin) {
       return {&sabi_reader_->bitmap_index.bitmaps[bitmap_offset + start_bin],
               nullptr};
@@ -219,7 +223,7 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
         roaring::Roaring::fastunion(buf.size(), buf.data()));
     return {&bitmap_pool_.back(), &bitmap_pool_.back()};
   }
-  return {&kEmptyBitmap, nullptr};
+  return {&EmptyBitmap(), nullptr};
 }
 
 // CNF bitmap evaluation: AND of OR clauses. Sets query_bitmap_, borrowing
@@ -249,7 +253,10 @@ void SABITableIterator::BuildQueryBitmap(const BitLSMQuery& query) {
   for (const auto& clause : query.clause_groups) {
     // OR within clause: union bitmaps of all conditions
     BitmapRef clause_bm;
-    if (clause.size() == 1) {
+    if (clause.empty()) {
+      // An empty OR clause is satisfiable by nothing, so the AND is empty.
+      clause_bm = {&EmptyBitmap(), nullptr};
+    } else if (clause.size() == 1) {
       clause_bm = GetBitmapForSingleCondition(clause[0], bitmap_ptrs_buf);
     } else {
       vector<const roaring::Roaring*> cond_ptrs;
@@ -277,7 +284,7 @@ void SABITableIterator::BuildQueryBitmap(const BitLSMQuery& query) {
     }
 
     if (acc->isEmpty()) {
-      query_bitmap_ = &kEmptyBitmap;
+      query_bitmap_ = &EmptyBitmap();
       return;
     }
   }

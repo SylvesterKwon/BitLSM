@@ -78,3 +78,29 @@ TEST_F(BitLSMTestBase, SameAttrOrClauseStillWorks) {
   ASSERT_TRUE(db.Flush());
   ASSERT_TRUE(db.VerifyQuery(q));
 }
+
+// Workload: three-condition OR clause (a0<3 OR a0>17 OR a1='q') where one row
+//           matches ONLY via the third condition; verified in memtable, after
+//           Flush (SST bitmap union path), and after CompactAll.
+// Threat: BuildQueryBitmap's multi-condition union folds the first two
+//         condition bitmaps and then accumulates the rest in a loop; a
+//         regression there drops rows matched only by the 3rd+ condition.
+TEST_F(BitLSMTestBase, ThreeConditionOrClause) {
+  BitLSMOptions opt = ThreeAttrOptions();
+  CheckedBitLSM db(&OpenDB(opt), opt);
+  // k5 matches ONLY via a1='q'; k0-k2 via a0<3; k18-k19 via a0>17.
+  for (int i = 0; i < 20; ++i) {
+    ASSERT_TRUE(db.Put(
+        "k" + std::to_string(i),
+        {static_cast<double>(i), std::string(i == 5 ? "q" : "c"), 0.0}, "p"));
+  }
+  BitLSMQuery q(
+      std::vector<OrClause>{{{0, CompareOp::LESS, 3.0},
+                             {0, CompareOp::GREATER, 17.0},
+                             {1, CompareOp::EQUAL, std::string("q")}}});
+  ASSERT_TRUE(db.VerifyQuery(q));  // memtable path
+  ASSERT_TRUE(db.Flush());
+  ASSERT_TRUE(db.VerifyQuery(q));  // SST bitmap union path
+  ASSERT_TRUE(db.CompactAll());
+  ASSERT_TRUE(db.VerifyQuery(q));
+}

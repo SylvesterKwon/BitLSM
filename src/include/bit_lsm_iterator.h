@@ -165,10 +165,12 @@ class SABITableIterator : public SABIInternalIterator {
 
   // Internal status for iterating
   // The query bitmap is either borrowed from the SABIReader's frozen bitmaps
-  // (zero-copy; reader outlives this iterator via the table cache handle) or
-  // owned by bitmap_pool_. query_bitmap_ always points at the live bitmap.
-  std::deque<roaring::Roaring> bitmap_pool_;  // owns materialized bitmaps
-  const roaring::Roaring* query_bitmap_;      // bitmap for current iteration
+  // (the reader outlives this iterator via the table cache handle) or owned
+  // by bitmap_pool_. query_bitmap_ always points at the live bitmap.
+  // bitmap_pool_ must remain a std::deque: element pointers (query_bitmap_,
+  // BitmapRef::owned) must stay valid across emplace_back.
+  std::deque<roaring::Roaring> bitmap_pool_;
+  const roaring::Roaring* query_bitmap_;  // bitmap for current iteration
   roaring::Roaring::const_iterator bitmap_iter_;  // bitmap iterator
   roaring::Roaring::const_iterator bitmap_end_;
   std::vector<std::pair<uint32_t,
