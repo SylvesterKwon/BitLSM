@@ -31,15 +31,43 @@ SABIBuilder::SABIBuilder(BitLSMOptions options) : options_(options) {
 };
 
 void SABIBuilder::CatAttrBuf::Intern(string_view value) {
-  auto it = dict.find(value);
-  if (it == dict.end()) {
-    uint32_t id = static_cast<uint32_t>(value_by_id.size());
-    it = dict.emplace(string(value), id).first;
-    value_by_id.push_back(&it->first);
-    count_by_id.push_back(0);
+  uint64_t h = std::hash<string_view>{}(value);
+  size_t mask = slot_id_.size() - 1;
+  size_t idx = h & mask;
+  while (slot_id_[idx] != 0) {
+    if (slot_hash_[idx] == h && ValueOf(slot_id_[idx] - 1) == value) {
+      uint32_t id = slot_id_[idx] - 1;
+      count_by_id[id]++;
+      row_ids.push_back(id);
+      return;
+    }
+    idx = (idx + 1) & mask;
   }
-  count_by_id[it->second]++;
-  row_ids.push_back(it->second);
+  uint32_t id = static_cast<uint32_t>(value_by_id.size());
+  value_by_id.push_back({static_cast<uint32_t>(arena.size()),
+                         static_cast<uint32_t>(value.size())});
+  arena.append(value.data(), value.size());
+  count_by_id.push_back(1);
+  row_ids.push_back(id);
+  slot_hash_[idx] = h;
+  slot_id_[idx] = id + 1;
+  if (++used_ * 10 >= slot_id_.size() * 7) Grow();
+}
+
+void SABIBuilder::CatAttrBuf::Grow() {
+  size_t n = slot_id_.size() * 2;
+  vector<uint64_t> new_hash(n);
+  vector<uint32_t> new_id(n, 0);
+  size_t mask = n - 1;
+  for (size_t i = 0; i < slot_id_.size(); ++i) {
+    if (slot_id_[i] == 0) continue;
+    size_t idx = slot_hash_[i] & mask;
+    while (new_id[idx] != 0) idx = (idx + 1) & mask;
+    new_hash[idx] = slot_hash_[i];
+    new_id[idx] = slot_id_[i];
+  }
+  slot_hash_ = std::move(new_hash);
+  slot_id_ = std::move(new_id);
 }
 
 Slice SABIBuilder::AddIndexEntry(const Slice& last_key_in_current_block,
@@ -191,7 +219,7 @@ void SABIBuilder::SetCategoricalPropertyBinningPolicy(uint32_t i) {
   for (uint32_t id : sorted_ids) {
     auto [cur_bin_cnt, bin_idx] = min_bin_pq.top();
     min_bin_pq.pop();
-    binning.push_back({*cat.value_by_id[id], bin_idx});
+    binning.push_back({string(cat.ValueOf(id)), bin_idx});
     cat.bin_by_id[id] = bin_idx;
     min_bin_pq.push({cur_bin_cnt + cat.count_by_id[id], bin_idx});
   }

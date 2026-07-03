@@ -7,7 +7,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <variant>
 
 #include "bit_lsm_option.h"
@@ -42,23 +41,34 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
   BitLSMOptions options_;
 
   // Interned buffer for one categorical attribute: each distinct value is
-  // stored once in dict and rows keep only its dense id.
+  // appended once to a string arena and rows keep only its dense id. The
+  // value -> id lookup is a flat open-addressing table so high-cardinality
+  // attributes pay no per-value node allocation.
   struct CatAttrBuf {
-    struct StringHash {
-      using is_transparent = void;
-      size_t operator()(std::string_view sv) const {
-        return std::hash<std::string_view>{}(sv);
-      }
+    struct ValueRef {
+      uint32_t offset;
+      uint32_t len;
     };
-    // value -> id; keys own the strings and stay stable across rehash, so
-    // value_by_id can point at them
-    std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> dict;
-    std::vector<const std::string*> value_by_id;
+    std::string arena;  // concatenated distinct values
+    std::vector<ValueRef> value_by_id;
     std::vector<uint32_t> count_by_id;
     std::vector<uint32_t> row_ids;    // row -> id
     std::vector<uint32_t> bin_by_id;  // id -> bin, set by binning policy
 
+    std::string_view ValueOf(uint32_t id) const {
+      const ValueRef& v = value_by_id[id];
+      return std::string_view(arena.data() + v.offset, v.len);
+    }
     void Intern(std::string_view value);
+
+   private:
+    static constexpr size_t kInitSlots = 1024;  // power of two
+    std::vector<uint64_t> slot_hash_ = std::vector<uint64_t>(kInitSlots);
+    std::vector<uint32_t> slot_id_ =
+        std::vector<uint32_t>(kInitSlots, 0);  // id + 1; 0 = empty slot
+    size_t used_ = 0;
+
+    void Grow();
   };
 
   // Buffer
