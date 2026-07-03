@@ -5,6 +5,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <string_view>
+#include <unordered_map>
 #include <variant>
 
 #include "bit_lsm_option.h"
@@ -38,9 +41,28 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
  private:
   BitLSMOptions options_;
 
+  // Interned buffer for one categorical attribute: each distinct value is
+  // stored once in dict and rows keep only its dense id.
+  struct CatAttrBuf {
+    struct StringHash {
+      using is_transparent = void;
+      size_t operator()(std::string_view sv) const {
+        return std::hash<std::string_view>{}(sv);
+      }
+    };
+    // value -> id; keys own the strings and stay stable across rehash, so
+    // value_by_id can point at them
+    std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> dict;
+    std::vector<const std::string*> value_by_id;
+    std::vector<uint32_t> count_by_id;
+    std::vector<uint32_t> row_ids;    // row -> id
+    std::vector<uint32_t> bin_by_id;  // id -> bin, set by binning policy
+
+    void Intern(std::string_view value);
+  };
+
   // Buffer
-  std::vector<std::variant<std::vector<std::string>, std::vector<double>>>
-      attr_buf_;
+  std::vector<std::variant<CatAttrBuf, std::vector<double>>> attr_buf_;
 
   // Statistics
   uint64_t total_data_entries_size_uncomp_ = 0;  // total size of KVPs (bytes)
@@ -55,9 +77,7 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
 
   // Helper methods
   void SetBinningPolicy();
-  void SetCategoricalPropertyBinningPolicy(
-      uint32_t i,
-      std::vector<std::unordered_map<std::string_view, uint32_t>>& cat_buf_map);
+  void SetCategoricalPropertyBinningPolicy(uint32_t i);
   void SetContinuousPropertyBinningPolicy(uint32_t i);
   void CalculateBitmapIndex();
 
