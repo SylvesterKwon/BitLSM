@@ -16,12 +16,12 @@ using namespace rocksdb;
 using namespace bit_lsm;
 
 BitLSMMergingIterator::BitLSMMergingIterator(SuperVersion* sv,
-                                             BitLSMOptions options,
-                                             BitLSMQuery query)
+                                             const BitLSMOptions& options,
+                                             const BitLSMQuery& query)
     : sv_(sv),
       cfd_(sv_->cfd),
       options_(options),
-      query_(std::move(query)),
+      query_(query),
       v_(sv_->current),
       tc_(cfd_->table_cache()),
       storage_info_(v_->storage_info()),
