@@ -75,7 +75,8 @@ BitLSMMergingIterator::BitLSMMergingIterator(SuperVersion* sv,
 };
 
 BitLSMMergingIterator::~BitLSMMergingIterator() {
-  // 1. Free children iterators
+  // 1. Free children iterators (before releasing the handles below: the L0
+  // SABITableIterators borrow bitmaps from SABIReaders pinned by them)
   for (auto* ch : ch_iters_) delete ch;
   ch_iters_.clear();
 

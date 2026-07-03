@@ -35,6 +35,8 @@ BitLSMLevelIterator::BitLSMLevelIterator(SuperVersion* sv, uint32_t level,
       cur_sti_(nullptr) {}
 
 BitLSMLevelIterator::~BitLSMLevelIterator() {
+  // cur_sti_ borrows bitmaps from the table's SABIReader, so it must be
+  // destroyed before the table cache handle that pins the reader is released.
   if (cur_sti_) delete cur_sti_;
   if (cur_table_handle_) tc_->get_cache().Release(cur_table_handle_);
 }
@@ -43,7 +45,8 @@ void BitLSMLevelIterator::LoadFile(size_t idx) {
   // cout << "[BitLSMLevelIterator] level " << level_ << ", " << idx
   //      << " th file is loading\n";
 
-  // 1. Clean up existing iterator & table handle
+  // 1. Clean up existing iterator & table handle (iterator first: it borrows
+  // bitmaps from the SABIReader pinned by the handle)
   valid_ = false;
   TableCache::CacheInterface cache_interface = tc_->get_cache();
   if (cur_sti_ != nullptr) {
