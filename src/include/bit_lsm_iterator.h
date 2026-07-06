@@ -49,6 +49,8 @@ class BitLSMIterator : public SABIInternalIterator {
   BitLSMMergingIterator* smi_;
   BitLSMOptions options_;
   BitLSMQuery query_;
+  // Owned by this iterator; children evaluate rows through a reference to it
+  CompiledQuery compiled_;
 
   // batch
   std::vector<std::string> batch_keys_;
@@ -88,6 +90,7 @@ class BitLSMMergingIterator : public SABIInternalIterator {
   // Table & query context
   const BitLSMOptions& options_;
   const BitLSMQuery& query_;
+  const CompiledQuery& compiled_;
   rocksdb::SuperVersion* sv_;
   rocksdb::ColumnFamilyData* cfd_;
   rocksdb::Version* v_;
@@ -105,7 +108,8 @@ class BitLSMMergingIterator : public SABIInternalIterator {
 
  public:
   BitLSMMergingIterator(rocksdb::SuperVersion* sv, const BitLSMOptions& options,
-                        const BitLSMQuery& query);
+                        const BitLSMQuery& query,
+                        const CompiledQuery& compiled);
   ~BitLSMMergingIterator() override;
   void SeekToFirst() override;
   void Next() override;
@@ -121,6 +125,7 @@ class BitLSMLevelIterator : public SABIInternalIterator {
   uint32_t level_;
   const BitLSMOptions& options_;
   const BitLSMQuery& query_;
+  const CompiledQuery& compiled_;
   rocksdb::SuperVersion* sv_;
   rocksdb::ColumnFamilyData* cfd_;
   rocksdb::Version* v_;
@@ -139,7 +144,8 @@ class BitLSMLevelIterator : public SABIInternalIterator {
 
  public:
   BitLSMLevelIterator(rocksdb::SuperVersion* sv, uint32_t level,
-                      const BitLSMOptions& options, const BitLSMQuery& query);
+                      const BitLSMOptions& options, const BitLSMQuery& query,
+                      const CompiledQuery& compiled);
   ~BitLSMLevelIterator() override;
   void SeekToFirst() override;
   void Next() override;
@@ -157,6 +163,7 @@ class SABITableIterator : public SABIInternalIterator {
   rocksdb::BlockBasedTable::IndexReader* index_reader_;
   SABIReader* sabi_reader_;
   const BitLSMQuery& query_;
+  const CompiledQuery& compiled_;
   uint32_t block_restart_interval_;
   // Promoted to a member variable to enable Zero-copy evaluation.
   // Keeping this iterator alive ensures the underlying data block remains
@@ -206,7 +213,7 @@ class SABITableIterator : public SABIInternalIterator {
 
  public:
   SABITableIterator(rocksdb::BlockBasedTable* bbt, const BitLSMOptions& options,
-                    const BitLSMQuery& query);
+                    const BitLSMQuery& query, const CompiledQuery& compiled);
   void SeekToFirst() override;
   void Next() override;  // Get Next Data Entries
   rocksdb::Slice key() const override;
@@ -218,7 +225,7 @@ class BitLSMMemTableIterator : public SABIInternalIterator {
  private:
   const BitLSMOptions& options_;
   rocksdb::MemTable* mem_;
-  const BitLSMQuery& query_;
+  const CompiledQuery& compiled_;
 
   // Internal status for iterating
   rocksdb::Arena arena_;
@@ -228,7 +235,7 @@ class BitLSMMemTableIterator : public SABIInternalIterator {
 
  public:
   BitLSMMemTableIterator(rocksdb::MemTable* mem, const BitLSMOptions& options,
-                         const BitLSMQuery& query);
+                         const CompiledQuery& compiled);
   ~BitLSMMemTableIterator() override;
 
   void SeekToFirst() override;

@@ -76,10 +76,12 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
 
 SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
                                      const BitLSMOptions& options,
-                                     const BitLSMQuery& query)
+                                     const BitLSMQuery& query,
+                                     const CompiledQuery& compiled)
     : options_(options),
       bbt_(bbt),
       query_(query),
+      compiled_(compiled),
       index_reader_(bbt_->get_rep()->index_reader.get()),
       sabi_reader_(static_cast<SABIReader*>(index_reader_->GetUDIReader())),
       query_bitmap_(&EmptyBitmap()),
@@ -356,7 +358,7 @@ void SABITableIterator::LoadNextBlock() {
       }
 
       // 5-4. Filter query condition
-      if (query_.CheckCondition(values_buffer_[i], options_)) {
+      if (compiled_.Eval(values_buffer_[i])) {
         if (i != valid_cursor) {
           keys_buffer_[valid_cursor] = std::move(keys_buffer_[i]);
           values_buffer_[valid_cursor] = std::move(values_buffer_[i]);

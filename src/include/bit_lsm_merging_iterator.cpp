@@ -17,11 +17,13 @@ using namespace bit_lsm;
 
 BitLSMMergingIterator::BitLSMMergingIterator(SuperVersion* sv,
                                              const BitLSMOptions& options,
-                                             const BitLSMQuery& query)
+                                             const BitLSMQuery& query,
+                                             const CompiledQuery& compiled)
     : sv_(sv),
       cfd_(sv_->cfd),
       options_(options),
       query_(query),
+      compiled_(compiled),
       v_(sv_->current),
       tc_(cfd_->table_cache()),
       storage_info_(v_->storage_info()),
@@ -33,14 +35,14 @@ BitLSMMergingIterator::BitLSMMergingIterator(SuperVersion* sv,
   rocksdb::ReadOnlyMemTable* active_mem = sv_->mem;
   if (active_mem != nullptr) {
     rocksdb::MemTable* mem = static_cast<rocksdb::MemTable*>(active_mem);
-    ch_iters_.push_back(new BitLSMMemTableIterator(mem, options_, query_));
+    ch_iters_.push_back(new BitLSMMemTableIterator(mem, options_, compiled_));
   }
   // 1-2. Immutable MemTables
   MemTableListVersion* memtable_list_version_ = sv_->imm;
   if (memtable_list_version_ != nullptr) {
     for (ReadOnlyMemTable* imm_mem : memtable_list_version_->GetMemTables()) {
       rocksdb::MemTable* mem = static_cast<rocksdb::MemTable*>(imm_mem);
-      ch_iters_.push_back(new BitLSMMemTableIterator(mem, options_, query_));
+      ch_iters_.push_back(new BitLSMMemTableIterator(mem, options_, compiled_));
     }
   }
 
@@ -61,7 +63,8 @@ BitLSMMergingIterator::BitLSMMergingIterator(SuperVersion* sv,
     BlockBasedTable* bbt = static_cast<BlockBasedTable*>(table);
 
     // cout << "[BitLSMMergingIterator] Added L0 SST iterator\n";
-    ch_iters_.push_back(new SABITableIterator(bbt, options_, query_));
+    ch_iters_.push_back(
+        new SABITableIterator(bbt, options_, query_, compiled_));
     l0_handles_.push_back(table_handle);
   }
 
@@ -69,7 +72,8 @@ BitLSMMergingIterator::BitLSMMergingIterator(SuperVersion* sv,
   for (uint32_t level = 1; level < storage_info_->num_non_empty_levels();
        ++level) {
     if (storage_info_->NumLevelFiles(level) > 0) {
-      ch_iters_.push_back(new BitLSMLevelIterator(sv, level, options_, query_));
+      ch_iters_.push_back(
+          new BitLSMLevelIterator(sv, level, options_, query_, compiled_));
     }
   }
 };

@@ -86,6 +86,97 @@ bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
   return true;
 }
 
+CompiledQuery::CompiledQuery(const BitLSMQuery& query,
+                             const BitLSMOptions& options) {
+  const ValueLayout layout(options);
+  cat_base_ = layout.cat_base;
+  for (const OrClause& clause : query.clause_groups) {
+    uint32_t begin = static_cast<uint32_t>(preds_.size());
+    for (const QueryCondition& cond : clause) {
+      Pred p{};
+      p.is_cont = layout.is_cont[cond.attr_idx];
+      p.op = cond.op;
+      p.slot = layout.slot[cond.attr_idx];
+      if (p.is_cont) {
+        p.dval = std::get<double>(cond.value);
+      } else {
+        const std::string& s = std::get<std::string>(cond.value);
+        p.soff = static_cast<uint32_t>(arena_.size());
+        p.slen = static_cast<uint32_t>(s.size());
+        arena_ += s;
+      }
+      preds_.push_back(p);
+    }
+    clauses_.push_back({begin, static_cast<uint32_t>(preds_.size())});
+  }
+}
+
+static bool PassOp(CompareOp op, int cmp) {
+  switch (op) {
+    case CompareOp::EQUAL:
+      return cmp == 0;
+    case CompareOp::GREATER_EQUAL:
+      return cmp >= 0;
+    case CompareOp::LESS_EQUAL:
+      return cmp <= 0;
+    case CompareOp::GREATER:
+      return cmp > 0;
+    case CompareOp::LESS:
+      return cmp < 0;
+  }
+  return false;
+}
+
+bool CompiledQuery::Eval(rocksdb::Slice value) const {
+  const char* base = value.data();
+  for (const ClauseRange& c : clauses_) {
+    bool clause_pass = false;
+    for (uint32_t i = c.begin; i < c.end; ++i) {
+      const Pred& p = preds_[i];
+      bool ok;
+      if (p.is_cont) {
+        double v;
+        std::memcpy(&v, base + p.slot, sizeof(double));
+        switch (p.op) {
+          case CompareOp::EQUAL:
+            ok = v == p.dval;
+            break;
+          case CompareOp::GREATER_EQUAL:
+            ok = v >= p.dval;
+            break;
+          case CompareOp::LESS_EQUAL:
+            ok = v <= p.dval;
+            break;
+          case CompareOp::GREATER:
+            ok = v > p.dval;
+            break;
+          case CompareOp::LESS:
+            ok = v < p.dval;
+            break;
+          default:
+            ok = false;
+        }
+      } else {
+        uint32_t end;
+        std::memcpy(&end, base + p.slot * sizeof(uint32_t), sizeof(uint32_t));
+        uint32_t start = 0;
+        if (p.slot > 0)
+          std::memcpy(&start, base + (p.slot - 1) * sizeof(uint32_t),
+                      sizeof(uint32_t));
+        std::string_view attr(base + cat_base_ + start, end - start);
+        std::string_view want(arena_.data() + p.soff, p.slen);
+        ok = PassOp(p.op, attr.compare(want));
+      }
+      if (ok) {
+        clause_pass = true;
+        break;  // OR short-circuit
+      }
+    }
+    if (!clause_pass) return false;  // AND short-circuit
+  }
+  return true;
+}
+
 rocksdb::Status BitLSMQuery::Validate(const BitLSMOptions& options) const {
   for (size_t ci = 0; ci < clause_groups.size(); ++ci) {
     const OrClause& clause = clause_groups[ci];
