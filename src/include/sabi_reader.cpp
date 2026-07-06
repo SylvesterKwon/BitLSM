@@ -100,12 +100,19 @@ UserDefinedIndexBuilder::BlockHandle SABIUDIIterator::value() {
 SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
     : options_(options) {
   // 1. Read footer
-  uint32_t index_entries_cnt_ = DecodeFixed32(
-      index_block.data() + index_block.size() - 3 * sizeof(uint32_t));
-  uint32_t bitmap_indexoffset_offset = DecodeFixed32(
-      index_block.data() + index_block.size() - 2 * sizeof(uint32_t));
-  uint32_t binning_policy_offset_offset = DecodeFixed32(
-      index_block.data() + index_block.size() - 1 * sizeof(uint32_t));
+  // Blob ends with [legacy footer 3xu32][version u32][magic u32]; version
+  // and magic are validated in SABIFactory::NewReader before we get here.
+  assert(index_block.size() >= 5 * sizeof(uint32_t) &&
+         DecodeFixed32(index_block.data() + index_block.size() -
+                       sizeof(uint32_t)) == kSABIFooterMagic);
+  const char* footer_end =
+      index_block.data() + index_block.size() - 2 * sizeof(uint32_t);
+  uint32_t index_entries_cnt_ =
+      DecodeFixed32(footer_end - 3 * sizeof(uint32_t));
+  uint32_t bitmap_indexoffset_offset =
+      DecodeFixed32(footer_end - 2 * sizeof(uint32_t));
+  uint32_t binning_policy_offset_offset =
+      DecodeFixed32(footer_end - 1 * sizeof(uint32_t));
 
   data_entries_cnt_psum.resize(index_entries_cnt_);
   block_handles.resize(index_entries_cnt_);

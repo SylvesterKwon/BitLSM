@@ -352,6 +352,10 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   PutFixed32(&index_blob_, bitmaps_offset_offset);
   PutFixed32(&index_blob_, binning_policy_offset_offset);
 
+  // 3-6. Version footer (validated by SABIFactory::NewReader)
+  PutFixed32(&index_blob_, kBitLSMFormatVersion);
+  PutFixed32(&index_blob_, kSABIFooterMagic);
+
   *index_contents = Slice(index_blob_);
   // Dump(); // for test only.
   return Status::OK();
