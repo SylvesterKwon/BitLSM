@@ -17,15 +17,11 @@ using namespace bit_lsm;
 using namespace roaring;
 
 BitLSMLevelIterator::BitLSMLevelIterator(SuperVersion* sv, uint32_t level,
-                                         const BitLSMOptions& options,
-                                         const BitLSMQuery& query,
-                                         const CompiledQuery& compiled)
+                                         const QueryContext& ctx)
     : sv_(sv),
       cfd_(sv->cfd),
       level_(level),
-      options_(options),
-      query_(query),
-      compiled_(compiled),
+      ctx_(ctx),
       v_(sv->current),
       tc_(cfd_->table_cache()),
       storage_info_(v_->storage_info()),
@@ -83,7 +79,7 @@ void BitLSMLevelIterator::LoadFile(size_t idx) {
 
   // 4. Prepare new SABITableIterator
   cur_table_handle_ = new_table_handle;
-  cur_sti_ = new SABITableIterator(bbt, options_, query_, compiled_);
+  cur_sti_ = new SABITableIterator(bbt, ctx_);
 }
 
 void BitLSMLevelIterator::SeekToFirst() {
