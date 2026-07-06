@@ -71,7 +71,7 @@ bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
     for (const auto& cond : clause) {
       if (cond.attr_idx != cached_idx) {
         cached_idx = cond.attr_idx;
-        cached_type = options.attr_types[cond.attr_idx];
+        cached_type = options.attr_specs[cond.attr_idx].role;
         cached_val = DecodeAttr(layout, buffer, cond.attr_idx);
       }
       if (EvalCondition(cond, cached_type, cached_val)) {
@@ -182,12 +182,12 @@ rocksdb::Status BitLSMQuery::Validate(const BitLSMOptions& options) const {
       return rocksdb::Status::InvalidArgument("clause " + std::to_string(ci) +
                                               " is empty");
     for (const QueryCondition& cond : clause) {
-      if (cond.attr_idx >= options.attr_types.size())
+      if (cond.attr_idx >= options.attr_specs.size())
         return rocksdb::Status::InvalidArgument(
             "attr_idx " + std::to_string(cond.attr_idx) +
             " out of range (attr_num=" +
-            std::to_string(options.attr_types.size()) + ")");
-      AttrType type = options.attr_types[cond.attr_idx];
+            std::to_string(options.attr_specs.size()) + ")");
+      AttrType type = options.attr_specs[cond.attr_idx].role;
       if (type == AttrType::ORDERED) {
         if (!std::holds_alternative<double>(cond.value))
           return rocksdb::Status::InvalidArgument(

@@ -14,7 +14,7 @@ void ReferenceDB::Clear() { live_.clear(); }
 bool ReferenceDB::MatchCondition(const QueryCondition& cond,
                                  const std::vector<Attr>& attrs) const {
   const Attr& a = attrs[cond.attr_idx];
-  if (options_.attr_types[cond.attr_idx] == AttrType::ORDERED) {
+  if (options_.attr_specs[cond.attr_idx].role == AttrType::ORDERED) {
     double lhs = std::get<double>(a);
     double rhs = std::get<double>(cond.value);
     switch (cond.op) {

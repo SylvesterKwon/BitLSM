@@ -10,10 +10,10 @@
 using namespace bit_lsm;
 
 namespace {
-BitLSMOptions MakeOptions(std::vector<AttrType> types) {
+BitLSMOptions MakeOptions(std::vector<AttrSpec> types) {
   BitLSMOptions options;
   options.attr_num = static_cast<uint32_t>(types.size());
-  options.attr_types = std::move(types);
+  options.attr_specs = std::move(types);
   options.read_seqno = 0;
   options.rho = 0.5;
   return options;

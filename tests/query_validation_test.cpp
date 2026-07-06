@@ -13,7 +13,7 @@ namespace {
 BitLSMOptions TwoAttrOptions() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_types = {AttrType::ORDERED, AttrType::UNORDERED};
+  o.attr_specs = {AttrType::ORDERED, AttrType::UNORDERED};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;
@@ -41,7 +41,7 @@ TEST(QueryValidation, RejectsEmptyClause) {
 }
 
 // Workload: condition referencing attr_idx 5 in a 2-attr schema.
-// Threat: out-of-bounds attr_types[]/offset-table access (UB).
+// Threat: out-of-bounds attr_specs[]/offset-table access (UB).
 TEST(QueryValidation, RejectsAttrIdxOutOfRange) {
   BitLSMQuery q(std::vector<QueryCondition>{{5, CompareOp::EQUAL, 1.0}});
   EXPECT_TRUE(q.Validate(TwoAttrOptions()).IsInvalidArgument());

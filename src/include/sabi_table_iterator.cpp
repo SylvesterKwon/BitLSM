@@ -134,7 +134,7 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
 // Build bitmap for a single QueryCondition (leaf node in CNF)
 SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
     const QueryCondition& cond, vector<const roaring::Roaring*>& buf) {
-  const AttrType& cur_attr_type = options_.attr_types[cond.attr_idx];
+  const AttrType cur_attr_type = options_.attr_specs[cond.attr_idx].role;
 
   uint32_t bitmap_offset = 0;
   for (uint32_t i = 0; i < cond.attr_idx; ++i)

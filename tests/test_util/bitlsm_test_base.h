@@ -74,7 +74,7 @@ class BitLSMTestBase : public ::testing::Test {
   BitLSMOptions DefaultOptions() {
     BitLSMOptions options;
     options.attr_num = 2;
-    options.attr_types = {AttrType::ORDERED, AttrType::UNORDERED};
+    options.attr_specs = {AttrType::ORDERED, AttrType::UNORDERED};
     options.read_seqno = 0;
     options.rho = 0.5;
     return options;

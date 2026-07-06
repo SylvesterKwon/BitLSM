@@ -14,8 +14,8 @@ namespace {
 // independent check of the production encoder)
 std::string PayloadOf(std::string_view buf, const BitLSMOptions& options) {
   std::uint32_t n_cat = 0;
-  for (AttrType t : options.attr_types)
-    if (t == AttrType::UNORDERED) n_cat++;
+  for (const AttrSpec& s : options.attr_specs)
+    if (s.role == AttrType::UNORDERED) n_cat++;
   std::uint32_t n_cont = options.attr_num - n_cat;
   std::uint32_t cat_base =
       n_cat * static_cast<std::uint32_t>(sizeof(std::uint32_t)) +

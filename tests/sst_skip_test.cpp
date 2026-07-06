@@ -13,7 +13,7 @@ namespace {
 BitLSMOptions ContOpt() {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_types = {AttrType::ORDERED};
+  o.attr_specs = {AttrType::ORDERED};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;
@@ -21,7 +21,7 @@ BitLSMOptions ContOpt() {
 BitLSMOptions CatOpt() {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_types = {AttrType::UNORDERED};
+  o.attr_specs = {AttrType::UNORDERED};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;

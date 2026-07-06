@@ -11,11 +11,11 @@
 TEST(Smoke, BitLSMOptionsConstructs) {
   bit_lsm::BitLSMOptions options;
   options.attr_num = 1;
-  options.attr_types = {bit_lsm::AttrType::ORDERED};
+  options.attr_specs = {bit_lsm::AttrType::ORDERED};
   options.read_seqno = 0;
   options.rho = 0.5;
   EXPECT_EQ(options.attr_num, 1u);
-  EXPECT_EQ(options.attr_types.size(), 1u);
+  EXPECT_EQ(options.attr_specs.size(), 1u);
 }
 
 // 목적: 컴파일된 라이브러리 심볼(BitLSM 생성자, bit_lsm.cpp)이 실제로
@@ -24,7 +24,7 @@ TEST(Smoke, BitLSMOptionsConstructs) {
 TEST(Smoke, BitLSMConstructorLinksAndThrowsOnBadOpen) {
   bit_lsm::BitLSMOptions options;
   options.attr_num = 1;
-  options.attr_types = {bit_lsm::AttrType::ORDERED};
+  options.attr_specs = {bit_lsm::AttrType::ORDERED};
   options.read_seqno = 0;
   options.rho = 0.5;
   EXPECT_THROW(

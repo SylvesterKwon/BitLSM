@@ -8,14 +8,14 @@ using namespace bit_lsm;
 
 // Workload: generate 100 seeded schemas.
 // Threat: generator emits schemas violating BitLSMOptions invariants
-//         (attr_num/attr_types mismatch, rho<=0) -> engine UB downstream.
+//         (attr_num/attr_specs mismatch, rho<=0) -> engine UB downstream.
 TEST(Generators, SchemasAreWellFormed) {
   Rng rng(42);
   for (int i = 0; i < 100; ++i) {
     BitLSMOptions s = GenerateSchema(rng);
     EXPECT_GE(s.attr_num, 1u);
     EXPECT_LE(s.attr_num, 5u);
-    EXPECT_EQ(s.attr_types.size(), s.attr_num);
+    EXPECT_EQ(s.attr_specs.size(), s.attr_num);
     EXPECT_GT(s.rho, 0.0);
   }
 }
@@ -49,7 +49,7 @@ TEST(Generators, SameSeedSameStream) {
   BitLSMOptions sa = GenerateSchema(a);
   BitLSMOptions sb = GenerateSchema(b);
   EXPECT_EQ(sa.attr_num, sb.attr_num);
-  EXPECT_EQ(sa.attr_types, sb.attr_types);
+  EXPECT_EQ(sa.attr_specs, sb.attr_specs);
   ReferenceDB oa(sa), ob(sb);
   WorkloadParams p;
   Rng c(77), d(77);
