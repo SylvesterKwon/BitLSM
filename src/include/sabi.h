@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <variant>
 
 #include "bit_lsm_option.h"
@@ -38,9 +40,39 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
  private:
   BitLSMOptions options_;
 
+  // Interned buffer for one categorical attribute: each distinct value is
+  // appended once to a string arena and rows keep only its dense id. The
+  // value -> id lookup is a flat open-addressing table so high-cardinality
+  // attributes pay no per-value node allocation.
+  struct CatAttrBuf {
+    struct ValueRef {
+      uint32_t offset;
+      uint32_t len;
+    };
+    std::string arena;  // concatenated distinct values
+    std::vector<ValueRef> value_by_id;
+    std::vector<uint32_t> count_by_id;
+    std::vector<uint32_t> row_ids;    // row -> id
+    std::vector<uint32_t> bin_by_id;  // id -> bin, set by binning policy
+
+    std::string_view ValueOf(uint32_t id) const {
+      const ValueRef& v = value_by_id[id];
+      return std::string_view(arena.data() + v.offset, v.len);
+    }
+    void Intern(std::string_view value);
+
+   private:
+    static constexpr size_t kInitSlots = 1024;  // power of two
+    std::vector<uint64_t> slot_hash_ = std::vector<uint64_t>(kInitSlots);
+    std::vector<uint32_t> slot_id_ =
+        std::vector<uint32_t>(kInitSlots, 0);  // id + 1; 0 = empty slot
+    size_t used_ = 0;
+
+    void Grow();
+  };
+
   // Buffer
-  std::vector<std::variant<std::vector<std::string>, std::vector<double>>>
-      attr_buf_;
+  std::vector<std::variant<CatAttrBuf, std::vector<double>>> attr_buf_;
 
   // Statistics
   uint64_t total_data_entries_size_uncomp_ = 0;  // total size of KVPs (bytes)
@@ -55,9 +87,7 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
 
   // Helper methods
   void SetBinningPolicy();
-  void SetCategoricalPropertyBinningPolicy(
-      uint32_t i,
-      std::vector<std::unordered_map<std::string_view, uint32_t>>& cat_buf_map);
+  void SetCategoricalPropertyBinningPolicy(uint32_t i);
   void SetContinuousPropertyBinningPolicy(uint32_t i);
   void CalculateBitmapIndex();
 

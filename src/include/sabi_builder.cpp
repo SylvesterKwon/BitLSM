@@ -25,10 +25,50 @@ SABIBuilder::SABIBuilder(BitLSMOptions options) : options_(options) {
     if (options_.attr_types[i] == AttrType::CONTINUOUS) {
       attr_buf_.push_back(vector<double>());
     } else {
-      attr_buf_.push_back(vector<string>());
+      attr_buf_.push_back(CatAttrBuf());
     }
   }
 };
+
+void SABIBuilder::CatAttrBuf::Intern(string_view value) {
+  uint64_t h = std::hash<string_view>{}(value);
+  size_t mask = slot_id_.size() - 1;
+  size_t idx = h & mask;
+  while (slot_id_[idx] != 0) {
+    if (slot_hash_[idx] == h && ValueOf(slot_id_[idx] - 1) == value) {
+      uint32_t id = slot_id_[idx] - 1;
+      count_by_id[id]++;
+      row_ids.push_back(id);
+      return;
+    }
+    idx = (idx + 1) & mask;
+  }
+  uint32_t id = static_cast<uint32_t>(value_by_id.size());
+  value_by_id.push_back({static_cast<uint32_t>(arena.size()),
+                         static_cast<uint32_t>(value.size())});
+  arena.append(value.data(), value.size());
+  count_by_id.push_back(1);
+  row_ids.push_back(id);
+  slot_hash_[idx] = h;
+  slot_id_[idx] = id + 1;
+  if (++used_ * 10 >= slot_id_.size() * 7) Grow();
+}
+
+void SABIBuilder::CatAttrBuf::Grow() {
+  size_t n = slot_id_.size() * 2;
+  vector<uint64_t> new_hash(n);
+  vector<uint32_t> new_id(n, 0);
+  size_t mask = n - 1;
+  for (size_t i = 0; i < slot_id_.size(); ++i) {
+    if (slot_id_[i] == 0) continue;
+    size_t idx = slot_hash_[i] & mask;
+    while (new_id[idx] != 0) idx = (idx + 1) & mask;
+    new_hash[idx] = slot_hash_[i];
+    new_id[idx] = slot_id_[i];
+  }
+  slot_hash_ = std::move(new_hash);
+  slot_id_ = std::move(new_id);
+}
 
 Slice SABIBuilder::AddIndexEntry(const Slice& last_key_in_current_block,
                                  const Slice* first_key_in_next_block,
@@ -61,8 +101,7 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
         double val = get<double>(attr_val);
         get<vector<double>>(attr_buf_[i]).push_back(val);
       } else {
-        string_view str_val = get<string_view>(attr_val);
-        get<vector<string>>(attr_buf_[i]).emplace_back(str_val);
+        get<CatAttrBuf>(attr_buf_[i]).Intern(get<string_view>(attr_val));
       }
     }
   } else {
@@ -72,7 +111,7 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
       if (options_.attr_types[i] == AttrType::CONTINUOUS) {
         get<vector<double>>(attr_buf_[i]).push_back(0.0);
       } else {
-        get<vector<string>>(attr_buf_[i]).emplace_back("");
+        get<CatAttrBuf>(attr_buf_[i]).Intern("");
       }
     }
     // Also add the entry to the tombstone bitmap
@@ -94,18 +133,12 @@ void SABIBuilder::SetBinningPolicy() {
       (uint32_t)(options_.attr_num / options_.rho);
 
   // 2. Set # of bitmaps for each attr
-  vector<unordered_map<string_view, uint32_t>> cat_buf_map(
-      options_.attr_num);  // map for counting each categorical attr's value
   vector<uint32_t> cardinality(options_.attr_num, 0);
   uint32_t cardinality_ub =
       target_total_bitmaps_cnt;  // theoretically max bins for one attr
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
     if (options_.attr_types[i] == AttrType::CATEGORICAL) {
-      const auto& str_vec = get<vector<string>>(attr_buf_[i]);
-      for (const string& val : str_vec) {
-        cat_buf_map[i][val]++;
-      }
-      cardinality[i] = cat_buf_map[i].size();
+      cardinality[i] = get<CatAttrBuf>(attr_buf_[i]).value_by_id.size();
     } else {
       const auto& double_vec = get<vector<double>>(attr_buf_[i]);
       unordered_set<double> unique_vals;
@@ -156,7 +189,7 @@ void SABIBuilder::SetBinningPolicy() {
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
     if (options_.attr_types[i] == AttrType::CATEGORICAL) {
       // 3-A. Categorical property Binning
-      SetCategoricalPropertyBinningPolicy(i, cat_buf_map);
+      SetCategoricalPropertyBinningPolicy(i);
     } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
       // 3-B. Continuous property Binning
       SetContinuousPropertyBinningPolicy(i);
@@ -166,26 +199,29 @@ void SABIBuilder::SetBinningPolicy() {
   }
 }
 
-void SABIBuilder::SetCategoricalPropertyBinningPolicy(
-    uint32_t i, vector<unordered_map<string_view, uint32_t>>& buf_map) {
+void SABIBuilder::SetCategoricalPropertyBinningPolicy(uint32_t i) {
+  CatAttrBuf& cat = get<CatAttrBuf>(attr_buf_[i]);
   priority_queue<pair<uint32_t, uint32_t>, vector<pair<uint32_t, uint32_t>>,
                  greater<pair<uint32_t, uint32_t>>>
       min_bin_pq;
-  vector<pair<string_view, uint32_t>> sorted_items;  // sorted by cnt
-  for (const auto& [val, cnt] : buf_map[i]) {
-    sorted_items.push_back({val, cnt});
-  }
-  std::sort(sorted_items.begin(), sorted_items.end(),
-            [](const auto& a, const auto& b) { return a.second > b.second; });
+  // Distinct value ids sorted by occurrence count (descending)
+  vector<uint32_t> sorted_ids(cat.value_by_id.size());
+  for (uint32_t id = 0; id < sorted_ids.size(); ++id) sorted_ids[id] = id;
+  std::sort(sorted_ids.begin(), sorted_ids.end(),
+            [&cat](uint32_t a, uint32_t b) {
+              return cat.count_by_id[a] > cat.count_by_id[b];
+            });
   vector<pair<string, uint32_t>> binning;
-  binning.reserve(sorted_items.size());
+  binning.reserve(sorted_ids.size());
+  cat.bin_by_id.resize(sorted_ids.size());
   for (uint32_t j = 0; j < bitmap_index_.bitmap_nums[i]; ++j)
     min_bin_pq.push({0, j});
-  for (auto& [val, cnt] : sorted_items) {
+  for (uint32_t id : sorted_ids) {
     auto [cur_bin_cnt, bin_idx] = min_bin_pq.top();
     min_bin_pq.pop();
-    binning.push_back({string(val), bin_idx});
-    min_bin_pq.push({cur_bin_cnt + cnt, bin_idx});
+    binning.push_back({string(cat.ValueOf(id)), bin_idx});
+    cat.bin_by_id[id] = bin_idx;
+    min_bin_pq.push({cur_bin_cnt + cat.count_by_id[id], bin_idx});
   }
   sort(binning.begin(), binning.end());
   bitmap_index_.binning_policy[i] = std::move(binning);
@@ -210,27 +246,20 @@ void SABIBuilder::CalculateBitmapIndex() {
   uint32_t bin_idx_offset = 0;
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
     if (options_.attr_types[i] == AttrType::CATEGORICAL) {
-      const vector<string>& cur_attr_buf = get<vector<string>>(attr_buf_[i]);
-      vector<pair<string, uint32_t>>& binning =
-          get<vector<pair<string, uint32_t>>>(bitmap_index_.binning_policy[i]);
-      for (uint32_t j = 0; j < cur_attr_buf.size(); ++j) {
-        const string& key = cur_attr_buf[j];
-
-        auto it =
-            lower_bound(binning.begin(), binning.end(), key,
-                        [](const pair<string, uint32_t>& element,
-                           const string& val) { return element.first < val; });
-        if (it != binning.end() && it->first == key) {
-          uint32_t bin_idx = bin_idx_offset + (it->second);
-          bitmap_index_.bitmaps[bin_idx].add(j);
-        } else {
-          assert(false);
-        }
+      const CatAttrBuf& cat = get<CatAttrBuf>(attr_buf_[i]);
+      // Row ids are monotonic per bin, so a bulk context per bin lets
+      // CRoaring skip the container lookup on nearly every add.
+      vector<roaring::BulkContext> bin_ctxs(bitmap_index_.bitmap_nums[i]);
+      for (uint32_t j = 0; j < cat.row_ids.size(); ++j) {
+        uint32_t local_bin = cat.bin_by_id[cat.row_ids[j]];
+        bitmap_index_.bitmaps[bin_idx_offset + local_bin].addBulk(
+            bin_ctxs[local_bin], j);
       }
     } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
       const vector<double>& cur_attr_buf = get<vector<double>>(attr_buf_[i]);
       vector<double>& binning =
           get<vector<double>>(bitmap_index_.binning_policy[i]);
+      vector<roaring::BulkContext> bin_ctxs(bitmap_index_.bitmap_nums[i]);
       for (uint32_t j = 0; j < cur_attr_buf.size(); ++j) {
         auto it =
             std::upper_bound(binning.begin(), binning.end(), cur_attr_buf[j]);
@@ -240,8 +269,8 @@ void SABIBuilder::CalculateBitmapIndex() {
         if (local_bin_idx >= bitmap_index_.bitmap_nums[i])
           local_bin_idx = bitmap_index_.bitmap_nums[i] - 1;
 
-        uint32_t bin_idx = bin_idx_offset + local_bin_idx;
-        bitmap_index_.bitmaps[bin_idx].add(j);
+        bitmap_index_.bitmaps[bin_idx_offset + local_bin_idx].addBulk(
+            bin_ctxs[local_bin_idx], j);
       }
     } else {
       assert(false);
