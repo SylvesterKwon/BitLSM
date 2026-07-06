@@ -19,12 +19,11 @@
 
 namespace bit_lsm {
 
-// On-disk format version of a BitLSM SST: covers the SABI index blob and,
-// since the same code version writes both, the SST's value encoding.
+// On-disk format version of a BitLSM SST.
 inline constexpr uint32_t kBitLSMFormatVersion = 2;
-// Trailing magic of the SABI blob footer ("SABIBITS" in hexspeak); lets
-// readers reject non-SABI and pre-versioning blobs.
-inline constexpr uint32_t kSABIFooterMagic = 0x5AB1B175;
+// Trailing magic of the SABI blob footer
+inline constexpr uint32_t kSABIFooterMagic =
+    0x5AB1B175;  // SABIBITS in hexspeak :^)
 
 struct BitmapIndex {
   // Bitmap
