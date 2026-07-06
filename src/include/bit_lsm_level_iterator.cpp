@@ -16,18 +16,13 @@ using namespace rocksdb;
 using namespace bit_lsm;
 using namespace roaring;
 
-BitLSMLevelIterator::BitLSMLevelIterator(SuperVersion* sv, uint32_t level,
-                                         const QueryContext& ctx)
-    : sv_(sv),
-      cfd_(sv->cfd),
-      level_(level),
-      ctx_(ctx),
-      v_(sv->current),
-      tc_(cfd_->table_cache()),
-      storage_info_(v_->storage_info()),
-      icmp_(storage_info_->InternalComparator()),
-      cf_opts_(sv_->mutable_cf_options),
-      files_(storage_info_->LevelFiles(level_)),
+BitLSMLevelIterator::BitLSMLevelIterator(uint32_t level,
+                                         const ScanContext& scan_ctx,
+                                         const QueryContext& query_ctx)
+    : level_(level),
+      scan_ctx_(scan_ctx),
+      query_ctx_(query_ctx),
+      files_(scan_ctx.storage_info->LevelFiles(level_)),
       cur_file_idx_(0),
       cur_table_handle_(nullptr),
       cur_sti_(nullptr) {}
@@ -36,7 +31,7 @@ BitLSMLevelIterator::~BitLSMLevelIterator() {
   // cur_sti_ borrows bitmaps from the table's SABIReader, so it must be
   // destroyed before the table cache handle that pins the reader is released.
   if (cur_sti_) delete cur_sti_;
-  if (cur_table_handle_) tc_->get_cache().Release(cur_table_handle_);
+  if (cur_table_handle_) scan_ctx_.tc->get_cache().Release(cur_table_handle_);
 }
 
 void BitLSMLevelIterator::LoadFile(size_t idx) {
@@ -46,7 +41,7 @@ void BitLSMLevelIterator::LoadFile(size_t idx) {
   // 1. Clean up existing iterator & table handle (iterator first: it borrows
   // bitmaps from the SABIReader pinned by the handle)
   valid_ = false;
-  TableCache::CacheInterface cache_interface = tc_->get_cache();
+  TableCache::CacheInterface cache_interface = scan_ctx_.tc->get_cache();
   if (cur_sti_ != nullptr) {
     delete cur_sti_;
     cur_sti_ = nullptr;
@@ -68,8 +63,9 @@ void BitLSMLevelIterator::LoadFile(size_t idx) {
   const FileMetaData* file_meta = files_[idx];
   const bool no_io = false;
 
-  Status s = tc_->FindTable(read_options, file_options, *icmp_, *file_meta,
-                            &new_table_handle, cf_opts_, no_io);
+  Status s = scan_ctx_.tc->FindTable(
+      read_options, file_options, *scan_ctx_.icmp, *file_meta,
+      &new_table_handle, scan_ctx_.cf_opts, no_io);
   if (!s.ok()) {
     std::cerr << "Failed to load SST\n";
     return;
@@ -79,7 +75,7 @@ void BitLSMLevelIterator::LoadFile(size_t idx) {
 
   // 4. Prepare new SABITableIterator
   cur_table_handle_ = new_table_handle;
-  cur_sti_ = new SABITableIterator(bbt, ctx_);
+  cur_sti_ = new SABITableIterator(bbt, query_ctx_);
 }
 
 void BitLSMLevelIterator::SeekToFirst() {
