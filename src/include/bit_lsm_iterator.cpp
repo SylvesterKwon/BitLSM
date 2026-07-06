@@ -27,13 +27,14 @@ BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
       options_(options),
       query_(query),
       compiled_(query, options),
-      ctx_{options_, query_, compiled_},
+      query_ctx_{options_, query_, compiled_},
+      scan_ctx_(sv_),
       latest_user_key_added("") {
   // 3. Save snapshot's seqno to SABIOption
   options_.read_seqno = snapshot_->GetSequenceNumber();
 
   // 4. Create merging iterator
-  smi_ = new BitLSMMergingIterator(sv_, ctx_);
+  smi_ = new BitLSMMergingIterator(scan_ctx_, query_ctx_);
 }
 
 BitLSMIterator::~BitLSMIterator() {

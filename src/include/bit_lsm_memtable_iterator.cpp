@@ -51,10 +51,10 @@ void BitLSMMemTableIterator::FindNextValidEntry() {
 }
 
 BitLSMMemTableIterator::BitLSMMemTableIterator(rocksdb::MemTable* mem,
-                                               const QueryContext& ctx)
-    : options_(ctx.options),
+                                               const QueryContext& query_ctx)
+    : options_(query_ctx.options),
       mem_(mem),
-      compiled_(ctx.compiled),
+      compiled_(query_ctx.compiled),
       iter_(nullptr) {
   assert(mem_ != nullptr);
   ReadOptions ro;

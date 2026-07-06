@@ -15,40 +15,33 @@ using namespace std;
 using namespace rocksdb;
 using namespace bit_lsm;
 
-BitLSMMergingIterator::BitLSMMergingIterator(SuperVersion* sv,
-                                             const QueryContext& ctx)
-    : sv_(sv),
-      cfd_(sv_->cfd),
-      v_(sv_->current),
-      tc_(cfd_->table_cache()),
-      storage_info_(v_->storage_info()),
-      icmp_(storage_info_->InternalComparator()),
-      cf_opts_(sv->mutable_cf_options),
-      heap_(IteratorComparator(icmp_)) {
+BitLSMMergingIterator::BitLSMMergingIterator(const ScanContext& scan_ctx,
+                                             const QueryContext& query_ctx)
+    : scan_ctx_(scan_ctx), heap_(IteratorComparator(scan_ctx.icmp)) {
   // 1. Add MemTable iterators
   // 1-1. Active MemTable
-  rocksdb::ReadOnlyMemTable* active_mem = sv_->mem;
+  rocksdb::ReadOnlyMemTable* active_mem = scan_ctx_.sv->mem;
   if (active_mem != nullptr) {
     rocksdb::MemTable* mem = static_cast<rocksdb::MemTable*>(active_mem);
-    ch_iters_.push_back(new BitLSMMemTableIterator(mem, ctx));
+    ch_iters_.push_back(new BitLSMMemTableIterator(mem, query_ctx));
   }
   // 1-2. Immutable MemTables
-  MemTableListVersion* memtable_list_version_ = sv_->imm;
+  MemTableListVersion* memtable_list_version_ = scan_ctx_.sv->imm;
   if (memtable_list_version_ != nullptr) {
     for (ReadOnlyMemTable* imm_mem : memtable_list_version_->GetMemTables()) {
       rocksdb::MemTable* mem = static_cast<rocksdb::MemTable*>(imm_mem);
-      ch_iters_.push_back(new BitLSMMemTableIterator(mem, ctx));
+      ch_iters_.push_back(new BitLSMMemTableIterator(mem, query_ctx));
     }
   }
 
   // 2. Add L0 iterators
-  TableCache::CacheInterface cache_interface = tc_->get_cache();
-  const vector<FileMetaData*>& l0_files = storage_info_->LevelFiles(0);
+  TableCache::CacheInterface cache_interface = scan_ctx_.tc->get_cache();
+  const vector<FileMetaData*>& l0_files = scan_ctx_.storage_info->LevelFiles(0);
   for (FileMetaData* meta : l0_files) {
     TableCache::TypedHandle* table_handle = nullptr;
     ReadOptions ro;
-    Status s = tc_->FindTable(ro, FileOptions(), *icmp_, *meta, &table_handle,
-                              cf_opts_);
+    Status s = scan_ctx_.tc->FindTable(ro, FileOptions(), *scan_ctx_.icmp,
+                                       *meta, &table_handle, scan_ctx_.cf_opts);
     if (!s.ok()) {
       std::cerr << "[BitLSMMergingIterator]: Failed to load L0 file "
                 << meta->fd.GetNumber() << "\n";
@@ -58,15 +51,15 @@ BitLSMMergingIterator::BitLSMMergingIterator(SuperVersion* sv,
     BlockBasedTable* bbt = static_cast<BlockBasedTable*>(table);
 
     // cout << "[BitLSMMergingIterator] Added L0 SST iterator\n";
-    ch_iters_.push_back(new SABITableIterator(bbt, ctx));
+    ch_iters_.push_back(new SABITableIterator(bbt, query_ctx));
     l0_handles_.push_back(table_handle);
   }
 
   // 4. Add L1+ level iterators
-  for (uint32_t level = 1; level < storage_info_->num_non_empty_levels();
-       ++level) {
-    if (storage_info_->NumLevelFiles(level) > 0) {
-      ch_iters_.push_back(new BitLSMLevelIterator(sv, level, ctx));
+  for (uint32_t level = 1;
+       level < scan_ctx_.storage_info->num_non_empty_levels(); ++level) {
+    if (scan_ctx_.storage_info->NumLevelFiles(level) > 0) {
+      ch_iters_.push_back(new BitLSMLevelIterator(level, scan_ctx_, query_ctx));
     }
   }
 };
@@ -78,7 +71,7 @@ BitLSMMergingIterator::~BitLSMMergingIterator() {
   ch_iters_.clear();
 
   // 2. Release cache for L0 SST
-  for (auto* handle : l0_handles_) tc_->get_cache().Release(handle);
+  for (auto* handle : l0_handles_) scan_ctx_.tc->get_cache().Release(handle);
   l0_handles_.clear();
 }
 
