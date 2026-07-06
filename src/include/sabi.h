@@ -11,6 +11,7 @@
 
 #include "bit_lsm_option.h"
 #include "bit_lsm_query.h"
+#include "bit_lsm_utils.h"
 #include "roaring.hh"
 #include "rocksdb/options.h"
 #include "rocksdb/user_defined_index.h"
@@ -48,6 +49,7 @@ class SABIFactory;
 class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
  private:
   BitLSMOptions options_;
+  ValueLayout value_layout_;
 
   // Interned buffer for one categorical attribute: each distinct value is
   // appended once to a string arena and rows keep only its dense id. The

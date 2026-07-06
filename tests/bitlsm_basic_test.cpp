@@ -14,7 +14,8 @@ using namespace bit_lsm;
 // Put 한 값이 실제 RocksDB 에 들어가고, raw Get 으로 꺼낸 인코딩 값이
 // 우리가 넣은 속성으로 정확히 디코딩되는지. (fixture 의 디스크 격리도 검증)
 TEST_F(BitLSMTestBase, PutThenRawGetRoundTrip) {
-  auto& db = OpenDB(DefaultOptions());
+  BitLSMOptions opt = DefaultOptions();
+  auto& db = OpenDB(opt);
   BITLSM_ASSERT_OK(db.Put("pk1", {15.0, std::string("apple")}, "payload1"));
 
   std::string raw;
@@ -22,11 +23,8 @@ TEST_F(BitLSMTestBase, PutThenRawGetRoundTrip) {
       db.GetInternalDB()->Get(rocksdb::ReadOptions(), "pk1", &raw));
 
   std::string_view buf(raw);
-  EXPECT_DOUBLE_EQ(std::get<double>(DecodeAttr(AttrType::CONTINUOUS, buf, 0)),
-                   15.0);
-  EXPECT_EQ(
-      std::get<std::string_view>(DecodeAttr(AttrType::CATEGORICAL, buf, 1)),
-      "apple");
+  EXPECT_DOUBLE_EQ(std::get<double>(DecodeAttr(opt, buf, 0)), 15.0);
+  EXPECT_EQ(std::get<std::string_view>(DecodeAttr(opt, buf, 1)), "apple");
 }
 
 // 빈 쿼리로 스캔하면 넣은 모든 행이 나오는지. (iterator 배관 검증)
