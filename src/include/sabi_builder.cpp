@@ -17,7 +17,8 @@ namespace bit_lsm {
 // ========================================================================
 // SABIBuilder Implementation
 // ========================================================================
-SABIBuilder::SABIBuilder(BitLSMOptions options) : options_(options) {
+SABIBuilder::SABIBuilder(BitLSMOptions options)
+    : options_(options), value_layout_(options) {
   bitmap_index_.bitmap_nums.resize(options.attr_num, 0);
   bitmap_index_.binning_policy.resize(options.attr_num);
   attr_buf_.reserve(options.attr_num);
@@ -96,7 +97,7 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
     std::string_view buffer(value.data(), value.size());
     Slice v = value;
     for (uint32_t i = 0; i < options_.attr_num; ++i) {
-      AttrView attr_val = DecodeAttr(options_.attr_types[i], buffer, i);
+      AttrView attr_val = DecodeAttr(value_layout_, buffer, i);
       if (options_.attr_types[i] == AttrType::CONTINUOUS) {
         double val = get<double>(attr_val);
         get<vector<double>>(attr_buf_[i]).push_back(val);
@@ -351,6 +352,10 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   PutFixed32(&index_blob_, index_entries_cnt_);
   PutFixed32(&index_blob_, bitmaps_offset_offset);
   PutFixed32(&index_blob_, binning_policy_offset_offset);
+
+  // 3-6. Version footer (validated by SABIFactory::NewReader)
+  PutFixed32(&index_blob_, kBitLSMFormatVersion);
+  PutFixed32(&index_blob_, kSABIFooterMagic);
 
   *index_contents = Slice(index_blob_);
   // Dump(); // for test only.

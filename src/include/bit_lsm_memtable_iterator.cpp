@@ -41,7 +41,7 @@ void BitLSMMemTableIterator::FindNextValidEntry() {
     }
 
     // 4. Filter query condition
-    if (query_.CheckCondition(iter_->value(), options_)) {
+    if (compiled_.Eval(iter_->value())) {
       valid_ = true;
       return;
     }
@@ -51,9 +51,11 @@ void BitLSMMemTableIterator::FindNextValidEntry() {
 }
 
 BitLSMMemTableIterator::BitLSMMemTableIterator(rocksdb::MemTable* mem,
-                                               const BitLSMOptions& options,
-                                               const BitLSMQuery& query)
-    : options_(options), mem_(mem), query_(query), iter_(nullptr) {
+                                               const QueryContext& ctx)
+    : options_(ctx.options),
+      mem_(mem),
+      compiled_(ctx.compiled),
+      iter_(nullptr) {
   assert(mem_ != nullptr);
   ReadOptions ro;
   iter_ = mem_->NewIterator(ro, nullptr, &arena_, nullptr, false);

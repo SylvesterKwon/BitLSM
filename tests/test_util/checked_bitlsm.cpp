@@ -8,15 +8,23 @@
 namespace bit_lsm {
 namespace {
 
-// Independent payload extractor from the documented value layout:
-// [attr_cnt:u32][offset[0..N]:u32][payload_offset:u32][data...]
-std::string PayloadOf(std::string_view buf, std::uint32_t attr_cnt) {
-  std::uint32_t payload_off_pos =
-      sizeof(std::uint32_t) + attr_cnt * sizeof(std::uint32_t);
-  std::uint32_t payload_off;
-  std::memcpy(&payload_off, buf.data() + payload_off_pos,
-              sizeof(std::uint32_t));
-  return std::string(buf.substr(payload_off));
+// Independent payload extractor from the documented v2 value layout:
+// [var_end:u32 x n_cat][cont:8B x n_cont][cat bytes][payload]
+// (implemented from the layout spec, not via ValueLayout, so it stays an
+// independent check of the production encoder)
+std::string PayloadOf(std::string_view buf, const BitLSMOptions& options) {
+  std::uint32_t n_cat = 0;
+  for (AttrType t : options.attr_types)
+    if (t == AttrType::CATEGORICAL) n_cat++;
+  std::uint32_t n_cont = options.attr_num - n_cat;
+  std::uint32_t cat_base =
+      n_cat * static_cast<std::uint32_t>(sizeof(std::uint32_t)) +
+      n_cont * static_cast<std::uint32_t>(sizeof(double));
+  std::uint32_t last_end = 0;
+  if (n_cat > 0)
+    std::memcpy(&last_end, buf.data() + (n_cat - 1) * sizeof(std::uint32_t),
+                sizeof(std::uint32_t));
+  return std::string(buf.substr(cat_base + last_end));
 }
 
 std::string AttrToString(const Attr& a) {
@@ -124,13 +132,13 @@ std::map<std::string, Record> CheckedBitLSM::ScanEngine(BitLSMQuery& query) {
     Record r;
     r.attrs.reserve(options_.attr_num);
     for (std::uint32_t i = 0; i < options_.attr_num; ++i) {
-      AttrView av = DecodeAttr(options_.attr_types[i], val, i);
+      AttrView av = DecodeAttr(options_, val, i);
       if (std::holds_alternative<double>(av))
         r.attrs.emplace_back(std::get<double>(av));
       else
         r.attrs.emplace_back(std::string(std::get<std::string_view>(av)));
     }
-    r.payload = PayloadOf(val, options_.attr_num);
+    r.payload = PayloadOf(val, options_);
     out.emplace(std::move(key), std::move(r));
   }
   return out;

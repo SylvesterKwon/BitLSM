@@ -2,6 +2,7 @@
 #include <rocksdb/slice.h>
 #include <rocksdb/user_defined_index.h>
 
+#include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
@@ -79,4 +80,49 @@ TEST(SabiBlobRoundTrip, BuildsAndParses) {
   }
   // 실제 비트맵 개수(tombstone 제외) == bin 수 총합.
   EXPECT_EQ(reader.bitmap_index.bitmaps.size(), total_bins);
+}
+
+// Workload: a freshly built blob validated through the factory's
+//           Status-returning NewReader; the same blob with its version footer
+//           stripped (pre-versioning layout); and one with a bumped version.
+// Threat: a pre-versioned or future-format index gets parsed as if current —
+//         garbage offsets / UB instead of a clean Corruption error.
+TEST(SabiBlobRoundTrip, RejectsUnversionedAndUnknownVersions) {
+  BitLSMOptions options = MakeOptions();
+  SABIBuilder builder(options);
+
+  std::string encoded;
+  EncodeValue(options, {1.0, std::string("apple")}, "p", encoded);
+  builder.OnKeyAdded(rocksdb::Slice("k0"), UDIB::ValueType::kValue,
+                     rocksdb::Slice(encoded));
+  std::string scratch;
+  UDIB::BlockHandle block_handle{/*offset=*/100, /*size=*/4096};
+  builder.AddIndexEntry(rocksdb::Slice("k0"), nullptr, block_handle, &scratch);
+  rocksdb::Slice blob;
+  BITLSM_ASSERT_OK(builder.Finish(&blob));
+
+  SABIFactory factory(options);
+  rocksdb::UserDefinedIndexOption udi_option;
+
+  // 1. Current version passes validation.
+  std::unique_ptr<rocksdb::UserDefinedIndexReader> reader;
+  BITLSM_ASSERT_OK(factory.NewReader(udi_option, blob, reader));
+  ASSERT_NE(reader, nullptr);
+
+  // 2. Version footer stripped -> pre-versioning layout -> Corruption.
+  std::string unversioned(blob.data(), blob.size() - 2 * sizeof(uint32_t));
+  rocksdb::Slice unversioned_slice(unversioned);
+  reader.reset();
+  EXPECT_TRUE(
+      factory.NewReader(udi_option, unversioned_slice, reader).IsCorruption());
+
+  // 3. Unknown (future) version number -> Corruption.
+  std::string bumped(blob.data(), blob.size());
+  uint32_t future_version = kBitLSMFormatVersion + 1;
+  std::memcpy(bumped.data() + bumped.size() - 2 * sizeof(uint32_t),
+              &future_version, sizeof(uint32_t));
+  rocksdb::Slice bumped_slice(bumped);
+  reader.reset();
+  EXPECT_TRUE(
+      factory.NewReader(udi_option, bumped_slice, reader).IsCorruption());
 }

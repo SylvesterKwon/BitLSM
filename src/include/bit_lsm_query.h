@@ -48,7 +48,8 @@ struct BitLSMQuery {
   explicit BitLSMQuery(std::vector<OrClause> groups)
       : clause_groups(std::move(groups)) {}
 
-  // Validate given slice with given query condition & options
+  // Reference row evaluation (tests/oracle); the engine evaluates through
+  // CompiledQuery
   bool CheckCondition(rocksdb::Slice slice, const BitLSMOptions& options) const;
 
   // Structural validation against a schema: rejects empty clauses,
@@ -97,6 +98,41 @@ struct BitLSMQuery {
     }
     return out.str();
   }
+};
+
+// A query pre-resolved against a schema: flat predicates with v2 value-format
+// slots baked in, so per-row evaluation does no schema lookup, no variant,
+// and no offset-table walk. Snapshots the query: the source query/options
+// are not referenced after construction. The query must pass Validate()
+// against the same options first.
+class CompiledQuery {
+ public:
+  CompiledQuery() = default;
+  CompiledQuery(const BitLSMQuery& query, const BitLSMOptions& options);
+
+  // CNF evaluation (AND of OR clauses) of a v2-encoded value.
+  // Semantically identical to BitLSMQuery::CheckCondition.
+  bool Eval(rocksdb::Slice value) const;
+
+ private:
+  struct Pred {
+    uint8_t is_cont;
+    CompareOp op;
+    uint32_t slot;  // cont: absolute byte offset / cat: var_end rank
+    double dval;    // continuous comparand
+    uint32_t soff;  // categorical comparand: offset into arena_
+    uint32_t slen;
+  };
+  struct ClauseRange {
+    uint32_t begin;
+    uint32_t end;
+  };
+  std::vector<Pred> preds_;
+  std::vector<ClauseRange> clauses_;
+  uint32_t cat_base_ = 0;
+  // Owns categorical comparand bytes; preds address it by offset, so copies
+  // and moves of CompiledQuery stay valid.
+  std::string arena_;
 };
 
 }  // namespace bit_lsm

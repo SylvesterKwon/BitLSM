@@ -26,12 +26,14 @@ BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
       sv_(cfd_->GetReferencedSuperVersion(db_impl_)),
       options_(options),
       query_(query),
+      compiled_(query, options),
+      ctx_{options_, query_, compiled_},
       latest_user_key_added("") {
   // 3. Save snapshot's seqno to SABIOption
   options_.read_seqno = snapshot_->GetSequenceNumber();
 
   // 4. Create merging iterator
-  smi_ = new BitLSMMergingIterator(sv_, options_, query_);
+  smi_ = new BitLSMMergingIterator(sv_, ctx_);
 }
 
 BitLSMIterator::~BitLSMIterator() {
@@ -102,7 +104,7 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       if (!statuses[i].ok()) continue;
 
       // 5-2. Value validation
-      if (query_.CheckCondition(pin_values[i], options_)) {
+      if (compiled_.Eval(pin_values[i])) {
         // 5-3. Move key/value to validated batch if valid entry
         batch_keys_.push_back(std::move(candidate_keys[i]));
         // Optimization: Only call ToString() to valid value

@@ -11,12 +11,19 @@
 
 #include "bit_lsm_option.h"
 #include "bit_lsm_query.h"
+#include "bit_lsm_utils.h"
 #include "roaring.hh"
 #include "rocksdb/options.h"
 #include "rocksdb/user_defined_index.h"
 #include "table/format.h"
 
 namespace bit_lsm {
+
+// On-disk format version of a BitLSM SST.
+inline constexpr uint32_t kBitLSMFormatVersion = 2;
+// Trailing magic of the SABI blob footer
+inline constexpr uint32_t kSABIFooterMagic =
+    0x5AB1B175;  // SABIBITS in hexspeak :^)
 
 struct BitmapIndex {
   // Bitmap
@@ -39,6 +46,7 @@ class SABIFactory;
 class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
  private:
   BitLSMOptions options_;
+  ValueLayout value_layout_;
 
   // Interned buffer for one categorical attribute: each distinct value is
   // appended once to a string arena and rows keep only its dense id. The
@@ -146,6 +154,11 @@ class SABIFactory : public rocksdb::UserDefinedIndexFactory {
   rocksdb::UserDefinedIndexBuilder* NewBuilder() const override;
   std::unique_ptr<rocksdb::UserDefinedIndexReader> NewReader(
       rocksdb::Slice& index_block_) const override;
+  // Rejects blobs with a missing or unsupported version footer.
+  rocksdb::Status NewReader(
+      const rocksdb::UserDefinedIndexOption& option,
+      rocksdb::Slice& index_block,
+      std::unique_ptr<rocksdb::UserDefinedIndexReader>& reader) const override;
 };
 
 }  // namespace bit_lsm

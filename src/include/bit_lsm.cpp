@@ -17,7 +17,9 @@ using namespace bit_lsm;
 BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
                const Options& rocksdb_options,
                const BlockBasedTableOptions& table_options)
-    : db_path_(db_path), bit_lsm_options_(bit_lsm_options) {
+    : db_path_(db_path),
+      bit_lsm_options_(bit_lsm_options),
+      layout_(bit_lsm_options) {
   rocksdb_options_ = rocksdb_options;
 
   BlockBasedTableOptions opts = table_options;
@@ -55,7 +57,7 @@ Status BitLSM::Put(const string& key, const vector<Attr>& attrs,
 
   // 2. Serialize value (thread_local for concurrent Put safety)
   thread_local string serialized_value_buf;
-  EncodeValue(bit_lsm_options_, attrs, payload, serialized_value_buf);
+  EncodeValue(layout_, attrs, payload, serialized_value_buf);
 
   // 3. Put Key-Value pair to RocksDB
   return db_->Put(WriteOptions(), key, serialized_value_buf);
@@ -76,7 +78,7 @@ rocksdb::Status BitLSM::PutBatch(const vector<string>& pks,
     }
 
     string serialized_value;
-    EncodeValue(bit_lsm_options_, attrs_list[i], payloads[i], serialized_value);
+    EncodeValue(layout_, attrs_list[i], payloads[i], serialized_value);
     batch.Put(pks[i], serialized_value);
   }
   rocksdb::WriteOptions wo;

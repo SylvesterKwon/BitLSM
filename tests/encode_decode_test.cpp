@@ -27,12 +27,11 @@ TEST(EncodeDecode, RoundTripMixedAttrs) {
   std::string out;
   EncodeValue(options, {3.14, std::string("apple")}, "payload", out);
 
+  ValueLayout layout(options);
   std::string_view buf(out);
-  EXPECT_DOUBLE_EQ(std::get<double>(DecodeAttr(AttrType::CONTINUOUS, buf, 0)),
-                   3.14);
-  EXPECT_EQ(
-      std::get<std::string_view>(DecodeAttr(AttrType::CATEGORICAL, buf, 1)),
-      "apple");
+  EXPECT_DOUBLE_EQ(std::get<double>(DecodeAttr(layout, buf, 0)), 3.14);
+  EXPECT_EQ(std::get<std::string_view>(DecodeAttr(layout, buf, 1)), "apple");
+  EXPECT_EQ(DecodePayload(layout, buf), "payload");
 }
 
 // 가변 길이 범주형 두 개(마지막이 아닌 범주형의 길이 계산)와 빈 payload.
@@ -42,13 +41,30 @@ TEST(EncodeDecode, RoundTripMultipleCategoricalEmptyPayload) {
   std::string out;
   EncodeValue(options, {std::string("ab"), std::string("cdef"), 2.5}, "", out);
 
+  ValueLayout layout(options);
   std::string_view buf(out);
-  EXPECT_EQ(
-      std::get<std::string_view>(DecodeAttr(AttrType::CATEGORICAL, buf, 0)),
-      "ab");
-  EXPECT_EQ(
-      std::get<std::string_view>(DecodeAttr(AttrType::CATEGORICAL, buf, 1)),
-      "cdef");
-  EXPECT_DOUBLE_EQ(std::get<double>(DecodeAttr(AttrType::CONTINUOUS, buf, 2)),
-                   2.5);
+  EXPECT_EQ(std::get<std::string_view>(DecodeAttr(layout, buf, 0)), "ab");
+  EXPECT_EQ(std::get<std::string_view>(DecodeAttr(layout, buf, 1)), "cdef");
+  EXPECT_DOUBLE_EQ(std::get<double>(DecodeAttr(layout, buf, 2)), 2.5);
+  EXPECT_EQ(DecodePayload(layout, buf), "");
+}
+
+// Workload: all-continuous schema (n_cat == 0) with a payload.
+// Threat: the v2 header is zero bytes in this case — payload start must be
+//         derived purely from the schema (8B x n_cont), and an off-by-one
+//         there corrupts every attribute and the payload.
+TEST(EncodeDecode, RoundTripAllContinuousZeroHeader) {
+  BitLSMOptions options =
+      MakeOptions({AttrType::CONTINUOUS, AttrType::CONTINUOUS});
+  std::string out;
+  EncodeValue(options, {1.5, -2.5}, "tail", out);
+
+  ValueLayout layout(options);
+  EXPECT_EQ(layout.cat_base, 2 * sizeof(double));
+  EXPECT_EQ(out.size(), 2 * sizeof(double) + 4);
+
+  std::string_view buf(out);
+  EXPECT_DOUBLE_EQ(std::get<double>(DecodeAttr(layout, buf, 0)), 1.5);
+  EXPECT_DOUBLE_EQ(std::get<double>(DecodeAttr(layout, buf, 1)), -2.5);
+  EXPECT_EQ(DecodePayload(layout, buf), "tail");
 }

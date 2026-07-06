@@ -87,3 +87,46 @@ TEST(QueryEval, AndOfClausesMixedTypes) {
   EXPECT_FALSE(query.CheckCondition(
       rocksdb::Slice(Encode2(options, 5.0, "apple")), options));
 }
+
+// Workload: a sweep of queries (empty, single-cond, same-attr OR, cross-attr
+//           OR, multi-clause AND, boundary >= / <) evaluated over a grid of
+//           rows by both CheckCondition (reference) and CompiledQuery::Eval
+//           (engine path).
+// Threat: compiled predicate slots, comparand storage, or op mapping diverge
+//         from the reference semantics, silently corrupting engine results.
+TEST(QueryEval, CompiledQueryMatchesCheckCondition) {
+  BitLSMOptions options =
+      MakeOptions({AttrType::CONTINUOUS, AttrType::CATEGORICAL});
+
+  std::vector<BitLSMQuery> queries;
+  queries.emplace_back();  // empty query matches all
+  queries.emplace_back(
+      std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
+  queries.emplace_back(
+      std::vector<QueryCondition>{{1, CompareOp::EQUAL, std::string("apple")}});
+  queries.emplace_back(std::vector<OrClause>{
+      {{0, CompareOp::LESS, 5.0}, {0, CompareOp::GREATER, 20.0}}});
+  queries.emplace_back(
+      std::vector<OrClause>{{{0, CompareOp::GREATER_EQUAL, 10.0},
+                             {1, CompareOp::EQUAL, std::string("pear")}}});
+  queries.emplace_back(std::vector<OrClause>{
+      OrClause{{0, CompareOp::LESS_EQUAL, 15.0}},
+      OrClause{{1, CompareOp::EQUAL, std::string("apple")},
+               {1, CompareOp::EQUAL, std::string("pear")}}});
+
+  const double conts[] = {4.0, 5.0, 10.0, 15.0, 20.0, 25.0};
+  const char* cats[] = {"apple", "banana", "pear", ""};
+
+  for (BitLSMQuery& q : queries) {
+    ASSERT_TRUE(q.Validate(options).ok());
+    CompiledQuery compiled(q, options);
+    for (double c : conts) {
+      for (const char* s : cats) {
+        std::string row = Encode2(options, c, s);
+        EXPECT_EQ(compiled.Eval(rocksdb::Slice(row)),
+                  q.CheckCondition(rocksdb::Slice(row), options))
+            << q.ToString() << " on (" << c << ", '" << s << "')";
+      }
+    }
+  }
+}

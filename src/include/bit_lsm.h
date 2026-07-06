@@ -7,6 +7,7 @@
 
 #include "bit_lsm_iterator.h"
 #include "bit_lsm_query.h"
+#include "bit_lsm_utils.h"
 
 using Attr = std::variant<double, std::string>;
 
@@ -19,6 +20,7 @@ class BitLSM {
   std::vector<rocksdb::ColumnFamilyHandle*> cf_handles_;
   rocksdb::Options rocksdb_options_;
   BitLSMOptions bit_lsm_options_;
+  ValueLayout layout_;
 
   // Helper functions
 
