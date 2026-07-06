@@ -49,8 +49,7 @@ class BitLSMIterator : public SABIInternalIterator {
   BitLSMMergingIterator* smi_;
   BitLSMOptions options_;
   BitLSMQuery query_;
-  // Owned by this iterator; children evaluate rows through a reference to it
-  CompiledQuery compiled_;
+  CompiledQuery compiled_;  // children evaluate rows through references
 
   // batch
   std::vector<std::string> batch_keys_;

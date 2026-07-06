@@ -48,7 +48,8 @@ struct BitLSMQuery {
   explicit BitLSMQuery(std::vector<OrClause> groups)
       : clause_groups(std::move(groups)) {}
 
-  // Validate given slice with given query condition & options
+  // Reference row evaluation (tests/oracle); the engine evaluates through
+  // CompiledQuery
   bool CheckCondition(rocksdb::Slice slice, const BitLSMOptions& options) const;
 
   // Structural validation against a schema: rejects empty clauses,
@@ -101,9 +102,9 @@ struct BitLSMQuery {
 
 // A query pre-resolved against a schema: flat predicates with v2 value-format
 // slots baked in, so per-row evaluation does no schema lookup, no variant,
-// and no offset-table walk. Built once per iterator; the source query and
-// options are not referenced after construction. Callers must Validate() the
-// query against the same options first.
+// and no offset-table walk. Snapshots the query: the source query/options
+// are not referenced after construction. The query must pass Validate()
+// against the same options first.
 class CompiledQuery {
  public:
   CompiledQuery() = default;

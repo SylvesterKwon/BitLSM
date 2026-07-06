@@ -99,9 +99,8 @@ UserDefinedIndexBuilder::BlockHandle SABIUDIIterator::value() {
 
 SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
     : options_(options) {
-  // 1. Read footer
-  // Blob ends with [legacy footer 3xu32][version u32][magic u32]; version
-  // and magic are validated in SABIFactory::NewReader before we get here.
+  // 1. Read footer: [index footer 3xu32][version u32][magic u32]
+  // (version/magic already validated by SABIFactory::NewReader)
   assert(index_block.size() >= 5 * sizeof(uint32_t) &&
          DecodeFixed32(index_block.data() + index_block.size() -
                        sizeof(uint32_t)) == kSABIFooterMagic);

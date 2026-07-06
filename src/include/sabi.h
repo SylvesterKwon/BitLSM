@@ -21,12 +21,10 @@ namespace bit_lsm {
 
 // On-disk format version of a BitLSM SST: covers the SABI index blob and,
 // since the same code version writes both, the SST's value encoding.
-// Bump on any breaking change.
 inline constexpr uint32_t kBitLSMFormatVersion = 2;
-// Trailing magic marking versioned SABI blobs. Blobs written before
-// versioning existed end in an offset field instead, so readers can reject
-// them cleanly rather than misparse.
-inline constexpr uint32_t kSABIFooterMagic = 0xB17B5AB1;
+// Trailing magic of the SABI blob footer ("SABIBITS" in hexspeak); lets
+// readers reject non-SABI and pre-versioning blobs.
+inline constexpr uint32_t kSABIFooterMagic = 0x5AB1B175;
 
 struct BitmapIndex {
   // Bitmap
@@ -157,8 +155,7 @@ class SABIFactory : public rocksdb::UserDefinedIndexFactory {
   rocksdb::UserDefinedIndexBuilder* NewBuilder() const override;
   std::unique_ptr<rocksdb::UserDefinedIndexReader> NewReader(
       rocksdb::Slice& index_block_) const override;
-  // Validates the versioned footer before constructing a reader; returns
-  // Corruption for pre-versioned or unsupported-version blobs.
+  // Rejects blobs with a missing or unsupported version footer.
   rocksdb::Status NewReader(
       const rocksdb::UserDefinedIndexOption& option,
       rocksdb::Slice& index_block,

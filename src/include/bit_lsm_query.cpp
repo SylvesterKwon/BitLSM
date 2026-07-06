@@ -57,8 +57,6 @@ bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
                                  const BitLSMOptions& options) const {
   if (clause_groups.empty()) return true;
 
-  // Transitional: engine iterators still evaluate through this method, so the
-  // layout is rebuilt per call; the compiled-query path replaces it.
   const ValueLayout layout(options);
   std::string_view buffer(value_slice.data(), value_slice.size());
 
