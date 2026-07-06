@@ -13,7 +13,7 @@ namespace {
 BitLSMOptions TwoAttrOptions() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_types = {AttrType::CONTINUOUS, AttrType::CATEGORICAL};
+  o.attr_types = {AttrType::ORDERED, AttrType::UNORDERED};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;
@@ -50,7 +50,7 @@ TEST(QueryValidation, RejectsAttrIdxOutOfRange) {
   EXPECT_TRUE(sentinel.Validate(TwoAttrOptions()).IsInvalidArgument());
 }
 
-// Workload: continuous attr with a string value, categorical with a double.
+// Workload: ordered attr with a string value, unordered with a double.
 // Threat: std::get<> on the wrong variant alternative -> bad_variant_access.
 TEST(QueryValidation, RejectsValueTypeMismatch) {
   BitLSMQuery q1(
@@ -60,11 +60,11 @@ TEST(QueryValidation, RejectsValueTypeMismatch) {
   EXPECT_TRUE(q2.Validate(TwoAttrOptions()).IsInvalidArgument());
 }
 
-// Workload: range operator on a categorical attribute.
+// Workload: range operator on a unordered attribute.
 // Threat: bitmap path asserts (Debug) or returns an empty bitmap (Release,
-//         silent row loss) — categorical bins preserve no order, so the
+//         silent row loss) — unordered bins preserve no order, so the
 //         contract is EQUAL-only (paper §3: equality predicates).
-TEST(QueryValidation, RejectsNonEqualOnCategorical) {
+TEST(QueryValidation, RejectsNonEqualOnUnordered) {
   BitLSMQuery q(std::vector<QueryCondition>{
       {1, CompareOp::GREATER_EQUAL, std::string("x")}});
   EXPECT_TRUE(q.Validate(TwoAttrOptions()).IsInvalidArgument());

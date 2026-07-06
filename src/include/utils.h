@@ -128,9 +128,9 @@ inline void fill_kvp(bit_lsm::BitLSM* db, uint64_t n, uint32_t attr_num,
       vector<Attr> attrs(attr_num);
       for (uint32_t j = 0; j < attr_num; ++j) {
         if (j % 2 == 0) {
-          attrs[j] = to_string(rand() % 100);  // Categorical
+          attrs[j] = to_string(rand() % 100);  // Unordered
         } else {
-          attrs[j] = (double)rand() / RAND_MAX * 100.0;  // Continuous
+          attrs[j] = (double)rand() / RAND_MAX * 100.0;  // Ordered
         }
       }
 
@@ -177,9 +177,9 @@ inline void fill_single_kvp(bit_lsm::BitLSM* db, const string& key,
   vector<Attr> attrs(attr_num);
   for (uint32_t j = 0; j < attr_num; ++j) {
     if (j % 2 == 0) {
-      attrs[j] = to_string(rand() % 100);  // Categorical
+      attrs[j] = to_string(rand() % 100);  // Unordered
     } else {
-      attrs[j] = (double)rand() / RAND_MAX * 100.0;  // Continuous
+      attrs[j] = (double)rand() / RAND_MAX * 100.0;  // Ordered
     }
   }
 

@@ -22,8 +22,7 @@ BitLSMOptions MakeOptions(std::vector<AttrType> types) {
 
 // 연속형 + 범주형 혼합 값이 왕복(encode→decode)에서 보존되는지.
 TEST(EncodeDecode, RoundTripMixedAttrs) {
-  BitLSMOptions options =
-      MakeOptions({AttrType::CONTINUOUS, AttrType::CATEGORICAL});
+  BitLSMOptions options = MakeOptions({AttrType::ORDERED, AttrType::UNORDERED});
   std::string out;
   EncodeValue(options, {3.14, std::string("apple")}, "payload", out);
 
@@ -35,9 +34,9 @@ TEST(EncodeDecode, RoundTripMixedAttrs) {
 }
 
 // 가변 길이 범주형 두 개(마지막이 아닌 범주형의 길이 계산)와 빈 payload.
-TEST(EncodeDecode, RoundTripMultipleCategoricalEmptyPayload) {
+TEST(EncodeDecode, RoundTripMultipleUnorderedEmptyPayload) {
   BitLSMOptions options = MakeOptions(
-      {AttrType::CATEGORICAL, AttrType::CATEGORICAL, AttrType::CONTINUOUS});
+      {AttrType::UNORDERED, AttrType::UNORDERED, AttrType::ORDERED});
   std::string out;
   EncodeValue(options, {std::string("ab"), std::string("cdef"), 2.5}, "", out);
 
@@ -49,13 +48,12 @@ TEST(EncodeDecode, RoundTripMultipleCategoricalEmptyPayload) {
   EXPECT_EQ(DecodePayload(layout, buf), "");
 }
 
-// Workload: all-continuous schema (n_cat == 0) with a payload.
+// Workload: all-ordered schema (n_cat == 0) with a payload.
 // Threat: the v2 header is zero bytes in this case — payload start must be
 //         derived purely from the schema (8B x n_cont), and an off-by-one
 //         there corrupts every attribute and the payload.
-TEST(EncodeDecode, RoundTripAllContinuousZeroHeader) {
-  BitLSMOptions options =
-      MakeOptions({AttrType::CONTINUOUS, AttrType::CONTINUOUS});
+TEST(EncodeDecode, RoundTripAllOrderedZeroHeader) {
+  BitLSMOptions options = MakeOptions({AttrType::ORDERED, AttrType::ORDERED});
   std::string out;
   EncodeValue(options, {1.5, -2.5}, "tail", out);
 

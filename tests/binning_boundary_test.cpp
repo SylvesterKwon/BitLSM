@@ -9,20 +9,20 @@
 using namespace bit_lsm;
 
 namespace {
-// Single continuous attribute, tiny rho to force bin collisions.
+// Single ordered attribute, tiny rho to force bin collisions.
 BitLSMOptions ContOpt(double rho) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_types = {AttrType::CONTINUOUS};
+  o.attr_types = {AttrType::ORDERED};
   o.read_seqno = 0;
   o.rho = rho;
   return o;
 }
-// Single categorical attribute.
+// Single unordered attribute.
 BitLSMOptions CatOpt(double rho) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_types = {AttrType::CATEGORICAL};
+  o.attr_types = {AttrType::UNORDERED};
   o.read_seqno = 0;
   o.rho = rho;
   return o;
@@ -32,11 +32,11 @@ BitLSMQuery Cont(CompareOp op, double v) {
 }
 }  // namespace
 
-// Workload: continuous values 0..49; after Flush, run every operator with a
+// Workload: ordered values 0..49; after Flush, run every operator with a
 //           threshold equal to a STORED value (lands on bin boundaries).
 // Threat: off-by-one at the bin boundary (e.g. GREATER vs GREATER_EQUAL) in the
 //         SABI bitmap path.
-TEST_F(BitLSMTestBase, ContinuousBoundaryAllOps) {
+TEST_F(BitLSMTestBase, OrderedBoundaryAllOps) {
   BitLSMOptions opt = ContOpt(0.5);
   CheckedBitLSM db(&OpenDB(opt), opt);
   for (int i = 0; i < 50; ++i)
@@ -51,7 +51,7 @@ TEST_F(BitLSMTestBase, ContinuousBoundaryAllOps) {
   }
 }
 
-// Workload: 100 distinct continuous values but rho so small that many share a
+// Workload: 100 distinct ordered values but rho so small that many share a
 // bin;
 //           EQUAL queries after Flush.
 // Threat: under-budgeted bins produce false-positive candidates that the
@@ -70,8 +70,8 @@ TEST_F(BitLSMTestBase, RhoTooSmallStillExact) {
 
 // Workload: 40 distinct categories with a tiny rho; EQUAL on a category + an OR
 //           of two categories, after Flush.
-// Threat: categorical cardinality exceeding the bin budget mis-maps values.
-TEST_F(BitLSMTestBase, CategoricalCardinalityExceedsBins) {
+// Threat: unordered cardinality exceeding the bin budget mis-maps values.
+TEST_F(BitLSMTestBase, UnorderedCardinalityExceedsBins) {
   BitLSMOptions opt = CatOpt(0.05);
   CheckedBitLSM db(&OpenDB(opt), opt);
   for (int i = 0; i < 80; ++i) {
@@ -86,7 +86,7 @@ TEST_F(BitLSMTestBase, CategoricalCardinalityExceedsBins) {
                              {0, CompareOp::EQUAL, std::string("c39")}}})));
 }
 
-// Workload: all rows share one continuous value (everything in one bin), then
+// Workload: all rows share one ordered value (everything in one bin), then
 // all
 //           rows distinct; range + equality queries after Flush.
 // Threat: degenerate binning (single bin vs. all-distinct) breaks range eval.

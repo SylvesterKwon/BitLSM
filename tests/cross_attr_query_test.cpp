@@ -9,13 +9,12 @@
 using namespace bit_lsm;
 
 namespace {
-// {CONTINUOUS, CATEGORICAL, CONTINUOUS} schema so OR clauses can cross
+// {ORDERED, UNORDERED, ORDERED} schema so OR clauses can cross
 // attributes of the same type (a0/a2) and of mixed types (a0/a1).
 BitLSMOptions ThreeAttrOptions() {
   BitLSMOptions o;
   o.attr_num = 3;
-  o.attr_types = {AttrType::CONTINUOUS, AttrType::CATEGORICAL,
-                  AttrType::CONTINUOUS};
+  o.attr_types = {AttrType::ORDERED, AttrType::UNORDERED, AttrType::ORDERED};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;
@@ -46,9 +45,9 @@ TEST_F(BitLSMTestBase, CrossAttrOrClauseSameType) {
 }
 
 // Workload: cross-attr clause mixing types (a0>=50 OR a1='x'); the row matches
-//           only via the categorical condition.
+//           only via the unordered condition.
 // Threat: pre-fix CheckCondition decodes a0 (double) and evaluates the
-//         categorical condition against that double -> bad_variant_access.
+//         unordered condition against that double -> bad_variant_access.
 TEST_F(BitLSMTestBase, CrossAttrOrClauseMixedType) {
   BitLSMOptions opt = ThreeAttrOptions();
   CheckedBitLSM db(&OpenDB(opt), opt);

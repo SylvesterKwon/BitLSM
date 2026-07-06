@@ -32,8 +32,8 @@ struct BitmapIndex {
 
   // Binned bitmap index policy
   std::vector<uint32_t> bitmap_nums;  // # of bitmaps for each attr
-  // continuous binning policy: vector<double>
-  // categorical binning policy: vector<pair<string,uint32_t>>
+  // ordered binning policy: vector<double>
+  // unordered binning policy: vector<pair<string,uint32_t>>
   std::vector<std::variant<std::vector<double>,
                            std::vector<std::pair<std::string, uint32_t>>>>
       binning_policy;
@@ -48,7 +48,7 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
   BitLSMOptions options_;
   ValueLayout value_layout_;
 
-  // Interned buffer for one categorical attribute: each distinct value is
+  // Interned buffer for one unordered attribute: each distinct value is
   // appended once to a string arena and rows keep only its dense id. The
   // value -> id lookup is a flat open-addressing table so high-cardinality
   // attributes pay no per-value node allocation.
@@ -95,8 +95,8 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
 
   // Helper methods
   void SetBinningPolicy();
-  void SetCategoricalPropertyBinningPolicy(uint32_t i);
-  void SetContinuousPropertyBinningPolicy(uint32_t i);
+  void SetUnorderedPropertyBinningPolicy(uint32_t i);
+  void SetOrderedPropertyBinningPolicy(uint32_t i);
   void CalculateBitmapIndex();
 
  public:

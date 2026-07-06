@@ -15,7 +15,7 @@ namespace {
 std::string PayloadOf(std::string_view buf, const BitLSMOptions& options) {
   std::uint32_t n_cat = 0;
   for (AttrType t : options.attr_types)
-    if (t == AttrType::CATEGORICAL) n_cat++;
+    if (t == AttrType::UNORDERED) n_cat++;
   std::uint32_t n_cont = options.attr_num - n_cat;
   std::uint32_t cat_base =
       n_cat * static_cast<std::uint32_t>(sizeof(std::uint32_t)) +

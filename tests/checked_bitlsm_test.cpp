@@ -13,7 +13,7 @@ using namespace bit_lsm;
 // core. Threat: the verification core itself must agree with the engine on
 // known-good data.
 TEST_F(BitLSMTestBase, CoreAgreesInMemtableAndAfterFlush) {
-  BitLSMOptions opt = DefaultOptions();  // {CONTINUOUS, CATEGORICAL}
+  BitLSMOptions opt = DefaultOptions();  // {ORDERED, UNORDERED}
   CheckedBitLSM db(&OpenDB(opt), opt);
 
   ASSERT_TRUE(db.Put("pk1", {15.0, std::string("apple")}, "p1"));

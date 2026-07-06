@@ -23,8 +23,8 @@ using Rng = std::mt19937_64;
 BitLSMOptions GenerateSchema(Rng& rng);
 
 struct WorkloadParams {
-  uint32_t key_pool = 100;  // distinct keys -> overwrite/delete collisions
-  uint32_t categorical_dict = 8;  // small dict; can exceed bin budget
+  uint32_t key_pool = 100;      // distinct keys -> overwrite/delete collisions
+  uint32_t unordered_dict = 8;  // small dict; can exceed bin budget
 };
 
 enum class OpKind { kPut, kDelete, kPutBatch, kFlush, kCompactAll };
@@ -35,7 +35,7 @@ OpKind PickOp(Rng& rng);
 // Biased key draw (hot keys) from the pool: "k0".."k<pool-1>".
 std::string GenerateKey(Rng& rng, const WorkloadParams& p);
 
-// Attr vector for a Put. Continuous values mix: exact repeats of stored
+// Attr vector for a Put. Ordered values mix: exact repeats of stored
 // values (EQUAL hits), near-stored offsets (bin-boundary pressure), uniform.
 std::vector<Attr> GenerateAttrs(Rng& rng, const BitLSMOptions& schema,
                                 const WorkloadParams& p,
@@ -43,7 +43,7 @@ std::vector<Attr> GenerateAttrs(Rng& rng, const BitLSMOptions& schema,
 
 // Random full-CNF query: 0-3 clauses (0 = empty query -> full scan), 1-3
 // conditions each, attr drawn independently per condition (cross-attr and
-// mixed-type clauses arise naturally). Categorical conditions are EQUAL-only
+// mixed-type clauses arise naturally). Unordered conditions are EQUAL-only
 // (engine contract). Always Validate()-clean by construction.
 BitLSMQuery GenerateQuery(Rng& rng, const BitLSMOptions& schema,
                           const WorkloadParams& p, const ReferenceDB& oracle);

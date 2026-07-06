@@ -37,7 +37,7 @@ BitLSMOptions GenerateSchema(Rng& rng) {
   o.attr_num = std::uniform_int_distribution<uint32_t>(1, 5)(rng);
   o.attr_types.resize(o.attr_num);
   for (auto& t : o.attr_types)
-    t = (rng() % 2 == 0) ? AttrType::CONTINUOUS : AttrType::CATEGORICAL;
+    t = (rng() % 2 == 0) ? AttrType::ORDERED : AttrType::UNORDERED;
   static constexpr double kRhos[] = {0.5, 0.2, 0.05};
   o.rho = kRhos[rng() % 3];
   o.read_seqno = 0;
@@ -65,11 +65,11 @@ std::string GenerateKey(Rng& rng, const WorkloadParams& p) {
 std::vector<Attr> GenerateAttrs(Rng& rng, const BitLSMOptions& schema,
                                 const WorkloadParams& p,
                                 const ReferenceDB& oracle) {
-  assert(p.categorical_dict > 0);
+  assert(p.unordered_dict > 0);
   std::vector<Attr> attrs(schema.attr_num);
   for (uint32_t i = 0; i < schema.attr_num; ++i) {
-    if (schema.attr_types[i] == AttrType::CATEGORICAL) {
-      attrs[i] = DictValue(rng, p.categorical_dict);
+    if (schema.attr_types[i] == AttrType::UNORDERED) {
+      attrs[i] = DictValue(rng, p.unordered_dict);
       continue;
     }
     uint32_t mode = rng() % 4;
@@ -101,14 +101,14 @@ BitLSMQuery GenerateQuery(Rng& rng, const BitLSMOptions& schema,
       cond.attr_idx =
           std::uniform_int_distribution<uint32_t>(0, schema.attr_num - 1)(rng);
       Attr stored;
-      if (schema.attr_types[cond.attr_idx] == AttrType::CATEGORICAL) {
-        cond.op = CompareOp::EQUAL;  // contract: categorical is EQUAL-only
+      if (schema.attr_types[cond.attr_idx] == AttrType::UNORDERED) {
+        cond.op = CompareOp::EQUAL;  // contract: unordered is EQUAL-only
         if (rng() % 2 == 0 &&
             SampleStored(rng, oracle, cond.attr_idx, &stored) &&
             std::holds_alternative<std::string>(stored))
           cond.value = std::get<std::string>(stored);
         else
-          cond.value = DictValue(rng, p.categorical_dict);
+          cond.value = DictValue(rng, p.unordered_dict);
       } else {
         static constexpr CompareOp kOps[] = {
             CompareOp::EQUAL, CompareOp::LESS, CompareOp::LESS_EQUAL,

@@ -8,17 +8,17 @@ namespace {
 BitLSMOptions Opt2() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_types = {AttrType::CONTINUOUS, AttrType::CATEGORICAL};
+  o.attr_types = {AttrType::ORDERED, AttrType::UNORDERED};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;
 }
 }  // namespace
 
-// Workload: evaluate Match on continuous conditions with all five operators.
+// Workload: evaluate Match on ordered conditions with all five operators.
 // Threat: a wrong oracle silently invalidates EVERY differential test built on
 // it.
-TEST(ReferenceDBTest, MatchContinuousOps) {
+TEST(ReferenceDBTest, MatchOrderedOps) {
   ReferenceDB ref(Opt2());
   std::vector<Attr> attrs{10.0, std::string("x")};
   EXPECT_TRUE(ref.Match(BitLSMQuery(std::vector<QueryCondition>{

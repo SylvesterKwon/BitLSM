@@ -8,8 +8,8 @@
 namespace bit_lsm {
 
 enum AttrType {
-  CATEGORICAL,
-  CONTINUOUS,
+  UNORDERED,
+  ORDERED,
 };
 
 struct BitLSMOptions {

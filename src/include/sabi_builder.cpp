@@ -23,7 +23,7 @@ SABIBuilder::SABIBuilder(BitLSMOptions options)
   bitmap_index_.binning_policy.resize(options.attr_num);
   attr_buf_.reserve(options.attr_num);
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
-    if (options_.attr_types[i] == AttrType::CONTINUOUS) {
+    if (options_.attr_types[i] == AttrType::ORDERED) {
       attr_buf_.push_back(vector<double>());
     } else {
       attr_buf_.push_back(CatAttrBuf());
@@ -98,7 +98,7 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
     Slice v = value;
     for (uint32_t i = 0; i < options_.attr_num; ++i) {
       AttrView attr_val = DecodeAttr(value_layout_, buffer, i);
-      if (options_.attr_types[i] == AttrType::CONTINUOUS) {
+      if (options_.attr_types[i] == AttrType::ORDERED) {
         double val = get<double>(attr_val);
         get<vector<double>>(attr_buf_[i]).push_back(val);
       } else {
@@ -109,7 +109,7 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
     // If it's a tombstone, we still need to add a dummy value to the buffer for
     // the sake of simplicity in binning policy calculation.
     for (uint32_t i = 0; i < options_.attr_num; ++i) {
-      if (options_.attr_types[i] == AttrType::CONTINUOUS) {
+      if (options_.attr_types[i] == AttrType::ORDERED) {
         get<vector<double>>(attr_buf_[i]).push_back(0.0);
       } else {
         get<CatAttrBuf>(attr_buf_[i]).Intern("");
@@ -138,7 +138,7 @@ void SABIBuilder::SetBinningPolicy() {
   uint32_t cardinality_ub =
       target_total_bitmaps_cnt;  // theoretically max bins for one attr
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
-    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
+    if (options_.attr_types[i] == AttrType::UNORDERED) {
       cardinality[i] = get<CatAttrBuf>(attr_buf_[i]).value_by_id.size();
     } else {
       const auto& double_vec = get<vector<double>>(attr_buf_[i]);
@@ -188,19 +188,19 @@ void SABIBuilder::SetBinningPolicy() {
 
   // 3. Set binning boundaries for each attr
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
-    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
-      // 3-A. Categorical property Binning
-      SetCategoricalPropertyBinningPolicy(i);
-    } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
-      // 3-B. Continuous property Binning
-      SetContinuousPropertyBinningPolicy(i);
+    if (options_.attr_types[i] == AttrType::UNORDERED) {
+      // 3-A. Unordered property Binning
+      SetUnorderedPropertyBinningPolicy(i);
+    } else if (options_.attr_types[i] == AttrType::ORDERED) {
+      // 3-B. Ordered property Binning
+      SetOrderedPropertyBinningPolicy(i);
     } else {
       assert(false);
     }
   }
 }
 
-void SABIBuilder::SetCategoricalPropertyBinningPolicy(uint32_t i) {
+void SABIBuilder::SetUnorderedPropertyBinningPolicy(uint32_t i) {
   CatAttrBuf& cat = get<CatAttrBuf>(attr_buf_[i]);
   priority_queue<pair<uint32_t, uint32_t>, vector<pair<uint32_t, uint32_t>>,
                  greater<pair<uint32_t, uint32_t>>>
@@ -228,7 +228,7 @@ void SABIBuilder::SetCategoricalPropertyBinningPolicy(uint32_t i) {
   bitmap_index_.binning_policy[i] = std::move(binning);
 }
 
-void SABIBuilder::SetContinuousPropertyBinningPolicy(uint32_t i) {
+void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
   folly::TDigest digest(bitmap_index_.bitmap_nums[i] * 5);
 
   const auto& v = get<vector<double>>(attr_buf_[i]);
@@ -246,7 +246,7 @@ void SABIBuilder::SetContinuousPropertyBinningPolicy(uint32_t i) {
 void SABIBuilder::CalculateBitmapIndex() {
   uint32_t bin_idx_offset = 0;
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
-    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
+    if (options_.attr_types[i] == AttrType::UNORDERED) {
       const CatAttrBuf& cat = get<CatAttrBuf>(attr_buf_[i]);
       // Row ids are monotonic per bin, so a bulk context per bin lets
       // CRoaring skip the container lookup on nearly every add.
@@ -256,7 +256,7 @@ void SABIBuilder::CalculateBitmapIndex() {
         bitmap_index_.bitmaps[bin_idx_offset + local_bin].addBulk(
             bin_ctxs[local_bin], j);
       }
-    } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
+    } else if (options_.attr_types[i] == AttrType::ORDERED) {
       const vector<double>& cur_attr_buf = get<vector<double>>(attr_buf_[i]);
       vector<double>& binning =
           get<vector<double>>(bitmap_index_.binning_policy[i]);
@@ -316,7 +316,7 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
     // Add bin count
     PutFixed32(&index_blob_, bitmap_index_.bitmap_nums[i]);
-    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
+    if (options_.attr_types[i] == AttrType::UNORDERED) {
       vector<pair<string, uint32_t>>& cur_binning_policy =
           std::get<vector<pair<string, uint32_t>>>(
               bitmap_index_.binning_policy[i]);
@@ -326,7 +326,7 @@ Status SABIBuilder::Finish(Slice* index_contents) {
         PutLengthPrefixedSlice(&index_blob_, bi.first);
         PutFixed32(&index_blob_, bi.second);
       }
-    } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
+    } else if (options_.attr_types[i] == AttrType::ORDERED) {
       vector<double>& cur_binning_policy =
           std::get<vector<double>>(bitmap_index_.binning_policy[i]);
       PutFixed32(&index_blob_,

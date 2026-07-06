@@ -18,15 +18,15 @@ namespace bit_lsm {
 // Value format v2 (versioned via kBitLSMFormatVersion in sabi.h):
 //   [var_end u32 x n_cat][cont values 8B x n_cont][cat bytes][payload]
 // Only information that cannot be derived from the schema is stored:
-// var_end[r] is the end offset of the r-th categorical attr's bytes relative
-// to cat_base. Fixed-width (continuous) attrs live at schema-derived offsets,
+// var_end[r] is the end offset of the r-th unordered attr's bytes relative
+// to cat_base. Fixed-width (ordered) attrs live at schema-derived offsets,
 // and the payload spans [cat_base + var_end[n_cat-1], value.size()), so
 // neither needs a stored offset.
 struct ValueLayout {
   uint32_t n_cat = 0;
   uint32_t cat_base = 0;
-  // attr_idx -> CONTINUOUS: absolute byte offset of the 8B double
-  //             CATEGORICAL: rank among categorical attrs
+  // attr_idx -> ORDERED: absolute byte offset of the 8B double
+  //             UNORDERED: rank among unordered attrs
   std::vector<uint32_t> slot;
   std::vector<uint8_t> is_cont;
 
@@ -35,12 +35,12 @@ struct ValueLayout {
     slot.resize(attr_num);
     is_cont.resize(attr_num);
     for (uint32_t i = 0; i < attr_num; ++i)
-      if (options.attr_types[i] == AttrType::CATEGORICAL) n_cat++;
+      if (options.attr_types[i] == AttrType::UNORDERED) n_cat++;
 
     uint32_t var_table = n_cat * static_cast<uint32_t>(sizeof(uint32_t));
     uint32_t cont_seen = 0, cat_seen = 0;
     for (uint32_t i = 0; i < attr_num; ++i) {
-      if (options.attr_types[i] == AttrType::CONTINUOUS) {
+      if (options.attr_types[i] == AttrType::ORDERED) {
         is_cont[i] = 1;
         slot[i] = var_table + cont_seen * static_cast<uint32_t>(sizeof(double));
         cont_seen++;
@@ -119,7 +119,7 @@ inline AttrView DecodeAttr(const BitLSMOptions& options,
   return DecodeAttr(ValueLayout(options), buffer, attr_idx);
 }
 
-// Payload spans from the last categorical end to the end of the value
+// Payload spans from the last unordered end to the end of the value
 inline std::string_view DecodePayload(const ValueLayout& layout,
                                       std::string_view buffer) {
   uint32_t start = 0;
@@ -134,7 +134,7 @@ inline void TEST_DumpValue(BitLSMOptions options, rocksdb::Slice input) {
   for (uint32_t i = 0; i < options.attr_num; ++i) {
     if (i) std::cout << " / ";
     AttrView av = DecodeAttr(layout, input.ToStringView(), i);
-    if (options.attr_types[i] == AttrType::CONTINUOUS) {
+    if (options.attr_types[i] == AttrType::ORDERED) {
       std::cout << std::fixed << std::setprecision(6) << std::get<double>(av);
     } else {
       std::cout << std::get<std::string_view>(av);

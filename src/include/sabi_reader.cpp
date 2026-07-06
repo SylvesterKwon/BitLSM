@@ -25,7 +25,7 @@ bool ConditionImpossible(const bit_lsm::QueryCondition& cond,
   if (idx >= bm.binning_policy.size()) return false;
   if (idx >= opts.attr_types.size()) return false;
 
-  if (opts.attr_types[idx] == bit_lsm::AttrType::CONTINUOUS) {
+  if (opts.attr_types[idx] == bit_lsm::AttrType::ORDERED) {
     if (!std::holds_alternative<std::vector<double>>(bm.binning_policy[idx]))
       return false;
     const auto& bounds = std::get<std::vector<double>>(bm.binning_policy[idx]);
@@ -48,7 +48,7 @@ bool ConditionImpossible(const bit_lsm::QueryCondition& cond,
       case bit_lsm::CompareOp::EQUAL:
         return val < mn || val > mx;
     }
-  } else if (opts.attr_types[idx] == bit_lsm::AttrType::CATEGORICAL) {
+  } else if (opts.attr_types[idx] == bit_lsm::AttrType::UNORDERED) {
     if (cond.op != bit_lsm::CompareOp::EQUAL) return false;
     if (!std::holds_alternative<std::vector<std::pair<std::string, uint32_t>>>(
             bm.binning_policy[idx]))
@@ -137,7 +137,7 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
     const char* ptr =
         index_block.data() + cur_binning_policy_offset + 2 * sizeof(uint32_t);
 
-    if (options_.attr_types[i] == AttrType::CATEGORICAL) {
+    if (options_.attr_types[i] == AttrType::UNORDERED) {
       // read {length prefixed string + uint32t (bin number)}
       vector<pair<string, uint32_t>> cur_binning_policy(
           cur_binning_policy_entry_count);
@@ -151,7 +151,7 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
         ptr += sizeof(uint32_t);
       }
       bitmap_index.binning_policy[i] = std::move(cur_binning_policy);
-    } else if (options_.attr_types[i] == AttrType::CONTINUOUS) {
+    } else if (options_.attr_types[i] == AttrType::ORDERED) {
       vector<double> cur_binning_policy(cur_binning_policy_entry_count);
       for (uint32_t j = 0; j < cur_binning_policy_entry_count; ++j) {
         uint64_t val_int = DecodeFixed64(ptr + j * sizeof(double));

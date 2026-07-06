@@ -11,7 +11,7 @@
 namespace bit_lsm {
 
 using Attr =
-    std::variant<double, std::string>;  // double=CONTINUOUS, string=CATEGORICAL
+    std::variant<double, std::string>;  // double=ORDERED, string=UNORDERED
 
 // A logical record as the test believes it should be.
 struct Record {

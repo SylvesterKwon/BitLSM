@@ -9,7 +9,7 @@
 using namespace bit_lsm;
 
 namespace {
-// {CONTINUOUS, CATEGORICAL} schema shared by these scenarios.
+// {ORDERED, UNORDERED} schema shared by these scenarios.
 BitLSMQuery GeCont(double v) {
   return BitLSMQuery(
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, v}});
@@ -19,7 +19,7 @@ BitLSMQuery EqCat(const std::string& v) {
 }
 }  // namespace
 
-// Workload: Put k1, then overwrite k1 with a different continuous value.
+// Workload: Put k1, then overwrite k1 with a different ordered value.
 // Threat: stale attribute index after overwrite — engine matches by the OLD
 // value.
 TEST_F(BitLSMTestBase, OverwriteUpdatesAttributes) {
@@ -59,8 +59,8 @@ TEST_F(BitLSMTestBase, DeleteThenReinsert) {
   ASSERT_TRUE(db.Put("k1", {20.0, std::string("b")},
                      "new"));        // attrs differ from pre-delete
   ASSERT_TRUE(db.VerifyFullScan());  // exactly one k1 with the new record
-  ASSERT_TRUE(db.VerifyQuery(EqCat("b")));  // new categorical visible
-  ASSERT_TRUE(db.VerifyQuery(EqCat("a")));  // stale categorical NOT resurrected
+  ASSERT_TRUE(db.VerifyQuery(EqCat("b")));  // new unordered visible
+  ASSERT_TRUE(db.VerifyQuery(EqCat("a")));  // stale unordered NOT resurrected
   ASSERT_TRUE(db.Flush());
   ASSERT_TRUE(db.VerifyFullScan());
   ASSERT_TRUE(db.VerifyQuery(EqCat("b")));
