@@ -14,6 +14,8 @@ void ReferenceDB::Clear() { live_.clear(); }
 bool ReferenceDB::MatchCondition(const QueryCondition& cond,
                                  const std::vector<Attr>& attrs) const {
   const Attr& a = attrs[cond.attr_idx];
+  // 3VL: a NULL attr makes every comparison UNKNOWN, i.e. not a match.
+  if (std::holds_alternative<std::monostate>(a)) return false;
   if (options_.attr_specs[cond.attr_idx].role == AttrRole::ORDERED) {
     // Compare in the native domain fixed by the attr's spec.
     if (std::holds_alternative<int64_t>(a))

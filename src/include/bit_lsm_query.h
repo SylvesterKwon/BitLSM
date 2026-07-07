@@ -142,6 +142,7 @@ class CompiledQuery {
   struct Pred {
     uint8_t is_ordered;
     CompareOp op;
+    int32_t null_bit;  // attr's null-bitmap bit position, or -1 if not nullable
     uint32_t slot;  // ordered: absolute byte offset / unordered: var_end rank
     AttrSpec spec;  // ordered: physical decode spec (width/signed/float)
     int64_t ival;   // ordered comparand; the one matching spec is active
@@ -157,6 +158,8 @@ class CompiledQuery {
   std::vector<Pred> preds_;
   std::vector<ClauseRange> clauses_;
   uint32_t unordered_base_ = 0;
+  uint32_t null_bitmap_bytes_ =
+      0;  // leading null bitmap; var_end array follows
   // Owns unordered comparand bytes; preds address it by offset, so copies
   // and moves of CompiledQuery stay valid.
   std::string arena_;

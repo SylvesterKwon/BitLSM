@@ -81,6 +81,11 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
 
   // Buffer
   std::vector<std::variant<CatAttrBuf, std::vector<double>>> attr_buf_;
+  // Per-attr set of row ids whose value is SQL NULL. NULL rows still push a
+  // placeholder into attr_buf_ (to keep row ids aligned) but are kept out of
+  // every value bin and out of the ORDERED binning-boundary estimation, so
+  // range/equality queries auto-exclude them. Empty for non-nullable attrs.
+  std::vector<roaring::Roaring> attr_null_rows_;
 
   // Statistics
   uint64_t total_data_entries_size_uncomp_ = 0;  // total size of KVPs (bytes)

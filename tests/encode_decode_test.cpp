@@ -117,6 +117,49 @@ TEST(EncodeDecode, RoundTripNativeIntegers) {
             4000000000ULL);  // uint32 > INT32_MAX
 }
 
+// Workload: nullable ORDERED + nullable UNORDERED; a NULL in each position
+// round-trips as monostate while the sibling non-null value survives, and a
+// NULL unordered is distinguished from an empty-string unordered.
+// Threat: null-bitmap offset math, or a NULL reading back as 0 / "".
+TEST(EncodeDecode, RoundTripNullAttrs) {
+  BitLSMOptions options;
+  options.attr_num = 2;
+  options.read_seqno = 0;
+  options.rho = 0.5;
+  options.attr_specs = {
+      AttrSpec(AttrRole::ORDERED, 8, true, true, /*nullable=*/true),
+      AttrSpec(AttrRole::UNORDERED, 8, true, true, /*nullable=*/true)};
+
+  ValueLayout layout(options);
+  EXPECT_EQ(layout.null_bitmap_bytes, 1u);  // 2 nullable attrs -> 1 byte
+
+  // ordered NULL, unordered "x"
+  std::string a;
+  EncodeValue(layout, {std::monostate{}, std::string("x")}, "pa", a);
+  std::string_view va(a);
+  EXPECT_TRUE(
+      std::holds_alternative<std::monostate>(DecodeAttr(layout, va, 0)));
+  EXPECT_EQ(std::get<std::string_view>(DecodeAttr(layout, va, 1)), "x");
+  EXPECT_EQ(DecodePayload(layout, va), "pa");
+
+  // ordered 5.0, unordered NULL
+  std::string b;
+  EncodeValue(layout, {5.0, std::monostate{}}, "pb", b);
+  std::string_view vb(b);
+  EXPECT_DOUBLE_EQ(std::get<double>(DecodeAttr(layout, vb, 0)), 5.0);
+  EXPECT_TRUE(
+      std::holds_alternative<std::monostate>(DecodeAttr(layout, vb, 1)));
+  EXPECT_EQ(DecodePayload(layout, vb), "pb");
+
+  // unordered empty-string is NOT NULL (presence bit is the source of truth).
+  std::string c;
+  EncodeValue(layout, {1.0, std::string("")}, "pc", c);
+  std::string_view vc(c);
+  AttrView cat = DecodeAttr(layout, vc, 1);
+  EXPECT_FALSE(std::holds_alternative<std::monostate>(cat));
+  EXPECT_EQ(std::get<std::string_view>(cat), "");
+}
+
 // Workload: 4-byte float ORDERED round-trip.
 // Threat: float stored as truncated double bytes instead of IEEE754 single.
 TEST(EncodeDecode, RoundTripFloat) {

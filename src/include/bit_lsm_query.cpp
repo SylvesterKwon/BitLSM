@@ -11,6 +11,8 @@ namespace bit_lsm {
 // Evaluate a single condition against a decoded attribute value
 static bool EvalCondition(const QueryCondition& cond, AttrRole attr_type,
                           AttrView attr_val) {
+  // 3VL: a NULL attr makes every comparison UNKNOWN, i.e. not a match.
+  if (std::holds_alternative<std::monostate>(attr_val)) return false;
   if (attr_type == AttrRole::UNORDERED) {
     std::string_view target_str = std::get<std::string_view>(attr_val);
     const string& query_val = std::get<string>(cond.value);
@@ -81,12 +83,14 @@ CompiledQuery::CompiledQuery(const BitLSMQuery& query,
                              const BitLSMOptions& options) {
   const ValueLayout layout(options);
   unordered_base_ = layout.unordered_base;
+  null_bitmap_bytes_ = layout.null_bitmap_bytes;
   for (const OrClause& clause : query.clause_groups) {
     uint32_t begin = static_cast<uint32_t>(preds_.size());
     for (const QueryCondition& cond : clause) {
       Pred p{};
       p.is_ordered = layout.is_ordered[cond.attr_idx];
       p.op = cond.op;
+      p.null_bit = layout.null_bit[cond.attr_idx];
       p.slot = layout.slot[cond.attr_idx];
       if (p.is_ordered) {
         p.spec = layout.specs[cond.attr_idx];
@@ -131,7 +135,10 @@ bool CompiledQuery::Eval(rocksdb::Slice value) const {
     for (uint32_t i = c.begin; i < c.end; ++i) {
       const Pred& p = preds_[i];
       bool ok;
-      if (p.is_ordered) {
+      if (p.null_bit >= 0 && IsNullBitSet(base, p.null_bit)) {
+        // 3VL: NULL attr → comparison is UNKNOWN, treated as no-match.
+        ok = false;
+      } else if (p.is_ordered) {
         // Fast path: 8-byte double (the common experiment schema) compares
         // straight from the slot with no variant construction.
         if (p.spec.is_float && p.spec.width == 8) {
@@ -148,11 +155,12 @@ bool CompiledQuery::Eval(rocksdb::Slice value) const {
             ok = ApplyCompareOp(p.op, std::get<uint64_t>(v), p.uval);
         }
       } else {
+        const char* ve = base + null_bitmap_bytes_;
         uint32_t end;
-        std::memcpy(&end, base + p.slot * sizeof(uint32_t), sizeof(uint32_t));
+        std::memcpy(&end, ve + p.slot * sizeof(uint32_t), sizeof(uint32_t));
         uint32_t start = 0;
         if (p.slot > 0)
-          std::memcpy(&start, base + (p.slot - 1) * sizeof(uint32_t),
+          std::memcpy(&start, ve + (p.slot - 1) * sizeof(uint32_t),
                       sizeof(uint32_t));
         std::string_view attr(base + unordered_base_ + start, end - start);
         std::string_view want(arena_.data() + p.soff, p.slen);

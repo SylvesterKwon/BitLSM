@@ -10,8 +10,10 @@
 
 namespace bit_lsm {
 
-// ORDERED = int64/uint64/double per spec; UNORDERED = string
-using Attr = std::variant<int64_t, uint64_t, double, std::string>;
+// monostate = SQL NULL; ORDERED = int64/uint64/double per spec;
+// UNORDERED = string
+using Attr =
+    std::variant<std::monostate, int64_t, uint64_t, double, std::string>;
 
 // A logical record as the test believes it should be.
 struct Record {
