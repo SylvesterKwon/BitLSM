@@ -21,6 +21,7 @@ SABIBuilder::SABIBuilder(BitLSMOptions options)
     : options_(options), value_layout_(options) {
   bitmap_index_.bitmap_nums.resize(options.attr_num, 0);
   bitmap_index_.binning_policy.resize(options.attr_num);
+  attr_null_rows_.resize(options.attr_num);
   attr_buf_.reserve(options.attr_num);
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
     if (options_.attr_specs[i].role == AttrRole::ORDERED) {
@@ -98,11 +99,16 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
     Slice v = value;
     for (uint32_t i = 0; i < options_.attr_num; ++i) {
       AttrView attr_val = DecodeAttr(value_layout_, buffer, i);
+      bool is_null = holds_alternative<monostate>(attr_val);
+      if (is_null) attr_null_rows_[i].add(data_entries_cnt_);
       if (options_.attr_specs[i].role == AttrRole::ORDERED) {
-        double val = get<double>(attr_val);
+        // NULL rows push a placeholder purely to keep row ids aligned; they are
+        // excluded from binning and bins later via attr_null_rows_.
+        double val = is_null ? 0.0 : OrderedToDouble(attr_val);
         get<vector<double>>(attr_buf_[i]).push_back(val);
       } else {
-        get<CatAttrBuf>(attr_buf_[i]).Intern(get<string_view>(attr_val));
+        get<CatAttrBuf>(attr_buf_[i])
+            .Intern(is_null ? string_view() : get<string_view>(attr_val));
       }
     }
   } else {
@@ -232,7 +238,19 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
   folly::TDigest digest(bitmap_index_.bitmap_nums[i] * 5);
 
   const auto& v = get<vector<double>>(attr_buf_[i]);
-  digest = digest.merge(folly::Range<const double*>(v.data(), v.size()));
+  const roaring::Roaring& nulls = attr_null_rows_[i];
+  if (nulls.isEmpty()) {
+    digest = digest.merge(folly::Range<const double*>(v.data(), v.size()));
+  } else {
+    // Exclude NULL rows so their placeholders don't skew the quantile
+    // boundaries (NULL has no orderable value).
+    vector<double> non_null;
+    non_null.reserve(v.size());
+    for (uint32_t j = 0; j < v.size(); ++j)
+      if (!nulls.contains(j)) non_null.push_back(v[j]);
+    digest = digest.merge(
+        folly::Range<const double*>(non_null.data(), non_null.size()));
+  }
 
   // N+1 boundary points
   vector<double> boundaries(bitmap_index_.bitmap_nums[i] + 1);
@@ -246,12 +264,15 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
 void SABIBuilder::CalculateBitmapIndex() {
   uint32_t bin_idx_offset = 0;
   for (uint32_t i = 0; i < options_.attr_num; ++i) {
+    const roaring::Roaring& nulls = attr_null_rows_[i];
+    bool has_null = !nulls.isEmpty();
     if (options_.attr_specs[i].role == AttrRole::UNORDERED) {
       const CatAttrBuf& cat = get<CatAttrBuf>(attr_buf_[i]);
       // Row ids are monotonic per bin, so a bulk context per bin lets
       // CRoaring skip the container lookup on nearly every add.
       vector<roaring::BulkContext> bin_ctxs(bitmap_index_.bitmap_nums[i]);
       for (uint32_t j = 0; j < cat.row_ids.size(); ++j) {
+        if (has_null && nulls.contains(j)) continue;  // NULL: in no value bin
         uint32_t local_bin = cat.bin_by_id[cat.row_ids[j]];
         bitmap_index_.bitmaps[bin_idx_offset + local_bin].addBulk(
             bin_ctxs[local_bin], j);
@@ -262,6 +283,7 @@ void SABIBuilder::CalculateBitmapIndex() {
           get<vector<double>>(bitmap_index_.binning_policy[i]);
       vector<roaring::BulkContext> bin_ctxs(bitmap_index_.bitmap_nums[i]);
       for (uint32_t j = 0; j < cur_attr_buf.size(); ++j) {
+        if (has_null && nulls.contains(j)) continue;  // NULL: in no value bin
         auto it =
             std::upper_bound(binning.begin(), binning.end(), cur_attr_buf[j]);
         uint32_t idx = std::distance(binning.begin(), it);

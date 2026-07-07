@@ -33,8 +33,8 @@ bool ConditionImpossible(const bit_lsm::QueryCondition& cond,
     double mn = bounds.front(), mx = bounds.back();
     if (std::isnan(mn) || std::isnan(mx)) return false;
 
-    if (!std::holds_alternative<double>(cond.value)) return false;
-    double val = std::get<double>(cond.value);
+    if (std::holds_alternative<std::string>(cond.value)) return false;
+    double val = bit_lsm::OrderedToDouble(cond.value);
 
     switch (cond.op) {
       case bit_lsm::CompareOp::GREATER:

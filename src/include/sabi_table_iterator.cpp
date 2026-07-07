@@ -157,7 +157,7 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
     }
     return {&EmptyBitmap(), nullptr};
   } else if (cur_attr_type == AttrRole::ORDERED) {
-    const double& value = std::get<double>(cond.value);
+    double value = OrderedToDouble(cond.value);
     const vector<double>& boundaries = std::get<vector<double>>(
         sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
     uint32_t num_bins = sabi_reader_->bitmap_index.bitmap_nums[cond.attr_idx];
