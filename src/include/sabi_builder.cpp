@@ -99,7 +99,7 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
     for (uint32_t i = 0; i < options_.attr_num; ++i) {
       AttrView attr_val = DecodeAttr(value_layout_, buffer, i);
       if (options_.attr_specs[i].role == AttrRole::ORDERED) {
-        double val = get<double>(attr_val);
+        double val = OrderedToDouble(attr_val);
         get<vector<double>>(attr_buf_[i]).push_back(val);
       } else {
         get<CatAttrBuf>(attr_buf_[i]).Intern(get<string_view>(attr_val));

@@ -31,23 +31,16 @@ static bool EvalCondition(const QueryCondition& cond, AttrRole attr_type,
         return false;
     }
   } else {
-    double val_double = std::get<double>(attr_val);
-    double query_val = std::get<double>(cond.value);
-    switch (cond.op) {
-      case CompareOp::EQUAL:
-        return val_double == query_val;
-      case CompareOp::GREATER_EQUAL:
-        return val_double >= query_val;
-      case CompareOp::LESS_EQUAL:
-        return val_double <= query_val;
-      case CompareOp::GREATER:
-        return val_double > query_val;
-      case CompareOp::LESS:
-        return val_double < query_val;
-      default:
-        assert(false);
-        return false;
-    }
+    // ORDERED: compare in the attr's native domain (int64/uint64/double). The
+    // decoded value and the comparand share the alternative fixed by the spec.
+    if (std::holds_alternative<int64_t>(attr_val))
+      return ApplyCompareOp(cond.op, std::get<int64_t>(attr_val),
+                            std::get<int64_t>(cond.value));
+    if (std::holds_alternative<uint64_t>(attr_val))
+      return ApplyCompareOp(cond.op, std::get<uint64_t>(attr_val),
+                            std::get<uint64_t>(cond.value));
+    return ApplyCompareOp(cond.op, std::get<double>(attr_val),
+                          std::get<double>(cond.value));
   }
 }
 
@@ -96,7 +89,13 @@ CompiledQuery::CompiledQuery(const BitLSMQuery& query,
       p.op = cond.op;
       p.slot = layout.slot[cond.attr_idx];
       if (p.is_ordered) {
-        p.dval = std::get<double>(cond.value);
+        p.spec = layout.specs[cond.attr_idx];
+        if (p.spec.is_float)
+          p.dval = std::get<double>(cond.value);
+        else if (p.spec.is_signed)
+          p.ival = std::get<int64_t>(cond.value);
+        else
+          p.uval = std::get<uint64_t>(cond.value);
       } else {
         const std::string& s = std::get<std::string>(cond.value);
         p.soff = static_cast<uint32_t>(arena_.size());
@@ -133,26 +132,20 @@ bool CompiledQuery::Eval(rocksdb::Slice value) const {
       const Pred& p = preds_[i];
       bool ok;
       if (p.is_ordered) {
-        double v;
-        std::memcpy(&v, base + p.slot, sizeof(double));
-        switch (p.op) {
-          case CompareOp::EQUAL:
-            ok = v == p.dval;
-            break;
-          case CompareOp::GREATER_EQUAL:
-            ok = v >= p.dval;
-            break;
-          case CompareOp::LESS_EQUAL:
-            ok = v <= p.dval;
-            break;
-          case CompareOp::GREATER:
-            ok = v > p.dval;
-            break;
-          case CompareOp::LESS:
-            ok = v < p.dval;
-            break;
-          default:
-            ok = false;
+        // Fast path: 8-byte double (the common experiment schema) compares
+        // straight from the slot with no variant construction.
+        if (p.spec.is_float && p.spec.width == 8) {
+          double v;
+          std::memcpy(&v, base + p.slot, sizeof(double));
+          ok = ApplyCompareOp(p.op, v, p.dval);
+        } else {
+          AttrView v = DecodeOrdered(base + p.slot, p.spec);
+          if (p.spec.is_float)
+            ok = ApplyCompareOp(p.op, std::get<double>(v), p.dval);
+          else if (p.spec.is_signed)
+            ok = ApplyCompareOp(p.op, std::get<int64_t>(v), p.ival);
+          else
+            ok = ApplyCompareOp(p.op, std::get<uint64_t>(v), p.uval);
         }
       } else {
         uint32_t end;
@@ -187,12 +180,17 @@ rocksdb::Status BitLSMQuery::Validate(const BitLSMOptions& options) const {
             "attr_idx " + std::to_string(cond.attr_idx) +
             " out of range (attr_num=" +
             std::to_string(options.attr_specs.size()) + ")");
-      AttrRole type = options.attr_specs[cond.attr_idx].role;
+      const AttrSpec& spec = options.attr_specs[cond.attr_idx];
+      AttrRole type = spec.role;
       if (type == AttrRole::ORDERED) {
-        if (!std::holds_alternative<double>(cond.value))
+        bool type_ok =
+            spec.is_float    ? std::holds_alternative<double>(cond.value)
+            : spec.is_signed ? std::holds_alternative<int64_t>(cond.value)
+                             : std::holds_alternative<uint64_t>(cond.value);
+        if (!type_ok)
           return rocksdb::Status::InvalidArgument(
               "attr " + std::to_string(cond.attr_idx) +
-              " is ORDERED but value is not double");
+              " ORDERED comparand type does not match its physical spec");
       } else if (type == AttrRole::UNORDERED) {
         if (!std::holds_alternative<std::string>(cond.value))
           return rocksdb::Status::InvalidArgument(

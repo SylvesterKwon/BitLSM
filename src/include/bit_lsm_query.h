@@ -21,12 +21,31 @@ enum class CompareOp {
   GREATER,
 };
 
-// Query condition
+// Apply a CompareOp to two same-typed operands (lhs <op> rhs).
+template <class T>
+inline bool ApplyCompareOp(CompareOp op, const T& lhs, const T& rhs) {
+  switch (op) {
+    case CompareOp::EQUAL:
+      return lhs == rhs;
+    case CompareOp::LESS:
+      return lhs < rhs;
+    case CompareOp::LESS_EQUAL:
+      return lhs <= rhs;
+    case CompareOp::GREATER:
+      return lhs > rhs;
+    case CompareOp::GREATER_EQUAL:
+      return lhs >= rhs;
+  }
+  return false;
+}
+
+// Query condition. For ORDERED attrs the comparand is a native scalar matching
+// the attr's AttrSpec (double for float/double, int64 for signed, uint64 for
+// unsigned); for UNORDERED attrs it is the comparand string.
 struct QueryCondition {
   uint32_t attr_idx;
   CompareOp op;
-  std::variant<double, std::string>
-      value;  // double for ordered, string for unordered
+  std::variant<int64_t, uint64_t, double, std::string> value;
 };
 
 // A clause is a group of conditions combined with OR.
@@ -75,13 +94,18 @@ struct BitLSMQuery {
       return "?";
     };
     auto val_str =
-        [](const std::variant<double, std::string>& v) -> std::string {
-      if (std::holds_alternative<double>(v)) {
-        std::ostringstream oss;
+        [](const std::variant<int64_t, uint64_t, double, std::string>& v)
+        -> std::string {
+      if (std::holds_alternative<std::string>(v))
+        return "'" + std::get<std::string>(v) + "'";
+      std::ostringstream oss;
+      if (std::holds_alternative<int64_t>(v))
+        oss << std::get<int64_t>(v);
+      else if (std::holds_alternative<uint64_t>(v))
+        oss << std::get<uint64_t>(v);
+      else
         oss << std::get<double>(v);
-        return oss.str();
-      }
-      return "'" + std::get<std::string>(v) + "'";
+      return oss.str();
     };
 
     std::ostringstream out;
@@ -119,7 +143,10 @@ class CompiledQuery {
     uint8_t is_ordered;
     CompareOp op;
     uint32_t slot;  // ordered: absolute byte offset / unordered: var_end rank
-    double dval;    // ordered comparand
+    AttrSpec spec;  // ordered: physical decode spec (width/signed/float)
+    int64_t ival;   // ordered comparand; the one matching spec is active
+    uint64_t uval;
+    double dval;
     uint32_t soff;  // unordered comparand: offset into arena_
     uint32_t slen;
   };

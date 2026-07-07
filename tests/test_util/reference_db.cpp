@@ -15,37 +15,18 @@ bool ReferenceDB::MatchCondition(const QueryCondition& cond,
                                  const std::vector<Attr>& attrs) const {
   const Attr& a = attrs[cond.attr_idx];
   if (options_.attr_specs[cond.attr_idx].role == AttrRole::ORDERED) {
-    double lhs = std::get<double>(a);
-    double rhs = std::get<double>(cond.value);
-    switch (cond.op) {
-      case CompareOp::EQUAL:
-        return lhs == rhs;
-      case CompareOp::LESS:
-        return lhs < rhs;
-      case CompareOp::LESS_EQUAL:
-        return lhs <= rhs;
-      case CompareOp::GREATER:
-        return lhs > rhs;
-      case CompareOp::GREATER_EQUAL:
-        return lhs >= rhs;
-    }
-  } else {
-    const std::string& lhs = std::get<std::string>(a);
-    const std::string& rhs = std::get<std::string>(cond.value);
-    switch (cond.op) {
-      case CompareOp::EQUAL:
-        return lhs == rhs;
-      case CompareOp::LESS:
-        return lhs < rhs;
-      case CompareOp::LESS_EQUAL:
-        return lhs <= rhs;
-      case CompareOp::GREATER:
-        return lhs > rhs;
-      case CompareOp::GREATER_EQUAL:
-        return lhs >= rhs;
-    }
+    // Compare in the native domain fixed by the attr's spec.
+    if (std::holds_alternative<int64_t>(a))
+      return ApplyCompareOp(cond.op, std::get<int64_t>(a),
+                            std::get<int64_t>(cond.value));
+    if (std::holds_alternative<uint64_t>(a))
+      return ApplyCompareOp(cond.op, std::get<uint64_t>(a),
+                            std::get<uint64_t>(cond.value));
+    return ApplyCompareOp(cond.op, std::get<double>(a),
+                          std::get<double>(cond.value));
   }
-  return false;
+  return ApplyCompareOp(cond.op, std::get<std::string>(a),
+                        std::get<std::string>(cond.value));
 }
 
 bool ReferenceDB::Match(const BitLSMQuery& query,

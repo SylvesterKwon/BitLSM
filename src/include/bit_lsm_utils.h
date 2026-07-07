@@ -106,6 +106,29 @@ inline AttrView DecodeOrdered(const char* src, const AttrSpec& s) {
   return raw;
 }
 
+// Project a decoded ORDERED scalar to the double binning domain. Binning is
+// approximate (double magnitude); the exact answer is preserved by the native
+// typed re-check, so a lossy projection here only affects false-positive rate.
+inline double OrderedToDouble(const AttrView& v) {
+  if (std::holds_alternative<int64_t>(v))
+    return static_cast<double>(std::get<int64_t>(v));
+  if (std::holds_alternative<uint64_t>(v))
+    return static_cast<double>(std::get<uint64_t>(v));
+  return std::get<double>(v);
+}
+
+// Same projection for a query comparand (Attr-shaped variant; the string
+// alternative is unreachable for an ORDERED attr past Validate()).
+inline double OrderedToDouble(
+    const std::variant<int64_t, uint64_t, double, std::string>& v) {
+  if (std::holds_alternative<int64_t>(v))
+    return static_cast<double>(std::get<int64_t>(v));
+  if (std::holds_alternative<uint64_t>(v))
+    return static_cast<double>(std::get<uint64_t>(v));
+  if (std::holds_alternative<double>(v)) return std::get<double>(v);
+  return 0.0;
+}
+
 // Encode given attributes and payload into the v3 value format
 inline void EncodeValue(const ValueLayout& layout,
                         const std::vector<Attr>& attrs,
