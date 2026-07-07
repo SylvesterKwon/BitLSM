@@ -29,7 +29,7 @@ std::string Encode2(const BitLSMOptions& options, double cont,
 }  // namespace
 
 TEST(QueryEval, EmptyQueryMatchesAll) {
-  BitLSMOptions options = MakeOptions({AttrRole::ORDERED});
+  BitLSMOptions options = MakeOptions({AttrSpec{AttrRole::ORDERED}});
   std::string out;
   EncodeValue(options, {42.0}, "p", out);
 
@@ -38,7 +38,8 @@ TEST(QueryEval, EmptyQueryMatchesAll) {
 }
 
 TEST(QueryEval, OrderedGreaterEqual) {
-  BitLSMOptions options = MakeOptions({AttrRole::ORDERED, AttrRole::UNORDERED});
+  BitLSMOptions options =
+      MakeOptions({AttrSpec{AttrRole::ORDERED}, AttrSpec{AttrRole::UNORDERED}});
   BitLSMQuery query(
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
 
@@ -52,7 +53,7 @@ TEST(QueryEval, OrderedGreaterEqual) {
 }
 
 TEST(QueryEval, OrClauseSameAttribute) {
-  BitLSMOptions options = MakeOptions({AttrRole::ORDERED});
+  BitLSMOptions options = MakeOptions({AttrSpec{AttrRole::ORDERED}});
   // (a0 == 1.0 OR a0 == 2.0)
   OrClause clause = {{0, CompareOp::EQUAL, 1.0}, {0, CompareOp::EQUAL, 2.0}};
   BitLSMQuery query(std::vector<OrClause>{clause});
@@ -72,7 +73,8 @@ TEST(QueryEval, OrClauseSameAttribute) {
 }
 
 TEST(QueryEval, AndOfClausesMixedTypes) {
-  BitLSMOptions options = MakeOptions({AttrRole::ORDERED, AttrRole::UNORDERED});
+  BitLSMOptions options =
+      MakeOptions({AttrSpec{AttrRole::ORDERED}, AttrSpec{AttrRole::UNORDERED}});
   // (a0 >= 10) AND (a1 == "apple")
   BitLSMQuery query(std::vector<OrClause>{
       OrClause{{0, CompareOp::GREATER_EQUAL, 10.0}},
@@ -93,7 +95,8 @@ TEST(QueryEval, AndOfClausesMixedTypes) {
 // Threat: compiled predicate slots, comparand storage, or op mapping diverge
 //         from the reference semantics, silently corrupting engine results.
 TEST(QueryEval, CompiledQueryMatchesCheckCondition) {
-  BitLSMOptions options = MakeOptions({AttrRole::ORDERED, AttrRole::UNORDERED});
+  BitLSMOptions options =
+      MakeOptions({AttrSpec{AttrRole::ORDERED}, AttrSpec{AttrRole::UNORDERED}});
 
   std::vector<BitLSMQuery> queries;
   queries.emplace_back();  // empty query matches all

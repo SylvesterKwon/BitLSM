@@ -19,7 +19,8 @@ namespace {
 BitLSMOptions MakeOptions() {
   BitLSMOptions options;
   options.attr_num = 2;
-  options.attr_specs = {AttrRole::ORDERED, AttrRole::UNORDERED};
+  options.attr_specs = {AttrSpec{AttrRole::ORDERED},
+                        AttrSpec{AttrRole::UNORDERED}};
   options.read_seqno = 0;
   options.rho = 0.5;  // 전체 bin 예산 = attr_num/rho = 4 (속성별 할당은 동적)
   return options;

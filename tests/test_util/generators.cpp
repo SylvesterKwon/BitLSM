@@ -37,7 +37,8 @@ BitLSMOptions GenerateSchema(Rng& rng) {
   o.attr_num = std::uniform_int_distribution<uint32_t>(1, 5)(rng);
   o.attr_specs.resize(o.attr_num);
   for (auto& t : o.attr_specs)
-    t = (rng() % 2 == 0) ? AttrRole::ORDERED : AttrRole::UNORDERED;
+    t = (rng() % 2 == 0) ? AttrSpec{AttrRole::ORDERED}
+                         : AttrSpec{AttrRole::UNORDERED};
   static constexpr double kRhos[] = {0.5, 0.2, 0.05};
   o.rho = kRhos[rng() % 3];
   o.read_seqno = 0;

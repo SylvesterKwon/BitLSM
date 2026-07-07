@@ -25,7 +25,7 @@ BitLSMOptions IntSchema() {
   o.attr_num = 2;
   o.attr_specs = {AttrSpec(AttrRole::ORDERED, 4, /*is_signed=*/true,
                            /*is_float=*/false),
-                  AttrRole::UNORDERED};
+                  AttrSpec{AttrRole::UNORDERED}};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;
@@ -114,7 +114,7 @@ TEST_F(BitLSMTestBase, NullRowsExcludedFromQueries) {
   BitLSMOptions o;
   o.attr_num = 2;
   o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, true, true, /*nullable=*/true),
-                  AttrRole::UNORDERED};
+                  AttrSpec{AttrRole::UNORDERED}};
   o.read_seqno = 0;
   o.rho = 0.5;
   auto& db = OpenDB(o);

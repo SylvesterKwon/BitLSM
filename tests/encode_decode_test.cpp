@@ -22,7 +22,8 @@ BitLSMOptions MakeOptions(std::vector<AttrSpec> types) {
 
 // 연속형 + 범주형 혼합 값이 왕복(encode→decode)에서 보존되는지.
 TEST(EncodeDecode, RoundTripMixedAttrs) {
-  BitLSMOptions options = MakeOptions({AttrRole::ORDERED, AttrRole::UNORDERED});
+  BitLSMOptions options =
+      MakeOptions({AttrSpec{AttrRole::ORDERED}, AttrSpec{AttrRole::UNORDERED}});
   std::string out;
   EncodeValue(options, {3.14, std::string("apple")}, "payload", out);
 
@@ -35,8 +36,9 @@ TEST(EncodeDecode, RoundTripMixedAttrs) {
 
 // 가변 길이 범주형 두 개(마지막이 아닌 범주형의 길이 계산)와 빈 payload.
 TEST(EncodeDecode, RoundTripMultipleUnorderedEmptyPayload) {
-  BitLSMOptions options = MakeOptions(
-      {AttrRole::UNORDERED, AttrRole::UNORDERED, AttrRole::ORDERED});
+  BitLSMOptions options =
+      MakeOptions({AttrSpec{AttrRole::UNORDERED}, AttrSpec{AttrRole::UNORDERED},
+                   AttrSpec{AttrRole::ORDERED}});
   std::string out;
   EncodeValue(options, {std::string("ab"), std::string("cdef"), 2.5}, "", out);
 
@@ -53,7 +55,8 @@ TEST(EncodeDecode, RoundTripMultipleUnorderedEmptyPayload) {
 //         derived purely from the schema (8B x n_cont), and an off-by-one
 //         there corrupts every attribute and the payload.
 TEST(EncodeDecode, RoundTripAllOrderedZeroHeader) {
-  BitLSMOptions options = MakeOptions({AttrRole::ORDERED, AttrRole::ORDERED});
+  BitLSMOptions options =
+      MakeOptions({AttrSpec{AttrRole::ORDERED}, AttrSpec{AttrRole::ORDERED}});
   std::string out;
   EncodeValue(options, {1.5, -2.5}, "tail", out);
 
@@ -71,7 +74,8 @@ TEST(EncodeDecode, RoundTripAllOrderedZeroHeader) {
 // value encoding is unchanged), so DBs/experiments reproduce.
 // Threat: v3's width-based layout drifts from v2's hardcoded 8B for doubles.
 TEST(EncodeDecode, DoubleSchemaByteIdenticalToV2) {
-  BitLSMOptions options = MakeOptions({AttrRole::ORDERED, AttrRole::UNORDERED});
+  BitLSMOptions options =
+      MakeOptions({AttrSpec{AttrRole::ORDERED}, AttrSpec{AttrRole::UNORDERED}});
   std::string out;
   EncodeValue(options, {3.14, std::string("apple")}, "pay", out);
   // v2 layout for {double, string}: [var_end u32][double 8B][cat

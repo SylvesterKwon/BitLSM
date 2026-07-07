@@ -8,7 +8,7 @@ namespace {
 BitLSMOptions Opt2() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrRole::ORDERED, AttrRole::UNORDERED};
+  o.attr_specs = {AttrSpec{AttrRole::ORDERED}, AttrSpec{AttrRole::UNORDERED}};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;

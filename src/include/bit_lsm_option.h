@@ -17,8 +17,8 @@ enum AttrRole {
 // Full spec for one attribute. The physical fields (width/is_signed/is_float)
 // apply only to ORDERED attributes, which store a fixed-width native value;
 // UNORDERED attributes are variable-width opaque bytes and ignore them.
-// Implicitly constructible from a bare AttrRole role, defaulting to a
-// double-valued ORDERED attribute — i.e. the pre-v3 behavior.
+// Constructing from a bare AttrRole is explicit; the field defaults describe a
+// double-valued, non-nullable ORDERED attribute (the pre-v3 physical shape).
 struct AttrSpec {
   AttrRole role;
   uint8_t width;   // ORDERED byte width: 1/2/4/8
@@ -26,8 +26,9 @@ struct AttrSpec {
   bool is_float;   // ORDERED: IEEE754 (true) vs integer (false)
   bool nullable;
 
-  AttrSpec(AttrRole role = ORDERED, uint8_t width = 8, bool is_signed = true,
-           bool is_float = true, bool nullable = false)
+  explicit AttrSpec(AttrRole role = ORDERED, uint8_t width = 8,
+                    bool is_signed = true, bool is_float = true,
+                    bool nullable = false)
       : role(role),
         width(width),
         is_signed(is_signed),
