@@ -9,9 +9,9 @@ using namespace rocksdb;
 namespace bit_lsm {
 
 // Evaluate a single condition against a decoded attribute value
-static bool EvalCondition(const QueryCondition& cond, AttrType attr_type,
+static bool EvalCondition(const QueryCondition& cond, AttrRole attr_type,
                           AttrView attr_val) {
-  if (attr_type == AttrType::UNORDERED) {
+  if (attr_type == AttrRole::UNORDERED) {
     std::string_view target_str = std::get<std::string_view>(attr_val);
     const string& query_val = std::get<string>(cond.value);
     int cmp = target_str.compare(query_val);
@@ -66,7 +66,7 @@ bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
     // NewIterator sorts each clause by attr_idx, so caching the last decoded
     // attribute keeps same-attr clauses at one decode per clause.
     uint32_t cached_idx = UINT32_MAX;
-    AttrType cached_type = AttrType::UNORDERED;
+    AttrRole cached_type = AttrRole::UNORDERED;
     AttrView cached_val;
     for (const auto& cond : clause) {
       if (cond.attr_idx != cached_idx) {
@@ -187,13 +187,13 @@ rocksdb::Status BitLSMQuery::Validate(const BitLSMOptions& options) const {
             "attr_idx " + std::to_string(cond.attr_idx) +
             " out of range (attr_num=" +
             std::to_string(options.attr_specs.size()) + ")");
-      AttrType type = options.attr_specs[cond.attr_idx].role;
-      if (type == AttrType::ORDERED) {
+      AttrRole type = options.attr_specs[cond.attr_idx].role;
+      if (type == AttrRole::ORDERED) {
         if (!std::holds_alternative<double>(cond.value))
           return rocksdb::Status::InvalidArgument(
               "attr " + std::to_string(cond.attr_idx) +
               " is ORDERED but value is not double");
-      } else if (type == AttrType::UNORDERED) {
+      } else if (type == AttrRole::UNORDERED) {
         if (!std::holds_alternative<std::string>(cond.value))
           return rocksdb::Status::InvalidArgument(
               "attr " + std::to_string(cond.attr_idx) +

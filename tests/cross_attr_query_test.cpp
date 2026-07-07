@@ -14,7 +14,7 @@ namespace {
 BitLSMOptions ThreeAttrOptions() {
   BitLSMOptions o;
   o.attr_num = 3;
-  o.attr_specs = {AttrType::ORDERED, AttrType::UNORDERED, AttrType::ORDERED};
+  o.attr_specs = {AttrRole::ORDERED, AttrRole::UNORDERED, AttrRole::ORDERED};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;

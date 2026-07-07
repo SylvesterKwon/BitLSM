@@ -37,7 +37,7 @@ BitLSMOptions GenerateSchema(Rng& rng) {
   o.attr_num = std::uniform_int_distribution<uint32_t>(1, 5)(rng);
   o.attr_specs.resize(o.attr_num);
   for (auto& t : o.attr_specs)
-    t = (rng() % 2 == 0) ? AttrType::ORDERED : AttrType::UNORDERED;
+    t = (rng() % 2 == 0) ? AttrRole::ORDERED : AttrRole::UNORDERED;
   static constexpr double kRhos[] = {0.5, 0.2, 0.05};
   o.rho = kRhos[rng() % 3];
   o.read_seqno = 0;
@@ -68,7 +68,7 @@ std::vector<Attr> GenerateAttrs(Rng& rng, const BitLSMOptions& schema,
   assert(p.unordered_dict > 0);
   std::vector<Attr> attrs(schema.attr_num);
   for (uint32_t i = 0; i < schema.attr_num; ++i) {
-    if (schema.attr_specs[i].role == AttrType::UNORDERED) {
+    if (schema.attr_specs[i].role == AttrRole::UNORDERED) {
       attrs[i] = DictValue(rng, p.unordered_dict);
       continue;
     }
@@ -101,7 +101,7 @@ BitLSMQuery GenerateQuery(Rng& rng, const BitLSMOptions& schema,
       cond.attr_idx =
           std::uniform_int_distribution<uint32_t>(0, schema.attr_num - 1)(rng);
       Attr stored;
-      if (schema.attr_specs[cond.attr_idx].role == AttrType::UNORDERED) {
+      if (schema.attr_specs[cond.attr_idx].role == AttrRole::UNORDERED) {
         cond.op = CompareOp::EQUAL;  // contract: unordered is EQUAL-only
         if (rng() % 2 == 0 &&
             SampleStored(rng, oracle, cond.attr_idx, &stored) &&

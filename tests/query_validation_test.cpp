@@ -13,7 +13,7 @@ namespace {
 BitLSMOptions TwoAttrOptions() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrType::ORDERED, AttrType::UNORDERED};
+  o.attr_specs = {AttrRole::ORDERED, AttrRole::UNORDERED};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;

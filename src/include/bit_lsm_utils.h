@@ -35,12 +35,12 @@ struct ValueLayout {
     slot.resize(attr_num);
     is_cont.resize(attr_num);
     for (uint32_t i = 0; i < attr_num; ++i)
-      if (options.attr_specs[i].role == AttrType::UNORDERED) n_cat++;
+      if (options.attr_specs[i].role == AttrRole::UNORDERED) n_cat++;
 
     uint32_t var_table = n_cat * static_cast<uint32_t>(sizeof(uint32_t));
     uint32_t cont_seen = 0, cat_seen = 0;
     for (uint32_t i = 0; i < attr_num; ++i) {
-      if (options.attr_specs[i].role == AttrType::ORDERED) {
+      if (options.attr_specs[i].role == AttrRole::ORDERED) {
         is_cont[i] = 1;
         slot[i] = var_table + cont_seen * static_cast<uint32_t>(sizeof(double));
         cont_seen++;
@@ -134,7 +134,7 @@ inline void TEST_DumpValue(BitLSMOptions options, rocksdb::Slice input) {
   for (uint32_t i = 0; i < options.attr_num; ++i) {
     if (i) std::cout << " / ";
     AttrView av = DecodeAttr(layout, input.ToStringView(), i);
-    if (options.attr_specs[i].role == AttrType::ORDERED) {
+    if (options.attr_specs[i].role == AttrRole::ORDERED) {
       std::cout << std::fixed << std::setprecision(6) << std::get<double>(av);
     } else {
       std::cout << std::get<std::string_view>(av);

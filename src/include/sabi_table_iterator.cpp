@@ -134,13 +134,13 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
 // Build bitmap for a single QueryCondition (leaf node in CNF)
 SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
     const QueryCondition& cond, vector<const roaring::Roaring*>& buf) {
-  const AttrType cur_attr_type = options_.attr_specs[cond.attr_idx].role;
+  const AttrRole cur_attr_type = options_.attr_specs[cond.attr_idx].role;
 
   uint32_t bitmap_offset = 0;
   for (uint32_t i = 0; i < cond.attr_idx; ++i)
     bitmap_offset += sabi_reader_->bitmap_index.bitmap_nums[i];
 
-  if (cur_attr_type == AttrType::UNORDERED) {
+  if (cur_attr_type == AttrRole::UNORDERED) {
     if (cond.op != CompareOp::EQUAL) assert(false);
     const string& value = std::get<string>(cond.value);
     vector<pair<string, uint32_t>>& cur_attr_binning_policy =
@@ -156,7 +156,7 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
               nullptr};
     }
     return {&EmptyBitmap(), nullptr};
-  } else if (cur_attr_type == AttrType::ORDERED) {
+  } else if (cur_attr_type == AttrRole::ORDERED) {
     const double& value = std::get<double>(cond.value);
     const vector<double>& boundaries = std::get<vector<double>>(
         sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
