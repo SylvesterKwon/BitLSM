@@ -20,7 +20,7 @@
 namespace bit_lsm {
 
 // On-disk format version of a BitLSM SST.
-inline constexpr uint32_t kBitLSMFormatVersion = 2;
+inline constexpr uint32_t kBitLSMFormatVersion = 3;
 // Trailing magic of the SABI blob footer
 inline constexpr uint32_t kSABIFooterMagic =
     0x5AB1B175;  // SABIBITS in hexspeak :^)

@@ -7,9 +7,7 @@
 
 #include "bit_lsm_iterator.h"
 #include "bit_lsm_query.h"
-#include "bit_lsm_utils.h"
-
-using Attr = std::variant<double, std::string>;
+#include "bit_lsm_utils.h"  // Attr
 
 namespace bit_lsm {
 

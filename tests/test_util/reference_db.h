@@ -10,8 +10,8 @@
 
 namespace bit_lsm {
 
-using Attr =
-    std::variant<double, std::string>;  // double=ORDERED, string=UNORDERED
+// ORDERED = int64/uint64/double per spec; UNORDERED = string
+using Attr = std::variant<int64_t, uint64_t, double, std::string>;
 
 // A logical record as the test believes it should be.
 struct Record {
