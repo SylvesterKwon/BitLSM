@@ -116,9 +116,9 @@ class CompiledQuery {
 
  private:
   struct Pred {
-    uint8_t is_cont;
+    uint8_t is_ordered;
     CompareOp op;
-    uint32_t slot;  // cont: absolute byte offset / cat: var_end rank
+    uint32_t slot;  // ordered: absolute byte offset / unordered: var_end rank
     double dval;    // ordered comparand
     uint32_t soff;  // unordered comparand: offset into arena_
     uint32_t slen;
@@ -129,7 +129,7 @@ class CompiledQuery {
   };
   std::vector<Pred> preds_;
   std::vector<ClauseRange> clauses_;
-  uint32_t cat_base_ = 0;
+  uint32_t unordered_base_ = 0;
   // Owns unordered comparand bytes; preds address it by offset, so copies
   // and moves of CompiledQuery stay valid.
   std::string arena_;

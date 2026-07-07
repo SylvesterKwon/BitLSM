@@ -87,15 +87,15 @@ bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
 CompiledQuery::CompiledQuery(const BitLSMQuery& query,
                              const BitLSMOptions& options) {
   const ValueLayout layout(options);
-  cat_base_ = layout.cat_base;
+  unordered_base_ = layout.unordered_base;
   for (const OrClause& clause : query.clause_groups) {
     uint32_t begin = static_cast<uint32_t>(preds_.size());
     for (const QueryCondition& cond : clause) {
       Pred p{};
-      p.is_cont = layout.is_cont[cond.attr_idx];
+      p.is_ordered = layout.is_ordered[cond.attr_idx];
       p.op = cond.op;
       p.slot = layout.slot[cond.attr_idx];
-      if (p.is_cont) {
+      if (p.is_ordered) {
         p.dval = std::get<double>(cond.value);
       } else {
         const std::string& s = std::get<std::string>(cond.value);
@@ -132,7 +132,7 @@ bool CompiledQuery::Eval(rocksdb::Slice value) const {
     for (uint32_t i = c.begin; i < c.end; ++i) {
       const Pred& p = preds_[i];
       bool ok;
-      if (p.is_cont) {
+      if (p.is_ordered) {
         double v;
         std::memcpy(&v, base + p.slot, sizeof(double));
         switch (p.op) {
@@ -161,7 +161,7 @@ bool CompiledQuery::Eval(rocksdb::Slice value) const {
         if (p.slot > 0)
           std::memcpy(&start, base + (p.slot - 1) * sizeof(uint32_t),
                       sizeof(uint32_t));
-        std::string_view attr(base + cat_base_ + start, end - start);
+        std::string_view attr(base + unordered_base_ + start, end - start);
         std::string_view want(arena_.data() + p.soff, p.slen);
         ok = PassOp(p.op, attr.compare(want));
       }

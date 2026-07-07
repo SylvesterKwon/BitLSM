@@ -48,7 +48,7 @@ TEST(EncodeDecode, RoundTripMultipleUnorderedEmptyPayload) {
   EXPECT_EQ(DecodePayload(layout, buf), "");
 }
 
-// Workload: all-ordered schema (n_cat == 0) with a payload.
+// Workload: all-ordered schema (n_unordered == 0) with a payload.
 // Threat: the v2 header is zero bytes in this case — payload start must be
 //         derived purely from the schema (8B x n_cont), and an off-by-one
 //         there corrupts every attribute and the payload.
@@ -58,7 +58,7 @@ TEST(EncodeDecode, RoundTripAllOrderedZeroHeader) {
   EncodeValue(options, {1.5, -2.5}, "tail", out);
 
   ValueLayout layout(options);
-  EXPECT_EQ(layout.cat_base, 2 * sizeof(double));
+  EXPECT_EQ(layout.unordered_base, 2 * sizeof(double));
   EXPECT_EQ(out.size(), 2 * sizeof(double) + 4);
 
   std::string_view buf(out);
