@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "bit_lsm_encoding.h"
 #include "bit_lsm_option.h"
 #include "bit_lsm_utils.h"
 #include "sabi.h"
@@ -31,7 +32,8 @@ BitLSMOptions MakeOptions() {
 // 파싱했을 때 블록 핸들/카운트/비닝 정책/비트맵 개수가 일관적인지.
 TEST(SabiBlobRoundTrip, BuildsAndParses) {
   BitLSMOptions options = MakeOptions();
-  SABIBuilder builder(options);
+  SABIBuilder builder(SABISchema::FromOptions(options),
+                      std::make_unique<ValueLayoutExtractor>(options));
 
   const std::vector<std::string> keys = {"k0", "k1", "k2", "k3"};
   const std::vector<std::pair<double, std::string>> rows = {
@@ -61,7 +63,7 @@ TEST(SabiBlobRoundTrip, BuildsAndParses) {
   BITLSM_ASSERT_OK(builder.Finish(&blob));
 
   // 블롭 메모리는 builder 가 소유하므로 builder 가 스코프에 살아있는 동안 파싱.
-  SABIReader reader(blob, options);
+  SABIReader reader(blob, SABISchema::FromOptions(options));
 
   // 인덱스 엔트리(블록) 1개.
   ASSERT_EQ(reader.block_handles.size(), 1u);
@@ -90,7 +92,8 @@ TEST(SabiBlobRoundTrip, BuildsAndParses) {
 //         garbage offsets / UB instead of a clean Corruption error.
 TEST(SabiBlobRoundTrip, RejectsUnversionedAndUnknownVersions) {
   BitLSMOptions options = MakeOptions();
-  SABIBuilder builder(options);
+  SABIBuilder builder(SABISchema::FromOptions(options),
+                      std::make_unique<ValueLayoutExtractor>(options));
 
   std::string encoded;
   EncodeValue(options, {1.0, std::string("apple")}, "p", encoded);

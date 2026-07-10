@@ -124,6 +124,24 @@ struct BitLSMQuery {
   }
 };
 
+// A query with comparands pre-encoded into the SABI domain: okey for ORDERED
+// attrs, opaque bytes for UNORDERED. Built once per query; SABI pruning and
+// bin mapping never see native types.
+struct SABICondition {
+  uint32_t attr_idx;
+  CompareOp op;
+  uint64_t okey = 0;  // active when the attr is ORDERED
+  std::string bytes;  // active when the attr is UNORDERED
+};
+using SABIOrClause = std::vector<SABICondition>;
+struct SABIQuery {
+  std::vector<SABIOrClause> clause_groups;
+};
+
+// Standalone adapter: resolves each comparand against its AttrSpec. The query
+// must pass Validate(options) first.
+SABIQuery EncodeQuery(const BitLSMQuery& q, const BitLSMOptions& options);
+
 // A query pre-resolved against a schema: flat predicates with v2 value-format
 // slots baked in, so per-row evaluation does no schema lookup, no variant,
 // and no offset-table walk. Snapshots the query: the source query/options

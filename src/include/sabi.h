@@ -4,11 +4,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <variant>
 
+#include "bit_lsm_encoding.h"
 #include "bit_lsm_option.h"
 #include "bit_lsm_query.h"
 #include "bit_lsm_utils.h"
@@ -20,7 +22,21 @@
 namespace bit_lsm {
 
 // On-disk format version of a BitLSM SST.
-inline constexpr uint32_t kBitLSMFormatVersion = 3;
+// v4: ORDERED binning boundaries are okey (order-preserving uint64), not
+//     double; footer carries a SABISchema hash (see SABIFactory::NewReader).
+//
+// SABI index blob wire layout (v4), as written by SABIBuilder::Finish:
+//   [index entries]   per block: [row-count psum u32][bh.offset u32][bh.size
+//   u32] [frozen bitmaps]  per-attr value bins in attr order, tombstone bitmap
+//   last [bitmap offsets]  [count u32][offset u32 x count] [binning policy] per
+//   attr: [bin_count u32][entry_count u32] then
+//                     ORDERED:   okey threshold u64 x entry_count
+//                     UNORDERED: {varint-len string, bin u32} x entry_count
+//   [policy offsets]  [count u32][offset u32 x count]
+//   [footer]          [index_entries_cnt u32][bitmap_offsets_off u32]
+//                     [policy_offsets_off u32][spec_hash u32][version u32]
+//                     [magic u32]
+inline constexpr uint32_t kBitLSMFormatVersion = 4;
 // Trailing magic of the SABI blob footer
 inline constexpr uint32_t kSABIFooterMagic =
     0x5AB1B175;  // SABIBITS in hexspeak :^)
@@ -32,9 +48,9 @@ struct BitmapIndex {
 
   // Binned bitmap index policy
   std::vector<uint32_t> bitmap_nums;  // # of bitmaps for each attr
-  // ordered binning policy: vector<double>
+  // ordered binning policy: vector<uint64_t> (okey thresholds)
   // unordered binning policy: vector<pair<string,uint32_t>>
-  std::vector<std::variant<std::vector<double>,
+  std::vector<std::variant<std::vector<uint64_t>,
                            std::vector<std::pair<std::string, uint32_t>>>>
       binning_policy;
 };
@@ -45,8 +61,10 @@ class SABIFactory;
 
 class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
  private:
-  BitLSMOptions options_;
-  ValueLayout value_layout_;
+  SABISchema schema_;
+  std::unique_ptr<AttrExtractor> extractor_;  // exclusively owned
+  std::vector<EncodedAttr>
+      scratch_;  // per-row extraction buffer, attr_num slots
 
   // Interned buffer for one unordered attribute: each distinct value is
   // appended once to a string arena and rows keep only its dense id. The
@@ -79,8 +97,8 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
     void Grow();
   };
 
-  // Buffer
-  std::vector<std::variant<CatAttrBuf, std::vector<double>>> attr_buf_;
+  // Buffer (ORDERED attrs buffer okeys, fixed 8B/row)
+  std::vector<std::variant<CatAttrBuf, std::vector<uint64_t>>> attr_buf_;
   // Per-attr set of row ids whose value is SQL NULL. NULL rows still push a
   // placeholder into attr_buf_ (to keep row ids aligned) but are kept out of
   // every value bin and out of the ORDERED binning-boundary estimation, so
@@ -105,7 +123,7 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
   void CalculateBitmapIndex();
 
  public:
-  SABIBuilder(BitLSMOptions options);
+  SABIBuilder(SABISchema schema, std::unique_ptr<AttrExtractor> extractor);
   rocksdb::Slice AddIndexEntry(
       const rocksdb::Slice& last_key_in_current_block,
       const rocksdb::Slice* first_key_in_next_block,
@@ -130,12 +148,13 @@ class SABIUDIIterator : public rocksdb::UserDefinedIndexIterator {
 
 class SABIReader : public rocksdb::UserDefinedIndexReader {
  private:
-  BitLSMOptions options_;
+  SABISchema schema_;
   using AlignedPtr = std::unique_ptr<char[], void (*)(void*)>;
   std::vector<AlignedPtr> managed_buffers_;
 
  public:
-  SABIReader(rocksdb::Slice& index_block, BitLSMOptions options_);
+  SABIReader(rocksdb::Slice& index_block, SABISchema schema);
+  const SABISchema& schema() const { return schema_; }
   BitmapIndex bitmap_index;
   std::vector<uint32_t> data_entries_cnt_psum;
   std::vector<rocksdb::BlockHandle> block_handles;
@@ -145,16 +164,25 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   // Returns false only when the query is provably unsatisfiable in this SST
   // (safe to skip all bitmap work and block fetches). Never returns false
   // for a query that could actually match a row.
-  bool QueryCanMatch(const BitLSMQuery& q, const BitLSMOptions& opts) const;
+  bool QueryCanMatch(const SABIQuery& q) const;
   void Dump();
 };
 
 class SABIFactory : public rocksdb::UserDefinedIndexFactory {
- private:
-  BitLSMOptions options_;
-
  public:
-  SABIFactory(BitLSMOptions options) : options_(options) {};
+  // Builds run concurrently, so each NewBuilder() gets a fresh extractor from
+  // this callable; the callable itself must be thread-safe to invoke.
+  using ExtractorFactory = std::function<std::unique_ptr<AttrExtractor>()>;
+
+  SABIFactory(SABISchema schema, ExtractorFactory extractor_factory)
+      : schema_(std::move(schema)),
+        extractor_factory_(std::move(extractor_factory)) {}
+  // Standalone convenience: derives the schema residue and wires the default
+  // v3-layout extractor.
+  explicit SABIFactory(const BitLSMOptions& options)
+      : SABIFactory(SABISchema::FromOptions(options), [options] {
+          return std::make_unique<ValueLayoutExtractor>(options);
+        }) {}
   const char* Name() const override;
   rocksdb::UserDefinedIndexBuilder* NewBuilder() const override;
   std::unique_ptr<rocksdb::UserDefinedIndexReader> NewReader(
@@ -164,6 +192,10 @@ class SABIFactory : public rocksdb::UserDefinedIndexFactory {
       const rocksdb::UserDefinedIndexOption& option,
       rocksdb::Slice& index_block,
       std::unique_ptr<rocksdb::UserDefinedIndexReader>& reader) const override;
+
+ private:
+  SABISchema schema_;
+  ExtractorFactory extractor_factory_;
 };
 
 }  // namespace bit_lsm

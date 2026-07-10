@@ -78,7 +78,7 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
                                      const QueryContext& query_ctx)
     : options_(query_ctx.options),
       bbt_(bbt),
-      query_(query_ctx.query),
+      query_(query_ctx.sabi_query),
       compiled_(query_ctx.compiled),
       index_reader_(bbt_->get_rep()->index_reader.get()),
       sabi_reader_(static_cast<SABIReader*>(index_reader_->GetUDIReader())),
@@ -90,7 +90,7 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
 
   // Early exit: skip all bitmap work and block fetches if the query is
   // provably unsatisfiable against this SSTable's min/max boundaries.
-  if (!sabi_reader_->QueryCanMatch(query_, options_)) return;
+  if (!sabi_reader_->QueryCanMatch(query_)) return;
 
   // 1. Build query bitmap
   BuildQueryBitmap(query_);
@@ -131,10 +131,10 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
   //      << ")\n";
 }
 
-// Build bitmap for a single QueryCondition (leaf node in CNF)
+// Build bitmap for a single SABICondition (leaf node in CNF)
 SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
-    const QueryCondition& cond, vector<const roaring::Roaring*>& buf) {
-  const AttrRole cur_attr_type = options_.attr_specs[cond.attr_idx].role;
+    const SABICondition& cond, vector<const roaring::Roaring*>& buf) {
+  const AttrRole cur_attr_type = sabi_reader_->schema().roles[cond.attr_idx];
 
   uint32_t bitmap_offset = 0;
   for (uint32_t i = 0; i < cond.attr_idx; ++i)
@@ -142,7 +142,7 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
 
   if (cur_attr_type == AttrRole::UNORDERED) {
     if (cond.op != CompareOp::EQUAL) assert(false);
-    const string& value = std::get<string>(cond.value);
+    const string& value = cond.bytes;
     vector<pair<string, uint32_t>>& cur_attr_binning_policy =
         get<vector<pair<string, uint32_t>>>(
             sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
@@ -157,8 +157,8 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
     }
     return {&EmptyBitmap(), nullptr};
   } else if (cur_attr_type == AttrRole::ORDERED) {
-    double value = OrderedToDouble(cond.value);
-    const vector<double>& boundaries = std::get<vector<double>>(
+    uint64_t value = cond.okey;
+    const vector<uint64_t>& boundaries = std::get<vector<uint64_t>>(
         sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
     uint32_t num_bins = sabi_reader_->bitmap_index.bitmap_nums[cond.attr_idx];
 
@@ -229,7 +229,7 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
 // CNF bitmap evaluation: AND of OR clauses. Sets query_bitmap_, borrowing
 // reader-owned bitmaps where possible and materializing into bitmap_pool_
 // only when a union/intersection/tombstone-filter result must be computed.
-void SABITableIterator::BuildQueryBitmap(const BitLSMQuery& query) {
+void SABITableIterator::BuildQueryBitmap(const SABIQuery& query) {
   const roaring::Roaring& tombstone =
       sabi_reader_->bitmap_index.tombstone_bitmap;
 
@@ -355,8 +355,8 @@ void SABITableIterator::LoadNextBlock() {
         continue;
       }
 
-      // 5-4. Filter query condition
-      if (compiled_.Eval(values_buffer_[i])) {
+      // 5-4. Filter query condition (nullptr compiled = consumer re-verifies)
+      if (!compiled_ || compiled_->Eval(values_buffer_[i])) {
         if (i != valid_cursor) {
           keys_buffer_[valid_cursor] = std::move(keys_buffer_[i]);
           values_buffer_[valid_cursor] = std::move(values_buffer_[i]);

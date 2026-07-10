@@ -40,8 +40,8 @@ void BitLSMMemTableIterator::FindNextValidEntry() {
       continue;
     }
 
-    // 4. Filter query condition
-    if (compiled_.Eval(iter_->value())) {
+    // 4. Filter query condition (nullptr compiled = consumer re-verifies)
+    if (!compiled_ || compiled_->Eval(iter_->value())) {
       valid_ = true;
       return;
     }
