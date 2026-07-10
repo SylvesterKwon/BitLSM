@@ -27,7 +27,8 @@ BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
       options_(options),
       query_(query),
       compiled_(query, options),
-      query_ctx_{options_, query_, compiled_},
+      sabi_query_(EncodeQuery(query_, options)),
+      query_ctx_{options_, sabi_query_, &compiled_},
       scan_ctx_(sv_),
       latest_user_key_added("") {
   // 3. Save snapshot's seqno to SABIOption
@@ -104,8 +105,8 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       // 5-1. Check given candidate key exists in DB
       if (!statuses[i].ok()) continue;
 
-      // 5-2. Value validation
-      if (compiled_.Eval(pin_values[i])) {
+      // 5-2. Value validation (nullptr compiled = consumer re-verifies)
+      if (!query_ctx_.compiled || query_ctx_.compiled->Eval(pin_values[i])) {
         // 5-3. Move key/value to validated batch if valid entry
         batch_keys_.push_back(std::move(candidate_keys[i]));
         // Optimization: Only call ToString() to valid value

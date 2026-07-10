@@ -1,5 +1,6 @@
 #include <bit_lsm_query.h>
 
+#include "bit_lsm_encoding.h"
 #include "bit_lsm_utils.h"
 #include "rocksdb/slice.h"
 
@@ -212,5 +213,27 @@ rocksdb::Status BitLSMQuery::Validate(const BitLSMOptions& options) const {
     }
   }
   return rocksdb::Status::OK();
+}
+
+SABIQuery EncodeQuery(const BitLSMQuery& q, const BitLSMOptions& options) {
+  SABIQuery out;
+  out.clause_groups.reserve(q.clause_groups.size());
+  for (const auto& clause : q.clause_groups) {
+    SABIOrClause enc;
+    enc.reserve(clause.size());
+    for (const auto& c : clause) {
+      SABICondition sc;
+      sc.attr_idx = c.attr_idx;
+      sc.op = c.op;
+      if (options.attr_specs[c.attr_idx].role == AttrRole::ORDERED) {
+        sc.okey = OrderedToOkey(c.value);
+      } else {
+        sc.bytes = std::get<std::string>(c.value);
+      }
+      enc.push_back(std::move(sc));
+    }
+    out.clause_groups.push_back(std::move(enc));
+  }
+  return out;
 }
 }  // namespace bit_lsm

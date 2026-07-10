@@ -2,7 +2,6 @@
 #include <sys/types.h>
 
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
 #include <iostream>
 
@@ -17,24 +16,22 @@ using namespace roaring;
 namespace {
 
 // Returns true only when `cond` is provably unsatisfiable against the SST
-// described by `bm` and `opts`. Returns false if uncertain or unsupported.
-bool ConditionImpossible(const bit_lsm::QueryCondition& cond,
-                         const bit_lsm::BitLSMOptions& opts,
+// described by `bm` and `schema`. Returns false if uncertain or unsupported.
+bool ConditionImpossible(const bit_lsm::SABICondition& cond,
+                         const bit_lsm::SABISchema& schema,
                          const bit_lsm::BitmapIndex& bm) {
   uint32_t idx = cond.attr_idx;
   if (idx >= bm.binning_policy.size()) return false;
-  if (idx >= opts.attr_specs.size()) return false;
+  if (idx >= schema.attr_num()) return false;
 
-  if (opts.attr_specs[idx].role == bit_lsm::AttrRole::ORDERED) {
-    if (!std::holds_alternative<std::vector<double>>(bm.binning_policy[idx]))
+  if (schema.roles[idx] == bit_lsm::AttrRole::ORDERED) {
+    if (!std::holds_alternative<std::vector<uint64_t>>(bm.binning_policy[idx]))
       return false;
-    const auto& bounds = std::get<std::vector<double>>(bm.binning_policy[idx]);
+    const auto& bounds =
+        std::get<std::vector<uint64_t>>(bm.binning_policy[idx]);
     if (bounds.size() < 2) return false;
-    double mn = bounds.front(), mx = bounds.back();
-    if (std::isnan(mn) || std::isnan(mx)) return false;
-
-    if (std::holds_alternative<std::string>(cond.value)) return false;
-    double val = bit_lsm::OrderedToDouble(cond.value);
+    uint64_t mn = bounds.front(), mx = bounds.back();
+    uint64_t val = cond.okey;
 
     switch (cond.op) {
       case bit_lsm::CompareOp::GREATER:
@@ -48,21 +45,19 @@ bool ConditionImpossible(const bit_lsm::QueryCondition& cond,
       case bit_lsm::CompareOp::EQUAL:
         return val < mn || val > mx;
     }
-  } else if (opts.attr_specs[idx].role == bit_lsm::AttrRole::UNORDERED) {
+  } else if (schema.roles[idx] == bit_lsm::AttrRole::UNORDERED) {
     if (cond.op != bit_lsm::CompareOp::EQUAL) return false;
     if (!std::holds_alternative<std::vector<std::pair<std::string, uint32_t>>>(
             bm.binning_policy[idx]))
       return false;
-    if (!std::holds_alternative<std::string>(cond.value)) return false;
     const auto& entries =
         std::get<std::vector<std::pair<std::string, uint32_t>>>(
             bm.binning_policy[idx]);
-    const std::string& val = std::get<std::string>(cond.value);
     auto it =
-        std::lower_bound(entries.begin(), entries.end(), val,
+        std::lower_bound(entries.begin(), entries.end(), cond.bytes,
                          [](const std::pair<std::string, uint32_t>& e,
                             const std::string& v) { return e.first < v; });
-    return !(it != entries.end() && it->first == val);
+    return !(it != entries.end() && it->first == cond.bytes);
   }
   return false;
 }
@@ -97,15 +92,16 @@ UserDefinedIndexBuilder::BlockHandle SABIUDIIterator::value() {
 // SABIReader Implementation
 // ========================================================================
 
-SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
-    : options_(options) {
-  // 1. Read footer: [index footer 3xu32][version u32][magic u32]
-  // (version/magic already validated by SABIFactory::NewReader)
-  assert(index_block.size() >= 5 * sizeof(uint32_t) &&
+SABIReader::SABIReader(Slice& index_block, SABISchema schema)
+    : schema_(std::move(schema)) {
+  // 1. Read footer:
+  //    [index footer 3xu32][spec_hash u32][version u32][magic u32]
+  // (spec_hash/version/magic already validated by SABIFactory::NewReader)
+  assert(index_block.size() >= 6 * sizeof(uint32_t) &&
          DecodeFixed32(index_block.data() + index_block.size() -
                        sizeof(uint32_t)) == kSABIFooterMagic);
   const char* footer_end =
-      index_block.data() + index_block.size() - 2 * sizeof(uint32_t);
+      index_block.data() + index_block.size() - 3 * sizeof(uint32_t);
   uint32_t index_entries_cnt_ =
       DecodeFixed32(footer_end - 3 * sizeof(uint32_t));
   uint32_t bitmap_indexoffset_offset =
@@ -122,7 +118,7 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
   uint32_t binning_policy_cnt = binning_policy_offset_cnt - 1;
   bitmap_index.binning_policy.resize(binning_policy_cnt);
   bitmap_index.bitmap_nums.resize(binning_policy_cnt);
-  assert(options_.attr_num == binning_policy_cnt);
+  assert(schema_.attr_num() == binning_policy_cnt);
 
   for (uint32_t i = 0; i < binning_policy_cnt; ++i) {
     uint32_t cur_binning_policy_offset =
@@ -137,7 +133,7 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
     const char* ptr =
         index_block.data() + cur_binning_policy_offset + 2 * sizeof(uint32_t);
 
-    if (options_.attr_specs[i].role == AttrRole::UNORDERED) {
+    if (schema_.roles[i] == AttrRole::UNORDERED) {
       // read {length prefixed string + uint32t (bin number)}
       vector<pair<string, uint32_t>> cur_binning_policy(
           cur_binning_policy_entry_count);
@@ -151,12 +147,10 @@ SABIReader::SABIReader(Slice& index_block, BitLSMOptions options)
         ptr += sizeof(uint32_t);
       }
       bitmap_index.binning_policy[i] = std::move(cur_binning_policy);
-    } else if (options_.attr_specs[i].role == AttrRole::ORDERED) {
-      vector<double> cur_binning_policy(cur_binning_policy_entry_count);
-      for (uint32_t j = 0; j < cur_binning_policy_entry_count; ++j) {
-        uint64_t val_int = DecodeFixed64(ptr + j * sizeof(double));
-        memcpy(&cur_binning_policy[j], &val_int, sizeof(double));
-      }
+    } else if (schema_.roles[i] == AttrRole::ORDERED) {
+      vector<uint64_t> cur_binning_policy(cur_binning_policy_entry_count);
+      for (uint32_t j = 0; j < cur_binning_policy_entry_count; ++j)
+        cur_binning_policy[j] = DecodeFixed64(ptr + j * sizeof(uint64_t));
       bitmap_index.binning_policy[i] = std::move(cur_binning_policy);
     } else {
       assert(false);
@@ -232,15 +226,14 @@ void SABIReader::Dump() {
   cout << "\n";
 }
 
-bool SABIReader::QueryCanMatch(const BitLSMQuery& q,
-                               const BitLSMOptions& opts) const {
+bool SABIReader::QueryCanMatch(const SABIQuery& q) const {
   for (const auto& clause : q.clause_groups) {
     if (clause.empty()) continue;  // empty clause is trivially satisfiable
     // Clause (OR) is impossible iff every condition in it is individually
     // impossible against this SST's binning boundaries.
     bool clause_impossible = true;
     for (const auto& cond : clause) {
-      if (!ConditionImpossible(cond, opts, bitmap_index)) {
+      if (!ConditionImpossible(cond, schema_, bitmap_index)) {
         clause_impossible = false;
         break;
       }

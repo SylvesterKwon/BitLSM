@@ -41,8 +41,10 @@ class BitLSMMemTableIterator;
 // every child.
 struct QueryContext {
   const BitLSMOptions& options;
-  const BitLSMQuery& query;       // bitmap phase (SST skip, bin lookup)
-  const CompiledQuery& compiled;  // per-row verification
+  const SABIQuery& sabi_query;  // bitmap phase (SST skip, bin lookup)
+  // Per-row verification; nullptr = yield every bitmap-phase candidate and
+  // let the consumer re-verify. seqno/tombstone checks always stay on.
+  const CompiledQuery* compiled;
 };
 
 // "Where to read": the version/snapshot backdrop a scan runs against, derived
@@ -77,7 +79,8 @@ class BitLSMIterator : public SABIInternalIterator {
   BitLSMOptions options_;
   BitLSMQuery query_;
   CompiledQuery compiled_;
-  QueryContext query_ctx_;  // references the three above
+  SABIQuery sabi_query_;    // query_ encoded into the SABI domain
+  QueryContext query_ctx_;  // references the members above
   ScanContext scan_ctx_;    // version backdrop, derived from sv_
 
   // batch
@@ -169,8 +172,8 @@ class SABITableIterator : public SABIInternalIterator {
   rocksdb::BlockBasedTable* bbt_;
   rocksdb::BlockBasedTable::IndexReader* index_reader_;
   SABIReader* sabi_reader_;
-  const BitLSMQuery& query_;
-  const CompiledQuery& compiled_;
+  const SABIQuery& query_;
+  const CompiledQuery* compiled_;  // nullptr = skip per-row Eval
   uint32_t block_restart_interval_;
   // Promoted to a member variable to enable Zero-copy evaluation.
   // Keeping this iterator alive ensures the underlying data block remains
@@ -209,12 +212,12 @@ class SABITableIterator : public SABIInternalIterator {
     const roaring::Roaring* ptr;
     roaring::Roaring* owned;
   };
-  // Get bitmap for a single QueryCondition (leaf node in CNF)
+  // Get bitmap for a single SABICondition (leaf node in CNF)
   BitmapRef GetBitmapForSingleCondition(
-      const QueryCondition& cond, std::vector<const roaring::Roaring*>& buf);
+      const SABICondition& cond, std::vector<const roaring::Roaring*>& buf);
   // Build bitmap for a full query (CNF: AND of OR clauses) into
   // query_bitmap_ (borrowing reader bitmaps where possible)
-  void BuildQueryBitmap(const BitLSMQuery& query);
+  void BuildQueryBitmap(const SABIQuery& query);
   // Fill buffer by loading next data block
   void LoadNextBlock();
 
@@ -232,7 +235,7 @@ class BitLSMMemTableIterator : public SABIInternalIterator {
  private:
   const BitLSMOptions& options_;
   rocksdb::MemTable* mem_;
-  const CompiledQuery& compiled_;
+  const CompiledQuery* compiled_;  // nullptr = skip per-row Eval
 
   // Internal status for iterating
   rocksdb::Arena arena_;

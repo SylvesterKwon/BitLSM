@@ -6,7 +6,6 @@
 #include <iostream>
 #include <queue>
 
-#include "bit_lsm_utils.h"
 #include "util/coding.h"
 
 using namespace std;
@@ -17,15 +16,18 @@ namespace bit_lsm {
 // ========================================================================
 // SABIBuilder Implementation
 // ========================================================================
-SABIBuilder::SABIBuilder(BitLSMOptions options)
-    : options_(options), value_layout_(options) {
-  bitmap_index_.bitmap_nums.resize(options.attr_num, 0);
-  bitmap_index_.binning_policy.resize(options.attr_num);
-  attr_null_rows_.resize(options.attr_num);
-  attr_buf_.reserve(options.attr_num);
-  for (uint32_t i = 0; i < options_.attr_num; ++i) {
-    if (options_.attr_specs[i].role == AttrRole::ORDERED) {
-      attr_buf_.push_back(vector<double>());
+SABIBuilder::SABIBuilder(SABISchema schema,
+                         std::unique_ptr<AttrExtractor> extractor)
+    : schema_(std::move(schema)),
+      extractor_(std::move(extractor)),
+      scratch_(schema_.attr_num()) {
+  bitmap_index_.bitmap_nums.resize(schema_.attr_num(), 0);
+  bitmap_index_.binning_policy.resize(schema_.attr_num());
+  attr_null_rows_.resize(schema_.attr_num());
+  attr_buf_.reserve(schema_.attr_num());
+  for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
+    if (schema_.roles[i] == AttrRole::ORDERED) {
+      attr_buf_.push_back(vector<uint64_t>());
     } else {
       attr_buf_.push_back(CatAttrBuf());
     }
@@ -96,16 +98,17 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
   // 2. Buffer original attr data
   if (is_value) {
     std::string_view buffer(value.data(), value.size());
-    Slice v = value;
-    for (uint32_t i = 0; i < options_.attr_num; ++i) {
-      AttrView attr_val = DecodeAttr(value_layout_, buffer, i);
+    extractor_->ExtractAll(std::string_view(key.data(), key.size()), buffer,
+                           scratch_.data());
+    for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
+      const EncodedAttr& attr_val = scratch_[i];
       bool is_null = holds_alternative<monostate>(attr_val);
       if (is_null) attr_null_rows_[i].add(data_entries_cnt_);
-      if (options_.attr_specs[i].role == AttrRole::ORDERED) {
-        // NULL rows push a placeholder purely to keep row ids aligned; they are
-        // excluded from binning and bins later via attr_null_rows_.
-        double val = is_null ? 0.0 : OrderedToDouble(attr_val);
-        get<vector<double>>(attr_buf_[i]).push_back(val);
+      if (schema_.roles[i] == AttrRole::ORDERED) {
+        // NULL rows push a placeholder purely to keep row ids aligned; they
+        // are excluded from binning and bins later via attr_null_rows_.
+        get<vector<uint64_t>>(attr_buf_[i])
+            .push_back(is_null ? 0 : get<uint64_t>(attr_val));
       } else {
         get<CatAttrBuf>(attr_buf_[i])
             .Intern(is_null ? string_view() : get<string_view>(attr_val));
@@ -114,9 +117,9 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
   } else {
     // If it's a tombstone, we still need to add a dummy value to the buffer for
     // the sake of simplicity in binning policy calculation.
-    for (uint32_t i = 0; i < options_.attr_num; ++i) {
-      if (options_.attr_specs[i].role == AttrRole::ORDERED) {
-        get<vector<double>>(attr_buf_[i]).push_back(0.0);
+    for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
+      if (schema_.roles[i] == AttrRole::ORDERED) {
+        get<vector<uint64_t>>(attr_buf_[i]).push_back(0);
       } else {
         get<CatAttrBuf>(attr_buf_[i]).Intern("");
       }
@@ -137,19 +140,19 @@ void SABIBuilder::SetBinningPolicy() {
   // rho: expected bin selectivity per point query (0, 1]
   // e.g. rho=0.1 means 10 bins per attr on avg.
   uint32_t target_total_bitmaps_cnt =
-      (uint32_t)(options_.attr_num / options_.rho);
+      (uint32_t)(schema_.attr_num() / schema_.rho);
 
   // 2. Set # of bitmaps for each attr
-  vector<uint32_t> cardinality(options_.attr_num, 0);
+  vector<uint32_t> cardinality(schema_.attr_num(), 0);
   uint32_t cardinality_ub =
       target_total_bitmaps_cnt;  // theoretically max bins for one attr
-  for (uint32_t i = 0; i < options_.attr_num; ++i) {
-    if (options_.attr_specs[i].role == AttrRole::UNORDERED) {
+  for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
+    if (schema_.roles[i] == AttrRole::UNORDERED) {
       cardinality[i] = get<CatAttrBuf>(attr_buf_[i]).value_by_id.size();
     } else {
-      const auto& double_vec = get<vector<double>>(attr_buf_[i]);
-      unordered_set<double> unique_vals;
-      for (double val : double_vec) {
+      const auto& okey_vec = get<vector<uint64_t>>(attr_buf_[i]);
+      unordered_set<uint64_t> unique_vals;
+      for (uint64_t val : okey_vec) {
         unique_vals.insert(val);
         if (unique_vals.size() >= cardinality_ub) {
           break;  // Optimization: Upper bound 도달 시 탐색 즉시 종료
@@ -193,11 +196,11 @@ void SABIBuilder::SetBinningPolicy() {
   bitmap_index_.bitmaps.resize(total_bitmaps_num);
 
   // 3. Set binning boundaries for each attr
-  for (uint32_t i = 0; i < options_.attr_num; ++i) {
-    if (options_.attr_specs[i].role == AttrRole::UNORDERED) {
+  for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
+    if (schema_.roles[i] == AttrRole::UNORDERED) {
       // 3-A. Unordered property Binning
       SetUnorderedPropertyBinningPolicy(i);
-    } else if (options_.attr_specs[i].role == AttrRole::ORDERED) {
+    } else if (schema_.roles[i] == AttrRole::ORDERED) {
       // 3-B. Ordered property Binning
       SetOrderedPropertyBinningPolicy(i);
     } else {
@@ -237,36 +240,53 @@ void SABIBuilder::SetUnorderedPropertyBinningPolicy(uint32_t i) {
 void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
   folly::TDigest digest(bitmap_index_.bitmap_nums[i] * 5);
 
-  const auto& v = get<vector<double>>(attr_buf_[i]);
+  const auto& v = get<vector<uint64_t>>(attr_buf_[i]);
   const roaring::Roaring& nulls = attr_null_rows_[i];
-  if (nulls.isEmpty()) {
-    digest = digest.merge(folly::Range<const double*>(v.data(), v.size()));
-  } else {
-    // Exclude NULL rows so their placeholders don't skew the quantile
-    // boundaries (NULL has no orderable value).
-    vector<double> non_null;
-    non_null.reserve(v.size());
-    for (uint32_t j = 0; j < v.size(); ++j)
-      if (!nulls.contains(j)) non_null.push_back(v[j]);
-    digest = digest.merge(
-        folly::Range<const double*>(non_null.data(), non_null.size()));
+  // Project okeys into the t-digest double domain (monotone; lossiness above
+  // 2^53 only affects interior boundary placement, never bin membership).
+  // NULL placeholders are excluded so they don't skew the quantiles.
+  vector<double> proj;
+  proj.reserve(v.size());
+  bool has_null = !nulls.isEmpty();
+  uint64_t min_okey = UINT64_MAX, max_okey = 0;
+  for (uint32_t j = 0; j < v.size(); ++j) {
+    if (has_null && nulls.contains(j)) continue;
+    proj.push_back(OkeyToTDigest(v[j]));
+    min_okey = std::min(min_okey, v[j]);
+    max_okey = std::max(max_okey, v[j]);
   }
+  digest = digest.merge(folly::Range<const double*>(proj.data(), proj.size()));
 
-  // N+1 boundary points
-  vector<double> boundaries(bitmap_index_.bitmap_nums[i] + 1);
+  // N+1 okey boundary thresholds.
+  vector<uint64_t> boundaries(bitmap_index_.bitmap_nums[i] + 1);
   for (uint32_t j = 0; j <= bitmap_index_.bitmap_nums[i]; ++j) {
     double quantile = (double)j / (double)bitmap_index_.bitmap_nums[i];
-    boundaries[j] = digest.estimateQuantile(quantile);
+    boundaries[j] = TDigestBoundaryToOkey(digest.estimateQuantile(quantile));
+  }
+
+  // Pin the outer thresholds to the exact data bounds: min/max pruning and
+  // the virtual-bin -1 path treat them as [min, max] of the data, but the
+  // okey->double->okey round trip can round past the true bounds (double ulp
+  // near 2^63 is ~1024), turning EQ(min)/EQ(max) into false negatives.
+  // Interior boundaries are shared thresholds, so their rounding is harmless;
+  // clamp into the pinned range and keep them monotone.
+  if (!proj.empty()) {
+    boundaries.front() = min_okey;
+    boundaries.back() = max_okey;
+  }
+  for (uint32_t j = 1; j < boundaries.size(); ++j) {
+    boundaries[j] = std::min(boundaries[j], boundaries.back());
+    if (boundaries[j] < boundaries[j - 1]) boundaries[j] = boundaries[j - 1];
   }
   bitmap_index_.binning_policy[i] = std::move(boundaries);
 }
 
 void SABIBuilder::CalculateBitmapIndex() {
   uint32_t bin_idx_offset = 0;
-  for (uint32_t i = 0; i < options_.attr_num; ++i) {
+  for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
     const roaring::Roaring& nulls = attr_null_rows_[i];
     bool has_null = !nulls.isEmpty();
-    if (options_.attr_specs[i].role == AttrRole::UNORDERED) {
+    if (schema_.roles[i] == AttrRole::UNORDERED) {
       const CatAttrBuf& cat = get<CatAttrBuf>(attr_buf_[i]);
       // Row ids are monotonic per bin, so a bulk context per bin lets
       // CRoaring skip the container lookup on nearly every add.
@@ -277,10 +297,11 @@ void SABIBuilder::CalculateBitmapIndex() {
         bitmap_index_.bitmaps[bin_idx_offset + local_bin].addBulk(
             bin_ctxs[local_bin], j);
       }
-    } else if (options_.attr_specs[i].role == AttrRole::ORDERED) {
-      const vector<double>& cur_attr_buf = get<vector<double>>(attr_buf_[i]);
-      vector<double>& binning =
-          get<vector<double>>(bitmap_index_.binning_policy[i]);
+    } else if (schema_.roles[i] == AttrRole::ORDERED) {
+      const vector<uint64_t>& cur_attr_buf =
+          get<vector<uint64_t>>(attr_buf_[i]);
+      vector<uint64_t>& binning =
+          get<vector<uint64_t>>(bitmap_index_.binning_policy[i]);
       vector<roaring::BulkContext> bin_ctxs(bitmap_index_.bitmap_nums[i]);
       for (uint32_t j = 0; j < cur_attr_buf.size(); ++j) {
         if (has_null && nulls.contains(j)) continue;  // NULL: in no value bin
@@ -335,10 +356,10 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   // 3-3. Add bitmap binning policies
   vector<uint32_t> binning_policy_offset;
   binning_policy_offset.push_back(index_blob_.size());
-  for (uint32_t i = 0; i < options_.attr_num; ++i) {
+  for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
     // Add bin count
     PutFixed32(&index_blob_, bitmap_index_.bitmap_nums[i]);
-    if (options_.attr_specs[i].role == AttrRole::UNORDERED) {
+    if (schema_.roles[i] == AttrRole::UNORDERED) {
       vector<pair<string, uint32_t>>& cur_binning_policy =
           std::get<vector<pair<string, uint32_t>>>(
               bitmap_index_.binning_policy[i]);
@@ -348,17 +369,12 @@ Status SABIBuilder::Finish(Slice* index_contents) {
         PutLengthPrefixedSlice(&index_blob_, bi.first);
         PutFixed32(&index_blob_, bi.second);
       }
-    } else if (options_.attr_specs[i].role == AttrRole::ORDERED) {
-      vector<double>& cur_binning_policy =
-          std::get<vector<double>>(bitmap_index_.binning_policy[i]);
+    } else if (schema_.roles[i] == AttrRole::ORDERED) {
+      vector<uint64_t>& cur_binning_policy =
+          std::get<vector<uint64_t>>(bitmap_index_.binning_policy[i]);
       PutFixed32(&index_blob_,
                  cur_binning_policy.size());  // policy entry count
-      for (auto& bi : cur_binning_policy) {
-        uint64_t val_encoded;
-        // Prevent implicit double->uint64_t cast
-        std::memcpy(&val_encoded, &bi, sizeof(double));
-        PutFixed64(&index_blob_, val_encoded);
-      }
+      for (uint64_t bi : cur_binning_policy) PutFixed64(&index_blob_, bi);
     } else {
       assert(false);
     }
@@ -375,7 +391,10 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   PutFixed32(&index_blob_, bitmaps_offset_offset);
   PutFixed32(&index_blob_, binning_policy_offset_offset);
 
-  // 3-6. Version footer (validated by SABIFactory::NewReader)
+  // 3-6. Schema-hash + version footer (validated by SABIFactory::NewReader).
+  // The hash covers only the SABI-visible residue (attr_num, roles) so
+  // adapter-private spec changes don't invalidate existing SSTs.
+  PutFixed32(&index_blob_, schema_.Hash());
   PutFixed32(&index_blob_, kBitLSMFormatVersion);
   PutFixed32(&index_blob_, kSABIFooterMagic);
 
