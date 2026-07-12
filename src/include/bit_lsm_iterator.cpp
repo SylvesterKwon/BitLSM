@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <stdexcept>
 
 #include "bit_lsm_option.h"
 #include "bit_lsm_utils.h"
@@ -12,23 +13,47 @@ using namespace std;
 using namespace rocksdb;
 using namespace bit_lsm;
 
+namespace {
+// Validates constructor arguments from the first member initializer, before
+// any member acquires a resource, so a rejected construction leaks nothing.
+DB* ValidateIteratorArgs(DB* db, ResultMode result_mode,
+                         const Snapshot* snapshot) {
+  if (result_mode == ResultMode::Candidate && snapshot == nullptr)
+    throw std::invalid_argument(
+        "Candidate mode requires an injected snapshot: candidate generation "
+        "and the consumer's fetch must see the same seqno");
+  return db;
+}
+}  // namespace
+
 BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
                                const BitLSMOptions& options,
-                               const BitLSMQuery& query)
-    : db_(db),
+                               const BitLSMQuery& query, ResultMode result_mode,
+                               const Snapshot* snapshot)
+    : db_(ValidateIteratorArgs(db, result_mode, snapshot)),
       db_impl_(static_cast<DBImpl*>(db_)),
       cfh_(cfh),
-      // 1. Create snapshot
-      snapshot_(db_->GetSnapshot()),
-      // For now, we only support default CF for the sake of simplicity
-      cfd_(db_impl_->GetVersionSet()->GetColumnFamilySet()->GetDefault()),
+      // 1. Use the injected snapshot if given (caller keeps ownership),
+      // otherwise create and own one
+      snapshot_(snapshot != nullptr ? snapshot : db_->GetSnapshot()),
+      snapshot_owned_(snapshot == nullptr),
+      // Scan the CF the handle refers to; null falls back to the default CF
+      cfd_(cfh != nullptr
+               ? static_cast<ColumnFamilyHandleImpl*>(cfh)->cfd()
+               : db_impl_->GetVersionSet()->GetColumnFamilySet()->GetDefault()),
       // 2. Create SuperVersion
       sv_(cfd_->GetReferencedSuperVersion(db_impl_)),
       options_(options),
       query_(query),
-      compiled_(query, options),
+      result_mode_(result_mode),
+      // Candidate mode skips per-row verification: leave compiled_ an inert
+      // empty shell and signal via a null query_ctx_.compiled
+      compiled_(result_mode == ResultMode::Candidate
+                    ? CompiledQuery()
+                    : CompiledQuery(query, options)),
       sabi_query_(EncodeQuery(query_, options)),
-      query_ctx_{options_, sabi_query_, &compiled_},
+      query_ctx_{options_, sabi_query_,
+                 result_mode == ResultMode::Candidate ? nullptr : &compiled_},
       scan_ctx_(sv_),
       latest_user_key_added("") {
   // 3. Save snapshot's seqno to SABIOption
@@ -50,8 +75,9 @@ BitLSMIterator::~BitLSMIterator() {
     delete sv_;
   }
 
-  // 3. Release snapshot
-  if (snapshot_ != nullptr) db_->ReleaseSnapshot(snapshot_);
+  // 3. Release snapshot (only if this iterator created it; injected
+  // snapshots are owned by the caller)
+  if (snapshot_owned_ && snapshot_ != nullptr) db_->ReleaseSnapshot(snapshot_);
 }
 
 void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
@@ -83,6 +109,14 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       smi_->Next();
     }
     if (candidate_keys.empty()) break;
+
+    // Candidate mode: the bitmap-pruned keys are the result. Skip the
+    // authoritative fetch and per-row verification; the consumer fetches
+    // with its own snapshot and re-verifies.
+    if (result_mode_ == ResultMode::Candidate) {
+      batch_keys_ = std::move(candidate_keys);
+      continue;
+    }
 
     // 4. MultiGet candidates from RocksDB
     vector<Slice> candidate_key_slices;
@@ -147,5 +181,12 @@ Slice BitLSMIterator::key() const {
 
 Slice BitLSMIterator::value() const {
   assert(Valid());
+  // No authoritative fetch happens in Candidate mode, so there is no value
+  // to return; a thrown error (not an assert, which Release compiles out)
+  // keeps a misusing consumer from reading garbage.
+  if (result_mode_ == ResultMode::Candidate)
+    throw std::logic_error(
+        "BitLSMIterator::value() is unavailable in Candidate mode; fetch "
+        "authoritatively by key() instead");
   return batch_values_[batch_cur_idx_];
 }

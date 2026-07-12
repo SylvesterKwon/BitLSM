@@ -89,7 +89,10 @@ Status BitLSM::Delete(const string& key) {
   return db_->Delete(WriteOptions(), key);
 }
 
-unique_ptr<BitLSMIterator> BitLSM::NewIterator(BitLSMQuery& query) {
+unique_ptr<BitLSMIterator> BitLSM::NewIterator(BitLSMQuery& query,
+                                               ColumnFamilyHandle* cfh,
+                                               ResultMode result_mode,
+                                               const Snapshot* snapshot) {
   // Invalid queries (see BitLSMQuery::Validate) get nullptr; callers needing
   // the reason call Validate directly.
   if (!query.Validate(bit_lsm_options_).ok()) return nullptr;
@@ -103,9 +106,9 @@ unique_ptr<BitLSMIterator> BitLSM::NewIterator(BitLSMQuery& query) {
               });
   }
 
-  return std::make_unique<BitLSMIterator>(db_,
-                                          cf_handles_[0],  // Default CF
-                                          bit_lsm_options_, query);
+  return std::make_unique<BitLSMIterator>(
+      db_, cfh != nullptr ? cfh : cf_handles_[0], bit_lsm_options_, query,
+      result_mode, snapshot);
 }
 
 void BitLSM::Statistics() {
