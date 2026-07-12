@@ -22,7 +22,7 @@ class SABIInternalIterator {
   bool valid_ = false;
 
  public:
-  virtual ~SABIInternalIterator(){};
+  virtual ~SABIInternalIterator() {};
   virtual void SeekToFirst() = 0;
   virtual void Next() = 0;
   bool Valid() const { return valid_; };
