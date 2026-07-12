@@ -105,21 +105,6 @@ struct SABISchema {
     s.rho = o.rho;
     return s;
   }
-
-  // FNV-1a over (attr_num, roles), persisted in the v4 footer to reject
-  // readers configured with different roles. Covers only what blob parsing
-  // depends on; adapter-private spec fields stay out.
-  uint32_t Hash() const {
-    uint32_t h = 2166136261u;
-    auto mix = [&h](uint8_t b) { h = (h ^ b) * 16777619u; };
-    uint32_t n = attr_num();
-    mix(n & 0xFF);
-    mix((n >> 8) & 0xFF);
-    mix((n >> 16) & 0xFF);
-    mix((n >> 24) & 0xFF);
-    for (uint32_t i = 0; i < n; ++i) mix(static_cast<uint8_t>(roles[i]));
-    return h;
-  }
 };
 
 // ---- Row -> encoded attrs bridge ----

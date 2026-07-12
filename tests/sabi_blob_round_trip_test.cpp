@@ -63,7 +63,13 @@ TEST(SabiBlobRoundTrip, BuildsAndParses) {
   BITLSM_ASSERT_OK(builder.Finish(&blob));
 
   // 블롭 메모리는 builder 가 소유하므로 builder 가 스코프에 살아있는 동안 파싱.
-  SABIReader reader(blob, SABISchema::FromOptions(options));
+  // v5: 리더는 스키마 주입 없이 블롭의 directory 에서 self-describe 한다.
+  SABIReader reader(blob);
+
+  // roles 가 블롭에서 그대로 복원되는지.
+  ASSERT_EQ(reader.schema().attr_num(), options.attr_num);
+  EXPECT_EQ(reader.schema().roles[0], AttrRole::ORDERED);
+  EXPECT_EQ(reader.schema().roles[1], AttrRole::UNORDERED);
 
   // 인덱스 엔트리(블록) 1개.
   ASSERT_EQ(reader.block_handles.size(), 1u);

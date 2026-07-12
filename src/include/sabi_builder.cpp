@@ -330,9 +330,8 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   // 2. Calculate bitmap index by buffered attr data & binning policy
   CalculateBitmapIndex();
 
-  // 3. Make final index blob
-  // 3-1. Add bitmap indexes
-  // Add tombstone bitmap as the last bitmap
+  // 3. Make final index blob (v5 layout; see sabi.h)
+  // 3-1. Add frozen bitmaps, tombstone bitmap last
   bitmap_index_.bitmaps.push_back(bitmap_index_.tombstone_bitmap);
   vector<uint32_t> bitmap_offsets;
   bitmap_offsets.push_back(index_blob_.size());
@@ -346,19 +345,12 @@ Status SABIBuilder::Finish(Slice* index_contents) {
     Roaring& r = bitmap_index_.bitmaps[i];
     r.writeFrozen(index_blob_.data() + bitmap_offsets[i]);
   }
-  //  total_offset_table_size = offsets.size() * sizeof(uint32_t);
 
-  // 3-2. Add bitmap index offset
-  uint32_t bitmaps_offset_offset = index_blob_.size();
-  PutFixed32(&index_blob_, bitmap_offsets.size());
-  for (uint32_t& oi : bitmap_offsets) PutFixed32(&index_blob_, oi);
-
-  // 3-3. Add bitmap binning policies
-  vector<uint32_t> binning_policy_offset;
-  binning_policy_offset.push_back(index_blob_.size());
+  // 3-2. Add binning policies. ORDERED bodies are headerless: the boundary
+  // count is bin_count+1, and bin_count lives in the directory.
+  vector<uint32_t> policy_offsets;
+  policy_offsets.push_back(index_blob_.size());
   for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
-    // Add bin count
-    PutFixed32(&index_blob_, bitmap_index_.bitmap_nums[i]);
     if (schema_.roles[i] == AttrRole::UNORDERED) {
       vector<pair<string, uint32_t>>& cur_binning_policy =
           std::get<vector<pair<string, uint32_t>>>(
@@ -372,29 +364,28 @@ Status SABIBuilder::Finish(Slice* index_contents) {
     } else if (schema_.roles[i] == AttrRole::ORDERED) {
       vector<uint64_t>& cur_binning_policy =
           std::get<vector<uint64_t>>(bitmap_index_.binning_policy[i]);
-      PutFixed32(&index_blob_,
-                 cur_binning_policy.size());  // policy entry count
       for (uint64_t bi : cur_binning_policy) PutFixed64(&index_blob_, bi);
     } else {
       assert(false);
     }
-    binning_policy_offset.push_back(index_blob_.size());
+    policy_offsets.push_back(index_blob_.size());
   }
 
-  // 3-4. Add bitmap binning policy offset
-  uint32_t binning_policy_offset_offset = index_blob_.size();
-  PutFixed32(&index_blob_, binning_policy_offset.size());
-  for (uint32_t& oi : binning_policy_offset) PutFixed32(&index_blob_, oi);
-
-  // 3-5. Add footer
+  // 3-3. Add directory: everything a reader must know before touching the
+  // body, parsed forward from attr_num. Persisted roles make the blob
+  // self-describing, so opening an SST needs no schema binding.
+  uint32_t directory_off = index_blob_.size();
+  PutFixed32(&index_blob_, schema_.attr_num());
+  for (AttrRole role : schema_.roles)
+    index_blob_.push_back(static_cast<char>(role));
+  for (uint32_t bin_num : bitmap_index_.bitmap_nums)
+    PutFixed32(&index_blob_, bin_num);
   PutFixed32(&index_blob_, index_entries_cnt_);
-  PutFixed32(&index_blob_, bitmaps_offset_offset);
-  PutFixed32(&index_blob_, binning_policy_offset_offset);
+  for (uint32_t& oi : policy_offsets) PutFixed32(&index_blob_, oi);
+  for (uint32_t& oi : bitmap_offsets) PutFixed32(&index_blob_, oi);
 
-  // 3-6. Schema-hash + version footer (validated by SABIFactory::NewReader).
-  // The hash covers only the SABI-visible residue (attr_num, roles) so
-  // adapter-private spec changes don't invalidate existing SSTs.
-  PutFixed32(&index_blob_, schema_.Hash());
+  // 3-4. Add fixed footer (validated by SABIFactory::NewReader)
+  PutFixed32(&index_blob_, directory_off);
   PutFixed32(&index_blob_, kBitLSMFormatVersion);
   PutFixed32(&index_blob_, kSABIFooterMagic);
 
