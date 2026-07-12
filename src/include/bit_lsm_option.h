@@ -9,6 +9,8 @@ namespace bit_lsm {
 
 // Attribute role: ORDERED = total order (range queries + quantile binning),
 // UNORDERED = equality only (frequency binning).
+// Values are persisted as role bytes in the SABI directory (format v5+);
+// never renumber existing entries.
 enum AttrRole {
   UNORDERED,
   ORDERED,

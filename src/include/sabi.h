@@ -23,20 +23,27 @@ namespace bit_lsm {
 
 // On-disk format version of a BitLSM SST.
 // v4: ORDERED binning boundaries are okey (order-preserving uint64), not
-//     double; footer carries a SABISchema hash (see SABIFactory::NewReader).
+//     double; footer carries a SABISchema hash.
+// v5: self-describing — the directory persists the schema residue (attr
+//     roles), so a reader needs no schema binding (see SABIFactory::NewReader).
+//     Corruption detection is RocksDB's block checksum, verified before the
+//     blob reaches the factory; the blob carries no checksum of its own.
 //
-// SABI index blob wire layout (v4), as written by SABIBuilder::Finish:
-//   [index entries]   per block: [row-count psum u32][bh.offset u32][bh.size
-//   u32] [frozen bitmaps]  per-attr value bins in attr order, tombstone bitmap
-//   last [bitmap offsets]  [count u32][offset u32 x count] [binning policy] per
-//   attr: [bin_count u32][entry_count u32] then
-//                     ORDERED:   okey threshold u64 x entry_count
-//                     UNORDERED: {varint-len string, bin u32} x entry_count
-//   [policy offsets]  [count u32][offset u32 x count]
-//   [footer]          [index_entries_cnt u32][bitmap_offsets_off u32]
-//                     [policy_offsets_off u32][spec_hash u32][version u32]
-//                     [magic u32]
-inline constexpr uint32_t kBitLSMFormatVersion = 4;
+// SABI index blob wire layout (v5), as written by SABIBuilder::Finish:
+//   [index entries]     per block: [row-count psum u32][bh.offset u32]
+//                       [bh.size u32]
+//   [frozen bitmaps]    per-attr value bins in attr order, tombstone bitmap
+//                       last
+//   [binning policies]  per attr:
+//                       ORDERED:   okey threshold u64 x (bin_count+1)
+//                       UNORDERED: [entry_count u32] then
+//                                  {varint-len string, bin u32} x entry_count
+//   [directory]         [attr_num u32][role u8 x attr_num]
+//                       [bin_count u32 x attr_num][index_entries_cnt u32]
+//                       [policy offset u32 x (attr_num+1)]
+//                       [bitmap offset u32 x (sum(bin_count)+2)]
+//   [footer]            [directory_off u32][version u32][magic u32]
+inline constexpr uint32_t kBitLSMFormatVersion = 5;
 // Trailing magic of the SABI blob footer
 inline constexpr uint32_t kSABIFooterMagic =
     0x5AB1B175;  // SABIBITS in hexspeak :^)
@@ -153,7 +160,9 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   std::vector<AlignedPtr> managed_buffers_;
 
  public:
-  SABIReader(rocksdb::Slice& index_block, SABISchema schema);
+  // Self-describing: the schema residue (attr roles) is parsed from the
+  // blob's directory, so no schema binding is needed to open an SST.
+  explicit SABIReader(rocksdb::Slice& index_block);
   const SABISchema& schema() const { return schema_; }
   BitmapIndex bitmap_index;
   std::vector<uint32_t> data_entries_cnt_psum;
@@ -174,6 +183,9 @@ class SABIFactory : public rocksdb::UserDefinedIndexFactory {
   // this callable; the callable itself must be thread-safe to invoke.
   using ExtractorFactory = std::function<std::unique_ptr<AttrExtractor>()>;
 
+  // Reader-only factory: readers self-describe from the blob (v5+), so no
+  // schema is needed to open SSTs. NewBuilder() is unavailable in this state.
+  SABIFactory() = default;
   SABIFactory(SABISchema schema, ExtractorFactory extractor_factory)
       : schema_(std::move(schema)),
         extractor_factory_(std::move(extractor_factory)) {}
@@ -187,7 +199,10 @@ class SABIFactory : public rocksdb::UserDefinedIndexFactory {
   rocksdb::UserDefinedIndexBuilder* NewBuilder() const override;
   std::unique_ptr<rocksdb::UserDefinedIndexReader> NewReader(
       rocksdb::Slice& index_block_) const override;
-  // Rejects blobs with a missing or unsupported version footer.
+  // Rejects blobs with a missing or unsupported version footer, an invalid
+  // directory, or (when this factory is schema-bound) roles that differ from
+  // the bound schema. A schema-less factory skips the roles cross-check and
+  // trusts the blob's directory.
   rocksdb::Status NewReader(
       const rocksdb::UserDefinedIndexOption& option,
       rocksdb::Slice& index_block,

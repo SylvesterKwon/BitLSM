@@ -45,7 +45,7 @@ bitlsm_add_test(randomized_diff_test)
 bitlsm_add_test(sst_skip_test)
 bitlsm_add_test(okey_encoding_test)
 bitlsm_add_test(extractor_test)
-bitlsm_add_test(sabi_v4_footer_test)
+bitlsm_add_test(sabi_v5_footer_test)
 bitlsm_add_test(okey_zero_regression_test)
 
 # stress 티어: 큰 시드/스텝 예산. PR CI 는 -LE stress 로 제외하고

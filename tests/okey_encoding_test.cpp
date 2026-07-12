@@ -130,26 +130,6 @@ TEST(SABISchema, FromOptionsKeepsOnlyRoles) {
   EXPECT_DOUBLE_EQ(s.rho, 0.2);
 }
 
-// Workload: hash schemas differing in role vs differing only in
-//           adapter-private fields (width/is_signed/is_float/nullable).
-// Threat: a hash that misses role flips lets a reader silently misinterpret
-//         bins; a hash that covers adapter-private fields invalidates SSTs on
-//         changes that don't affect blob interpretation.
-TEST(SABISchema, HashDetectsMismatch) {
-  SABISchema a = SABISchema::FromOptions(MakeOpts3());
-  SABISchema b = a;
-  EXPECT_EQ(a.Hash(), b.Hash());
-  b.roles[1] = AttrRole::ORDERED;  // role flip
-  EXPECT_NE(a.Hash(), b.Hash());
-  // Adapter-private fields must not affect the hash: they don't change how
-  // the blob is parsed, and NULL is a per-row extractor signal, not schema.
-  BitLSMOptions o2 = MakeOpts3();
-  o2.attr_specs[0].width = 4;
-  o2.attr_specs[0].is_float = false;
-  o2.attr_specs[0].nullable = false;
-  EXPECT_EQ(a.Hash(), SABISchema::FromOptions(o2).Hash());
-}
-
 // Workload: a 3-clause query over [ORDERED f64, UNORDERED, ORDERED i64]
 //           through the standalone adapter's EncodeQuery.
 // Threat: a comparand encoded with the wrong AttrSpec (or left native) makes

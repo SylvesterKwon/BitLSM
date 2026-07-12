@@ -36,7 +36,7 @@ TEST(OkeyZeroRegression, NegZeroRowSurvivesEqPosZeroPruning) {
   ASSERT_TRUE(builder.Finish(&contents).ok());
 
   rocksdb::Slice blob(contents);
-  SABIReader reader(blob, SABISchema::FromOptions(o));
+  SABIReader reader(blob);
 
   BitLSMQuery q(std::vector<QueryCondition>{{0, CompareOp::EQUAL, 0.0}});
   SABIQuery sq = EncodeQuery(q, o);
@@ -51,7 +51,7 @@ TEST(OkeyZeroRegression, NegZeroRowSurvivesEqPosZeroPruning) {
   builder2.AddIndexEntry(rocksdb::Slice("k0"), nullptr, bh, &scratch);
   ASSERT_TRUE(builder2.Finish(&contents).ok());
   rocksdb::Slice blob2(contents);
-  SABIReader reader2(blob2, SABISchema::FromOptions(o));
+  SABIReader reader2(blob2);
   BitLSMQuery q2(std::vector<QueryCondition>{{0, CompareOp::EQUAL, -0.0}});
   EXPECT_TRUE(reader2.QueryCanMatch(EncodeQuery(q2, o)));
 }
@@ -85,7 +85,7 @@ TEST(OkeyZeroRegression, EqOnExactMinMaxIsNotPruned) {
   rocksdb::Slice contents;
   ASSERT_TRUE(builder.Finish(&contents).ok());
   rocksdb::Slice blob(contents);
-  SABIReader reader(blob, SABISchema::FromOptions(o));
+  SABIReader reader(blob);
 
   for (int64_t x : {int64_t(600), int64_t(1400)}) {  // exactly min and max
     BitLSMQuery q(std::vector<QueryCondition>{{0, CompareOp::EQUAL, x}});

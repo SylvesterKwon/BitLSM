@@ -92,48 +92,58 @@ UserDefinedIndexBuilder::BlockHandle SABIUDIIterator::value() {
 // SABIReader Implementation
 // ========================================================================
 
-SABIReader::SABIReader(Slice& index_block, SABISchema schema)
-    : schema_(std::move(schema)) {
-  // 1. Read footer:
-  //    [index footer 3xu32][spec_hash u32][version u32][magic u32]
-  // (spec_hash/version/magic already validated by SABIFactory::NewReader)
-  assert(index_block.size() >= 6 * sizeof(uint32_t) &&
+SABIReader::SABIReader(Slice& index_block) {
+  // 1. Read footer: [directory_off u32][version u32][magic u32]
+  // (magic/version/directory bounds already validated by
+  // SABIFactory::NewReader)
+  assert(index_block.size() >= 3 * sizeof(uint32_t) &&
          DecodeFixed32(index_block.data() + index_block.size() -
                        sizeof(uint32_t)) == kSABIFooterMagic);
-  const char* footer_end =
-      index_block.data() + index_block.size() - 3 * sizeof(uint32_t);
-  uint32_t index_entries_cnt_ =
-      DecodeFixed32(footer_end - 3 * sizeof(uint32_t));
-  uint32_t bitmap_indexoffset_offset =
-      DecodeFixed32(footer_end - 2 * sizeof(uint32_t));
-  uint32_t binning_policy_offset_offset =
-      DecodeFixed32(footer_end - 1 * sizeof(uint32_t));
+  uint32_t directory_off = DecodeFixed32(
+      index_block.data() + index_block.size() - 3 * sizeof(uint32_t));
+
+  // 2. Read directory forward: attr_num first, so every following array's
+  // size is known. Roles reconstruct the schema residue without any binding.
+  const char* dir = index_block.data() + directory_off;
+  uint32_t attr_num = DecodeFixed32(dir);
+  dir += sizeof(uint32_t);
+  schema_.roles.resize(attr_num);
+  for (uint32_t i = 0; i < attr_num; ++i)
+    schema_.roles[i] = static_cast<AttrRole>(static_cast<uint8_t>(dir[i]));
+  dir += attr_num;
+  bitmap_index.bitmap_nums.resize(attr_num);
+  uint32_t total_bins = 0;
+  for (uint32_t i = 0; i < attr_num; ++i) {
+    bitmap_index.bitmap_nums[i] = DecodeFixed32(dir);
+    total_bins += bitmap_index.bitmap_nums[i];
+    dir += sizeof(uint32_t);
+  }
+  uint32_t index_entries_cnt_ = DecodeFixed32(dir);
+  dir += sizeof(uint32_t);
+  vector<uint32_t> policy_offsets(attr_num + 1);
+  for (uint32_t i = 0; i <= attr_num; ++i) {
+    policy_offsets[i] = DecodeFixed32(dir);
+    dir += sizeof(uint32_t);
+  }
+  uint32_t bitmaps_cnt = total_bins + 1;  // + tombstone bitmap
+  vector<uint32_t> bitmap_offsets(bitmaps_cnt + 1);
+  for (uint32_t i = 0; i <= bitmaps_cnt; ++i) {
+    bitmap_offsets[i] = DecodeFixed32(dir);
+    dir += sizeof(uint32_t);
+  }
 
   data_entries_cnt_psum.resize(index_entries_cnt_);
   block_handles.resize(index_entries_cnt_);
 
-  // 2. Read binning policy
-  uint32_t binning_policy_offset_cnt =
-      DecodeFixed32(index_block.data() + binning_policy_offset_offset);
-  uint32_t binning_policy_cnt = binning_policy_offset_cnt - 1;
-  bitmap_index.binning_policy.resize(binning_policy_cnt);
-  bitmap_index.bitmap_nums.resize(binning_policy_cnt);
-  assert(schema_.attr_num() == binning_policy_cnt);
-
-  for (uint32_t i = 0; i < binning_policy_cnt; ++i) {
-    uint32_t cur_binning_policy_offset =
-        DecodeFixed32(index_block.data() + binning_policy_offset_offset +
-                      (i + 1) * sizeof(uint32_t));
-
-    // Get bin count
-    bitmap_index.bitmap_nums[i] =
-        DecodeFixed32(index_block.data() + cur_binning_policy_offset);
-    uint32_t cur_binning_policy_entry_count = DecodeFixed32(
-        index_block.data() + cur_binning_policy_offset + sizeof(uint32_t));
-    const char* ptr =
-        index_block.data() + cur_binning_policy_offset + 2 * sizeof(uint32_t);
+  // 3. Read binning policies. ORDERED bodies are headerless (bin_count+1
+  // boundaries); UNORDERED bodies carry their entry count.
+  bitmap_index.binning_policy.resize(attr_num);
+  for (uint32_t i = 0; i < attr_num; ++i) {
+    const char* ptr = index_block.data() + policy_offsets[i];
 
     if (schema_.roles[i] == AttrRole::UNORDERED) {
+      uint32_t cur_binning_policy_entry_count = DecodeFixed32(ptr);
+      ptr += sizeof(uint32_t);
       // read {length prefixed string + uint32t (bin number)}
       vector<pair<string, uint32_t>> cur_binning_policy(
           cur_binning_policy_entry_count);
@@ -148,8 +158,9 @@ SABIReader::SABIReader(Slice& index_block, SABISchema schema)
       }
       bitmap_index.binning_policy[i] = std::move(cur_binning_policy);
     } else if (schema_.roles[i] == AttrRole::ORDERED) {
-      vector<uint64_t> cur_binning_policy(cur_binning_policy_entry_count);
-      for (uint32_t j = 0; j < cur_binning_policy_entry_count; ++j)
+      uint32_t boundary_count = bitmap_index.bitmap_nums[i] + 1;
+      vector<uint64_t> cur_binning_policy(boundary_count);
+      for (uint32_t j = 0; j < boundary_count; ++j)
         cur_binning_policy[j] = DecodeFixed64(ptr + j * sizeof(uint64_t));
       bitmap_index.binning_policy[i] = std::move(cur_binning_policy);
     } else {
@@ -157,18 +168,9 @@ SABIReader::SABIReader(Slice& index_block, SABISchema schema)
     }
   }
 
-  // 3. Read bitmap index offset
-  uint32_t bitmap_offset_cnt =
-      DecodeFixed32(index_block.data() + bitmap_indexoffset_offset);
-  uint32_t bitmaps_cnt = bitmap_offset_cnt - 1;
+  // 4. Read frozen bitmaps
   bitmap_index.bitmaps.resize(bitmaps_cnt -
                               1);  // the last bitmap is for tombstone
-  vector<uint32_t> bitmap_offsets(bitmap_offset_cnt);
-  for (uint32_t i = 0; i < bitmap_offset_cnt; ++i) {
-    bitmap_offsets[i] =
-        DecodeFixed32(index_block.data() + bitmap_indexoffset_offset +
-                      (i + 1) * sizeof(uint32_t));
-  }
   for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
     uint32_t size = bitmap_offsets[i + 1] - bitmap_offsets[i];
     const char* raw_ptr = index_block.data() + bitmap_offsets[i];
@@ -190,7 +192,7 @@ SABIReader::SABIReader(Slice& index_block, SABISchema schema)
         std::move(managed_aligned_ptr));  // move pointer ownership
   }
 
-  // 4. Read index block related informaiton
+  // 5. Read index block related information
   for (uint32_t i = 0; i < index_entries_cnt_; ++i) {
     const char* cur_index_entry_base_ptr =
         index_block.data() + i * 3 * sizeof(uint32_t);
