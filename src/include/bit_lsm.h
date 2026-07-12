@@ -34,7 +34,12 @@ class BitLSM {
                            const std::vector<std::vector<Attr>>& attrs_list,
                            const std::vector<std::string>& payloads);
   rocksdb::Status Delete(const std::string& key);
-  std::unique_ptr<BitLSMIterator> NewIterator(BitLSMQuery& query);
+  // With the defaults (default CF, Verified mode, no injected snapshot)
+  // this behaves exactly like the original standalone entry point.
+  std::unique_ptr<BitLSMIterator> NewIterator(
+      BitLSMQuery& query, rocksdb::ColumnFamilyHandle* cfh = nullptr,
+      ResultMode result_mode = ResultMode::Verified,
+      const rocksdb::Snapshot* snapshot = nullptr);
 
   // To use RocksDB API
   rocksdb::DB* GetInternalDB() { return db_; }

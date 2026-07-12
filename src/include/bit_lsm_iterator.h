@@ -36,6 +36,19 @@ class BitLSMLevelIterator;
 class SABITableIterator;
 class BitLSMMemTableIterator;
 
+// What BitLSMIterator emits.
+enum class ResultMode {
+  // Bitmap pruning + authoritative MultiGet fetch + per-row verification:
+  // only rows that truly match the query. The standalone default.
+  Verified,
+  // Bitmap pruning only: candidate keys, a superset of the answer at the
+  // iterator's read seqno; the consumer fetches and re-verifies. Requires an
+  // injected snapshot so candidate generation and the consumer's fetch see
+  // the same seqno (a fresher seqno here would drop rows the consumer's
+  // snapshot must still see).
+  Candidate,
+};
+
 // "What to match": the query and its resolved forms, threaded to the leaf
 // evaluators. Holds references into the owning BitLSMIterator, which outlives
 // every child.
@@ -72,12 +85,19 @@ class BitLSMIterator : public SABIInternalIterator {
   rocksdb::DBImpl* db_impl_;
   rocksdb::ColumnFamilyHandle* cfh_;  // To use multiget API
   const rocksdb::Snapshot* snapshot_;
+  // False when the snapshot was injected: the caller owns its lifetime and
+  // this iterator must not release it.
+  bool snapshot_owned_;
   rocksdb::ColumnFamilyData* cfd_;
   rocksdb::SuperVersion* sv_;
 
   BitLSMMergingIterator* smi_;
   BitLSMOptions options_;
   BitLSMQuery query_;
+  ResultMode result_mode_;
+  // In Candidate mode this is an inert default-constructed shell; the
+  // nullable signal is query_ctx_.compiled, so never take &compiled_
+  // unconditionally.
   CompiledQuery compiled_;
   SABIQuery sabi_query_;    // query_ encoded into the SABI domain
   QueryContext query_ctx_;  // references the members above
@@ -93,8 +113,13 @@ class BitLSMIterator : public SABIInternalIterator {
   void FetchNextBatch(uint32_t batch_size);
 
  public:
+  // With the defaults (Verified mode, no injected snapshot) this behaves
+  // exactly like the original standalone iterator. Candidate mode requires
+  // an injected snapshot (see ResultMode).
   BitLSMIterator(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* cfh,
-                 const BitLSMOptions& options, const BitLSMQuery& query);
+                 const BitLSMOptions& options, const BitLSMQuery& query,
+                 ResultMode result_mode = ResultMode::Verified,
+                 const rocksdb::Snapshot* snapshot = nullptr);
   ~BitLSMIterator() override;
   void SeekToFirst() override;
   void Next() override;
