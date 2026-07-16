@@ -95,36 +95,26 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
     is_value = false;
   }
 
-  // 2. Buffer original attr data
+  // 2. Buffer original attr data. Buffers are dense (data rows only): NULL
+  // and tombstone rows are recorded in their bitmaps and push nothing, so
+  // every downstream statistic can scan a buffer front to back with no
+  // exclusion logic. Row-id alignment is reconstructed once, in
+  // CalculateBitmapIndex.
   if (is_value) {
     std::string_view buffer(value.data(), value.size());
     extractor_->ExtractAll(std::string_view(key.data(), key.size()), buffer,
                            scratch_.data());
     for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
       const EncodedAttr& attr_val = scratch_[i];
-      bool is_null = holds_alternative<monostate>(attr_val);
-      if (is_null) attr_null_rows_[i].add(data_entries_cnt_);
-      if (schema_.roles[i] == AttrRole::ORDERED) {
-        // NULL rows push a placeholder purely to keep row ids aligned; they
-        // are excluded from binning and bins later via attr_null_rows_.
-        get<vector<uint64_t>>(attr_buf_[i])
-            .push_back(is_null ? 0 : get<uint64_t>(attr_val));
+      if (holds_alternative<monostate>(attr_val)) {
+        attr_null_rows_[i].add(data_entries_cnt_);
+      } else if (schema_.roles[i] == AttrRole::ORDERED) {
+        get<vector<uint64_t>>(attr_buf_[i]).push_back(get<uint64_t>(attr_val));
       } else {
-        get<CatAttrBuf>(attr_buf_[i])
-            .Intern(is_null ? string_view() : get<string_view>(attr_val));
+        get<CatAttrBuf>(attr_buf_[i]).Intern(get<string_view>(attr_val));
       }
     }
   } else {
-    // If it's a tombstone, we still need to add a dummy value to the buffer for
-    // the sake of simplicity in binning policy calculation.
-    for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
-      if (schema_.roles[i] == AttrRole::ORDERED) {
-        get<vector<uint64_t>>(attr_buf_[i]).push_back(0);
-      } else {
-        get<CatAttrBuf>(attr_buf_[i]).Intern("");
-      }
-    }
-    // Also add the entry to the tombstone bitmap
     bitmap_index_.tombstone_bitmap.add(data_entries_cnt_);
   }
 
@@ -240,41 +230,20 @@ void SABIBuilder::SetUnorderedPropertyBinningPolicy(uint32_t i) {
 void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
   folly::TDigest digest(bitmap_index_.bitmap_nums[i] * 5);
 
+  // The buffer is dense (data rows only), so the bounds and quantiles are
+  // plain scans. Exact data bounds first: the t-digest projection is shifted
+  // by min_okey so the double mantissa covers the okey span, not the
+  // absolute magnitude (see OkeyToTDigest).
   const auto& v = get<vector<uint64_t>>(attr_buf_[i]);
-  // NULL and tombstone rows hold placeholder okeys, not data, so both are
-  // excluded from the bounds and the quantiles. Their sorted row ids are
-  // materialized once and merge-skipped, so the scans below pay one branch
-  // per row instead of a per-row bitmap lookup.
-  roaring::Roaring excluded =
-      attr_null_rows_[i] | bitmap_index_.tombstone_bitmap;
-  vector<uint32_t> skip_ids(excluded.cardinality());
-  excluded.toUint32Array(skip_ids.data());
-
-  // Exact data bounds first: the t-digest projection is shifted by min_okey
-  // so the double mantissa covers the okey span, not the absolute magnitude
-  // (see OkeyToTDigest); a leaked placeholder (okey 0) would drag min_okey
-  // to the domain minimum and defeat the shift.
   uint64_t min_okey = UINT64_MAX, max_okey = 0;
-  size_t s = 0;
-  for (uint32_t j = 0; j < v.size(); ++j) {
-    if (s < skip_ids.size() && skip_ids[s] == j) {
-      ++s;
-      continue;
-    }
-    min_okey = std::min(min_okey, v[j]);
-    max_okey = std::max(max_okey, v[j]);
+  for (uint64_t okey : v) {
+    min_okey = std::min(min_okey, okey);
+    max_okey = std::max(max_okey, okey);
   }
 
   vector<double> proj;
   proj.reserve(v.size());
-  s = 0;
-  for (uint32_t j = 0; j < v.size(); ++j) {
-    if (s < skip_ids.size() && skip_ids[s] == j) {
-      ++s;
-      continue;
-    }
-    proj.push_back(OkeyToTDigest(v[j], min_okey));
-  }
+  for (uint64_t okey : v) proj.push_back(OkeyToTDigest(okey, min_okey));
   digest = digest.merge(folly::Range<const double*>(proj.data(), proj.size()));
 
   // N+1 okey boundary thresholds.
@@ -305,29 +274,43 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
 void SABIBuilder::CalculateBitmapIndex() {
   uint32_t bin_idx_offset = 0;
   for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
-    const roaring::Roaring& nulls = attr_null_rows_[i];
-    bool has_null = !nulls.isEmpty();
+    // The attr buffer is dense (data rows only), so this is the one place
+    // that re-aligns buffer entries with row ids: rows in NULL/tombstone
+    // bitmaps pushed nothing, and skipping exactly those ids while walking
+    // j keeps the dense cursor k in lockstep with the row id.
+    roaring::Roaring excluded =
+        attr_null_rows_[i] | bitmap_index_.tombstone_bitmap;
+    vector<uint32_t> skip_ids(excluded.cardinality());
+    excluded.toUint32Array(skip_ids.data());
+    size_t s = 0, k = 0;
+
+    // Row ids are monotonic per bin, so a bulk context per bin lets
+    // CRoaring skip the container lookup on nearly every add.
+    vector<roaring::BulkContext> bin_ctxs(bitmap_index_.bitmap_nums[i]);
     if (schema_.roles[i] == AttrRole::UNORDERED) {
       const CatAttrBuf& cat = get<CatAttrBuf>(attr_buf_[i]);
-      // Row ids are monotonic per bin, so a bulk context per bin lets
-      // CRoaring skip the container lookup on nearly every add.
-      vector<roaring::BulkContext> bin_ctxs(bitmap_index_.bitmap_nums[i]);
-      for (uint32_t j = 0; j < cat.row_ids.size(); ++j) {
-        if (has_null && nulls.contains(j)) continue;  // NULL: in no value bin
-        uint32_t local_bin = cat.bin_by_id[cat.row_ids[j]];
+      for (uint32_t j = 0; j < data_entries_cnt_; ++j) {
+        if (s < skip_ids.size() && skip_ids[s] == j) {
+          ++s;
+          continue;
+        }
+        uint32_t local_bin = cat.bin_by_id[cat.row_ids[k++]];
         bitmap_index_.bitmaps[bin_idx_offset + local_bin].addBulk(
             bin_ctxs[local_bin], j);
       }
+      assert(k == cat.row_ids.size());
     } else if (schema_.roles[i] == AttrRole::ORDERED) {
       const vector<uint64_t>& cur_attr_buf =
           get<vector<uint64_t>>(attr_buf_[i]);
       vector<uint64_t>& binning =
           get<vector<uint64_t>>(bitmap_index_.binning_policy[i]);
-      vector<roaring::BulkContext> bin_ctxs(bitmap_index_.bitmap_nums[i]);
-      for (uint32_t j = 0; j < cur_attr_buf.size(); ++j) {
-        if (has_null && nulls.contains(j)) continue;  // NULL: in no value bin
+      for (uint32_t j = 0; j < data_entries_cnt_; ++j) {
+        if (s < skip_ids.size() && skip_ids[s] == j) {
+          ++s;
+          continue;
+        }
         auto it =
-            std::upper_bound(binning.begin(), binning.end(), cur_attr_buf[j]);
+            std::upper_bound(binning.begin(), binning.end(), cur_attr_buf[k++]);
         uint32_t idx = std::distance(binning.begin(), it);
         uint32_t local_bin_idx =
             (idx == 0) ? 0 : static_cast<uint32_t>(idx - 1);
@@ -337,6 +320,7 @@ void SABIBuilder::CalculateBitmapIndex() {
         bitmap_index_.bitmaps[bin_idx_offset + local_bin_idx].addBulk(
             bin_ctxs[local_bin_idx], j);
       }
+      assert(k == cur_attr_buf.size());
     } else {
       assert(false);
     }

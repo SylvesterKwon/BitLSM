@@ -104,12 +104,15 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
     void Grow();
   };
 
-  // Buffer (ORDERED attrs buffer okeys, fixed 8B/row)
+  // Per-attr value buffer, dense: data rows only (ORDERED okeys, 8B each;
+  // UNORDERED interned bytes). NULL and tombstone rows push nothing — they
+  // live solely in attr_null_rows_ / tombstone_bitmap — so binning statistics
+  // are plain scans. CalculateBitmapIndex is the single place that re-aligns
+  // buffer entries with row ids by skipping exactly those bitmaps' ids.
   std::vector<std::variant<CatAttrBuf, std::vector<uint64_t>>> attr_buf_;
-  // Per-attr set of row ids whose value is SQL NULL. NULL rows still push a
-  // placeholder into attr_buf_ (to keep row ids aligned) but are kept out of
-  // every value bin and out of the ORDERED binning-boundary estimation, so
-  // range/equality queries auto-exclude them. Empty for non-nullable attrs.
+  // Per-attr set of row ids whose value is SQL NULL. NULL rows land in no
+  // value bin and never enter binning-boundary estimation, so range/equality
+  // queries auto-exclude them. Empty for non-nullable attrs.
   std::vector<roaring::Roaring> attr_null_rows_;
 
   // Statistics
