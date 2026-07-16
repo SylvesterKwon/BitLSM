@@ -241,30 +241,38 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
   folly::TDigest digest(bitmap_index_.bitmap_nums[i] * 5);
 
   const auto& v = get<vector<uint64_t>>(attr_buf_[i]);
-  const roaring::Roaring& nulls = attr_null_rows_[i];
-  const roaring::Roaring& tombstones = bitmap_index_.tombstone_bitmap;
-  bool has_null = !nulls.isEmpty();
-  bool has_tombstone = !tombstones.isEmpty();
+  // NULL and tombstone rows hold placeholder okeys, not data, so both are
+  // excluded from the bounds and the quantiles. Their sorted row ids are
+  // materialized once and merge-skipped, so the scans below pay one branch
+  // per row instead of a per-row bitmap lookup.
+  roaring::Roaring excluded =
+      attr_null_rows_[i] | bitmap_index_.tombstone_bitmap;
+  vector<uint32_t> skip_ids(excluded.cardinality());
+  excluded.toUint32Array(skip_ids.data());
 
   // Exact data bounds first: the t-digest projection is shifted by min_okey
   // so the double mantissa covers the okey span, not the absolute magnitude
-  // (see OkeyToTDigest). NULL and tombstone rows hold placeholder okeys, not
-  // data, so they are excluded from the bounds and the quantiles; a leaked
-  // tombstone placeholder (okey 0) would drag min_okey to the domain minimum
-  // and defeat the shift.
+  // (see OkeyToTDigest); a leaked placeholder (okey 0) would drag min_okey
+  // to the domain minimum and defeat the shift.
   uint64_t min_okey = UINT64_MAX, max_okey = 0;
+  size_t s = 0;
   for (uint32_t j = 0; j < v.size(); ++j) {
-    if (has_null && nulls.contains(j)) continue;
-    if (has_tombstone && tombstones.contains(j)) continue;
+    if (s < skip_ids.size() && skip_ids[s] == j) {
+      ++s;
+      continue;
+    }
     min_okey = std::min(min_okey, v[j]);
     max_okey = std::max(max_okey, v[j]);
   }
 
   vector<double> proj;
   proj.reserve(v.size());
+  s = 0;
   for (uint32_t j = 0; j < v.size(); ++j) {
-    if (has_null && nulls.contains(j)) continue;
-    if (has_tombstone && tombstones.contains(j)) continue;
+    if (s < skip_ids.size() && skip_ids[s] == j) {
+      ++s;
+      continue;
+    }
     proj.push_back(OkeyToTDigest(v[j], min_okey));
   }
   digest = digest.merge(folly::Range<const double*>(proj.data(), proj.size()));
