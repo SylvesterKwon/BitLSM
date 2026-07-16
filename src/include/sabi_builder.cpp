@@ -242,15 +242,20 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
 
   const auto& v = get<vector<uint64_t>>(attr_buf_[i]);
   const roaring::Roaring& nulls = attr_null_rows_[i];
+  const roaring::Roaring& tombstones = bitmap_index_.tombstone_bitmap;
   bool has_null = !nulls.isEmpty();
+  bool has_tombstone = !tombstones.isEmpty();
 
   // Exact data bounds first: the t-digest projection is shifted by min_okey
   // so the double mantissa covers the okey span, not the absolute magnitude
-  // (see OkeyToTDigest). NULL placeholders are excluded so they don't skew
-  // the bounds or the quantiles.
+  // (see OkeyToTDigest). NULL and tombstone rows hold placeholder okeys, not
+  // data, so they are excluded from the bounds and the quantiles; a leaked
+  // tombstone placeholder (okey 0) would drag min_okey to the domain minimum
+  // and defeat the shift.
   uint64_t min_okey = UINT64_MAX, max_okey = 0;
   for (uint32_t j = 0; j < v.size(); ++j) {
     if (has_null && nulls.contains(j)) continue;
+    if (has_tombstone && tombstones.contains(j)) continue;
     min_okey = std::min(min_okey, v[j]);
     max_okey = std::max(max_okey, v[j]);
   }
@@ -259,6 +264,7 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
   proj.reserve(v.size());
   for (uint32_t j = 0; j < v.size(); ++j) {
     if (has_null && nulls.contains(j)) continue;
+    if (has_tombstone && tombstones.contains(j)) continue;
     proj.push_back(OkeyToTDigest(v[j], min_okey));
   }
   digest = digest.merge(folly::Range<const double*>(proj.data(), proj.size()));

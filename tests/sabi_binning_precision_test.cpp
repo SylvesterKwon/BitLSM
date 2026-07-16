@@ -37,9 +37,10 @@ struct BuiltIndex {
   std::unique_ptr<SABIReader> reader;
 };
 
-// Feeds `values` as Put rows into a SABIBuilder and parses the finished
-// blob.
-BuiltIndex BuildI64Index(const std::vector<int64_t>& values) {
+// Feeds `values` as Put rows (plus `tombstone_cnt` deletion entries) into a
+// SABIBuilder and parses the finished blob.
+BuiltIndex BuildI64Index(const std::vector<int64_t>& values,
+                         uint32_t tombstone_cnt = 0) {
   BitLSMOptions options = I64Options();
   BuiltIndex built;
   built.builder = std::make_unique<SABIBuilder>(
@@ -47,7 +48,7 @@ BuiltIndex BuildI64Index(const std::vector<int64_t>& values) {
       std::make_unique<ValueLayoutExtractor>(options));
 
   std::vector<std::string> keys, encoded;
-  keys.reserve(values.size());
+  keys.reserve(values.size() + tombstone_cnt);
   encoded.reserve(values.size());
   for (size_t i = 0; i < values.size(); ++i) {
     keys.push_back("k" + std::to_string(i));
@@ -56,6 +57,11 @@ BuiltIndex BuildI64Index(const std::vector<int64_t>& values) {
     encoded.push_back(std::move(out));
     built.builder->OnKeyAdded(rocksdb::Slice(keys[i]), UDIB::ValueType::kValue,
                               rocksdb::Slice(encoded[i]));
+  }
+  for (uint32_t i = 0; i < tombstone_cnt; ++i) {
+    keys.push_back("t" + std::to_string(i));
+    built.builder->OnKeyAdded(rocksdb::Slice(keys[values.size() + i]),
+                              UDIB::ValueType::kTypeDeletion, rocksdb::Slice());
   }
 
   std::string scratch;
@@ -108,6 +114,29 @@ TEST(SabiBinningPrecision, NarrowInt64SpanSpreadsAcrossBins) {
   const auto& boundaries =
       std::get<std::vector<uint64_t>>(reader.bitmap_index.binning_policy[0]);
   // Outer thresholds stay pinned to the exact data bounds.
+  EXPECT_EQ(boundaries.front(), I64ToOkey(0));
+  EXPECT_EQ(boundaries.back(), I64ToOkey(999));
+
+  ExpectBinsActuallyPartition(reader, values.size());
+}
+
+// Workload: the same narrow int64 span plus a few deletion entries in the
+//           same blob (any real SST with deletes).
+// Threat: tombstone rows push a placeholder okey 0 into the ORDERED buffer;
+//         if it leaks into the binning stats, min_okey becomes 0 (the okey
+//         domain minimum), which both skews the min/max pin and re-collapses
+//         the shifted t-digest projection back to absolute magnitude.
+TEST(SabiBinningPrecision, TombstonesDoNotSkewBinning) {
+  std::vector<int64_t> values;
+  values.reserve(1000);
+  for (int64_t i = 0; i < 1000; ++i) values.push_back(i);
+
+  BuiltIndex built = BuildI64Index(values, /*tombstone_cnt=*/5);
+  const SABIReader& reader = *built.reader;
+
+  const auto& boundaries =
+      std::get<std::vector<uint64_t>>(reader.bitmap_index.binning_policy[0]);
+  // The pin must reflect the data minimum, not the tombstone placeholder 0.
   EXPECT_EQ(boundaries.front(), I64ToOkey(0));
   EXPECT_EQ(boundaries.back(), I64ToOkey(999));
 
