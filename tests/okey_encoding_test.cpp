@@ -95,16 +95,42 @@ TEST(OkeyEncoding, RoundTrip) {
 
 // ---- t-digest boundary conversion: clamped + monotone ----
 
-// Workload: t-digest quantile estimates outside/inside [0, 2^64) mapped back
-//           to okey thresholds.
+// Workload: t-digest quantile estimates below/inside/above the shifted span
+//           mapped back to absolute okey thresholds.
 // Threat: unclamped negatives/NaN/overflow would wrap around in the uint64
 //         cast and produce wildly wrong bin boundaries.
 TEST(OkeyEncoding, TDigestBoundaryClamps) {
-  EXPECT_EQ(TDigestBoundaryToOkey(-1.0), 0u);
-  EXPECT_EQ(TDigestBoundaryToOkey(std::nan("")), 0u);
-  EXPECT_EQ(TDigestBoundaryToOkey(1.8446744073709552e19),  // >= 2^64
+  EXPECT_EQ(TDigestBoundaryToOkey(-1.0, 0), 0u);
+  EXPECT_EQ(TDigestBoundaryToOkey(std::nan(""), 0), 0u);
+  EXPECT_EQ(TDigestBoundaryToOkey(1.8446744073709552e19, 0),  // >= 2^64
             std::numeric_limits<uint64_t>::max());
-  EXPECT_LE(TDigestBoundaryToOkey(100.5), TDigestBoundaryToOkey(200.5));
+  EXPECT_LE(TDigestBoundaryToOkey(100.5, 0), TDigestBoundaryToOkey(200.5, 0));
+
+  // Sub-min estimates and headroom overflow clamp to the shifted domain.
+  uint64_t min_okey = I64ToOkey(0);  // 2^63
+  EXPECT_EQ(TDigestBoundaryToOkey(-1.0, min_okey), min_okey);
+  EXPECT_EQ(TDigestBoundaryToOkey(std::nan(""), min_okey), min_okey);
+  EXPECT_EQ(TDigestBoundaryToOkey(9.3e18, min_okey),  // > 2^64 - min_okey
+            std::numeric_limits<uint64_t>::max());
+}
+
+// Workload: a narrow okey span near 2^63 (small signed ints, where the double
+//           ULP is 2048) through the shifted projection and back.
+// Threat: projecting absolute okeys to double collapses any span narrower
+//         than the local ULP onto one value, folding every row into a single
+//         bin; the min-shift must keep such spans exactly representable.
+TEST(OkeyEncoding, TDigestShiftPreservesNarrowSpans) {
+  uint64_t min_okey = I64ToOkey(0);  // 2^63
+  // Unshifted, all of 0..999 lands on the same double.
+  EXPECT_EQ(static_cast<double>(I64ToOkey(0)),
+            static_cast<double>(I64ToOkey(999)));
+  // Shifted, every okey in the span survives the round trip exactly.
+  for (int64_t v : {0, 1, 2, 500, 998, 999}) {
+    uint64_t okey = I64ToOkey(v);
+    EXPECT_EQ(TDigestBoundaryToOkey(OkeyToTDigest(okey, min_okey), min_okey),
+              okey)
+        << "v=" << v;
+  }
 }
 
 // ---- SABISchema: the schema residue visible to SABI ----

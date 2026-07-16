@@ -75,18 +75,26 @@ inline uint64_t OrderedToOkey(
 
 // ---- t-digest bridge ----
 
-// okey -> t-digest double domain. Monotone but lossy above 2^53 (rounding
-// ties); this only affects boundary placement quality, never bin membership:
-// all membership decisions compare okeys, never doubles.
-inline double OkeyToTDigest(uint64_t okey) { return static_cast<double>(okey); }
+// okey -> t-digest double domain, shifted by the per-SST minimum so the
+// 52-bit mantissa covers the okey span instead of the absolute magnitude.
+// Unshifted, the double ULP near 2^63 (where every small signed int lands)
+// is 2048: an attribute whose per-SST span is narrower collapses onto one
+// representable double, folding every row into a single bin. The shift is
+// exact whenever span < 2^53; above that it degrades to interior-boundary
+// rounding only, never bin membership: all membership decisions compare
+// okeys, never doubles.
+inline double OkeyToTDigest(uint64_t okey, uint64_t min_okey) {
+  return static_cast<double>(okey - min_okey);
+}
 
-// t-digest quantile estimate (double) -> okey threshold. Any monotone,
-// clamped rounding is valid: boundaries are arbitrary thresholds as long as
-// build-time bin assignment and query-time bin mapping share them.
-inline uint64_t TDigestBoundaryToOkey(double d) {
-  if (std::isnan(d) || d <= 0.0) return 0;
-  if (d >= 18446744073709551616.0) return UINT64_MAX;  // 2^64
-  return static_cast<uint64_t>(d);
+// t-digest quantile estimate (shifted double) -> absolute okey threshold.
+// Any monotone, clamped rounding is valid: boundaries are arbitrary
+// thresholds as long as build-time bin assignment and query-time bin mapping
+// share them.
+inline uint64_t TDigestBoundaryToOkey(double d, uint64_t min_okey) {
+  if (std::isnan(d) || d <= 0.0) return min_okey;
+  if (d >= static_cast<double>(UINT64_MAX - min_okey)) return UINT64_MAX;
+  return min_okey + static_cast<uint64_t>(d);
 }
 
 // ---- The complete schema residue visible to SABI ----
