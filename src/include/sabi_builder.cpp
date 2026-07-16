@@ -242,18 +242,24 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
 
   const auto& v = get<vector<uint64_t>>(attr_buf_[i]);
   const roaring::Roaring& nulls = attr_null_rows_[i];
-  // Project okeys into the t-digest double domain (monotone; lossiness above
-  // 2^53 only affects interior boundary placement, never bin membership).
-  // NULL placeholders are excluded so they don't skew the quantiles.
-  vector<double> proj;
-  proj.reserve(v.size());
   bool has_null = !nulls.isEmpty();
+
+  // Exact data bounds first: the t-digest projection is shifted by min_okey
+  // so the double mantissa covers the okey span, not the absolute magnitude
+  // (see OkeyToTDigest). NULL placeholders are excluded so they don't skew
+  // the bounds or the quantiles.
   uint64_t min_okey = UINT64_MAX, max_okey = 0;
   for (uint32_t j = 0; j < v.size(); ++j) {
     if (has_null && nulls.contains(j)) continue;
-    proj.push_back(OkeyToTDigest(v[j]));
     min_okey = std::min(min_okey, v[j]);
     max_okey = std::max(max_okey, v[j]);
+  }
+
+  vector<double> proj;
+  proj.reserve(v.size());
+  for (uint32_t j = 0; j < v.size(); ++j) {
+    if (has_null && nulls.contains(j)) continue;
+    proj.push_back(OkeyToTDigest(v[j], min_okey));
   }
   digest = digest.merge(folly::Range<const double*>(proj.data(), proj.size()));
 
@@ -261,15 +267,16 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
   vector<uint64_t> boundaries(bitmap_index_.bitmap_nums[i] + 1);
   for (uint32_t j = 0; j <= bitmap_index_.bitmap_nums[i]; ++j) {
     double quantile = (double)j / (double)bitmap_index_.bitmap_nums[i];
-    boundaries[j] = TDigestBoundaryToOkey(digest.estimateQuantile(quantile));
+    boundaries[j] =
+        TDigestBoundaryToOkey(digest.estimateQuantile(quantile), min_okey);
   }
 
   // Pin the outer thresholds to the exact data bounds: min/max pruning and
-  // the virtual-bin -1 path treat them as [min, max] of the data, but the
-  // okey->double->okey round trip can round past the true bounds (double ulp
-  // near 2^63 is ~1024), turning EQ(min)/EQ(max) into false negatives.
-  // Interior boundaries are shared thresholds, so their rounding is harmless;
-  // clamp into the pinned range and keep them monotone.
+  // the virtual-bin -1 path treat them as [min, max] of the data, and for
+  // spans >= 2^53 the shifted round trip can still round past the true
+  // bounds, turning EQ(min)/EQ(max) into false negatives. Interior
+  // boundaries are shared thresholds, so their rounding is harmless; clamp
+  // into the pinned range and keep them monotone.
   if (!proj.empty()) {
     boundaries.front() = min_okey;
     boundaries.back() = max_okey;
