@@ -1,15 +1,19 @@
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "bit_lsm_encoding.h"
 #include "bit_lsm_query.h"  // SABIQuery
+#include "rocksdb/listener.h"
 
 namespace rocksdb {
 class DBImpl;
@@ -86,15 +90,16 @@ struct EstimateResult {
   std::vector<uint32_t> fallback_attrs;
 };
 
-// Owns the lazily rebuilt GlobalStats cache for one column family. Get() is
-// the planning hot path, checked in two tiers: (1) SuperVersion number
-// unchanged since the last check -> serve the cached snapshot; (2) on a new
-// SuperVersion, diff the live file set against the last rebuild's (in-memory
-// metadata only, no table opens) and rebuild only when at least
-// kStaleRowFraction of the rows changed — InnoDB-style auto-recalc. While
-// one thread rebuilds, everyone else keeps serving the previous snapshot,
-// so estimates may lag by up to that fraction of the rows (plus the
-// memtable, D-E3) — acceptable for cost estimation by design.
+// Owns the GlobalStats cache for one column family, refreshed by a small
+// background worker: flush/compaction completion (StatsRefreshListener)
+// signals the worker, which diffs the live file set against the last
+// rebuild's (in-memory metadata only, no table opens) and rebuilds only when
+// at least kStaleRowFraction of the rows changed — InnoDB-style auto-recalc,
+// paced by estimator_min_rebuild_interval_ms so churn storms (bulk load,
+// compaction cascades) coalesce into one pass per interval. Queries never
+// rebuild: Stats() is a snapshot-pointer copy, so estimates may lag by up to
+// the drift threshold (plus the memtable, D-E3) — acceptable for cost
+// estimation by design.
 class CardinalityEstimator {
  public:
   static constexpr size_t kMaxTrackedValues = 10000;  // D-E4 NDV cap
@@ -103,18 +108,30 @@ class CardinalityEstimator {
   static constexpr double kStaleRowFraction = 0.1;
 
   // Grid resolution and rebuild pacing come from BitLSMOptions
-  // (estimator_grid_cells, estimator_min_rebuild_interval_ms).
+  // (estimator_grid_cells, estimator_min_rebuild_interval_ms). Starts the
+  // refresh worker and primes it with an initial build of the current live
+  // set (covers reopen, where no flush event ever fires).
   CardinalityEstimator(rocksdb::DBImpl* db_impl, rocksdb::ColumnFamilyData* cfd,
                        SABISchema schema, const BitLSMOptions& options);
+  // Joins the worker. Must run before the DB closes (the worker references
+  // the column family).
+  ~CardinalityEstimator();
 
   // The answer when no estimator (or no stats) is available: selectivity 1,
   // physical_rows 0, every queried attr flagged as fallback.
   static EstimateResult FallbackResult(const SABIQuery& q);
 
-  // Returns the stats for the current live SST set, rebuilding first when
-  // the SuperVersion changed since the cached build. Thread-safe; the
-  // returned snapshot is immutable and safe to use without the DB lock.
-  std::shared_ptr<const GlobalStats> Get();
+  // Current stats snapshot: a pointer copy, never a rebuild, never null
+  // (empty stats before the first build). Immutable and safe to read
+  // without any lock.
+  std::shared_ptr<const GlobalStats> Stats();
+
+  // Wakes the refresh worker (called from the RocksDB event listener).
+  void NotifyChange();
+
+  // Test-only: force one reconcile pass and wait for it, independent of
+  // listener timing.
+  void TEST_Refresh();
 
   // Planning hot path: cached-stats lookup plus arithmetic only, no bitmap
   // or row scans. ORDERED conditions from single-condition clauses intersect
@@ -125,6 +142,10 @@ class CardinalityEstimator {
   EstimateResult Estimate(const SABIQuery& q);
 
  private:
+  void WorkerLoop();
+  // One pass: diff the live file set, rebuild + publish if drift crossed
+  // the threshold. Worker-thread only.
+  void Reconcile();
   std::shared_ptr<const GlobalStats> Rebuild(rocksdb::SuperVersion* sv);
 
   rocksdb::DBImpl* db_impl_;
@@ -133,14 +154,43 @@ class CardinalityEstimator {
   uint32_t grid_cells_;
   uint32_t min_rebuild_interval_ms_;
 
-  std::mutex mu_;                   // guards cached_ / checked_sv_number_
-  uint64_t checked_sv_number_ = 0;  // SV number last reconciled; 0 = never
+  std::mutex mu_;  // guards cached_
   std::shared_ptr<const GlobalStats> cached_;
 
-  // Serializes the slow path; fields below are touched only by its holder.
-  std::mutex rebuild_mu_;
+  // Worker-only state (no lock needed beyond the worker itself).
   std::unordered_map<uint64_t, uint64_t> built_files_;  // file# -> entries
   uint64_t built_entries_ = 0;
+
+  std::mutex worker_mu_;  // guards the signal/stop state below
+  std::condition_variable worker_cv_;
+  bool stop_ = false;
+  uint64_t signal_gen_ = 0;
+  uint64_t processed_gen_ = 0;
+  std::thread worker_;
+};
+
+// Forwards RocksDB flush/compaction completion to the estimator's refresh
+// worker. Registered before DB::Open and armed once the estimator exists;
+// events while disarmed are dropped.
+class StatsRefreshListener : public rocksdb::EventListener {
+ public:
+  void Arm(CardinalityEstimator* estimator) { target_.store(estimator); }
+  void Disarm() { target_.store(nullptr); }
+  void OnFlushCompleted(rocksdb::DB*, const rocksdb::FlushJobInfo&) override {
+    Notify();
+  }
+  void OnCompactionCompleted(rocksdb::DB*,
+                             const rocksdb::CompactionJobInfo&) override {
+    Notify();
+  }
+
+ private:
+  void Notify() {
+    if (CardinalityEstimator* estimator = target_.load()) {
+      estimator->NotifyChange();
+    }
+  }
+  std::atomic<CardinalityEstimator*> target_{nullptr};
 };
 
 }  // namespace bit_lsm

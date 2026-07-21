@@ -21,6 +21,7 @@ class BitLSM {
   BitLSMOptions bit_lsm_options_;
   ValueLayout layout_;
   std::unique_ptr<CardinalityEstimator> estimator_;
+  std::shared_ptr<StatsRefreshListener> stats_listener_;
 
   // Helper functions
 

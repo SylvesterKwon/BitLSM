@@ -1,6 +1,7 @@
 #include "bit_lsm_estimator.h"
 
 #include <algorithm>
+#include <chrono>
 #include <map>
 #include <set>
 
@@ -85,7 +86,23 @@ CardinalityEstimator::CardinalityEstimator(DBImpl* db_impl,
       cfd_(cfd),
       schema_(std::move(schema)),
       grid_cells_(std::max(1u, options.estimator_grid_cells)),
-      min_rebuild_interval_ms_(options.estimator_min_rebuild_interval_ms) {}
+      min_rebuild_interval_ms_(options.estimator_min_rebuild_interval_ms) {
+  auto empty = std::make_shared<GlobalStats>();
+  empty->ordered.resize(schema_.attr_num());
+  empty->unordered.resize(schema_.attr_num());
+  cached_ = std::move(empty);
+  worker_ = std::thread([this] { WorkerLoop(); });
+  NotifyChange();  // prime: build the current live set at open
+}
+
+CardinalityEstimator::~CardinalityEstimator() {
+  {
+    lock_guard<mutex> lock(worker_mu_);
+    stop_ = true;
+  }
+  worker_cv_.notify_all();
+  if (worker_.joinable()) worker_.join();
+}
 
 EstimateResult CardinalityEstimator::FallbackResult(const SABIQuery& q) {
   EstimateResult res;
@@ -96,33 +113,58 @@ EstimateResult CardinalityEstimator::FallbackResult(const SABIQuery& q) {
   return res;
 }
 
-std::shared_ptr<const GlobalStats> CardinalityEstimator::Get() {
-  {
-    lock_guard<mutex> lock(mu_);
-    if (cached_ && checked_sv_number_ == cfd_->GetSuperVersionNumber())
-      return cached_;
-  }
+std::shared_ptr<const GlobalStats> CardinalityEstimator::Stats() {
+  lock_guard<mutex> lock(mu_);
+  return cached_;
+}
 
-  // Slow path (new SuperVersion): one thread reconciles; everyone else keeps
-  // serving the previous snapshot — bounded staleness is the contract.
-  std::unique_lock<std::mutex> rebuild_lock(rebuild_mu_, std::try_to_lock);
-  if (!rebuild_lock.owns_lock()) {
-    {
-      lock_guard<mutex> lock(mu_);
-      if (cached_) return cached_;
-    }
-    rebuild_lock.lock();  // no snapshot to serve yet: wait for the first build
-  }
+void CardinalityEstimator::NotifyChange() {
   {
-    lock_guard<mutex> lock(mu_);
-    if (cached_ && checked_sv_number_ == cfd_->GetSuperVersionNumber())
-      return cached_;
+    lock_guard<mutex> lock(worker_mu_);
+    ++signal_gen_;
   }
+  worker_cv_.notify_all();
+}
 
+void CardinalityEstimator::TEST_Refresh() {
+  uint64_t target;
+  {
+    lock_guard<mutex> lock(worker_mu_);
+    target = ++signal_gen_;
+  }
+  worker_cv_.notify_all();
+  std::unique_lock<std::mutex> lock(worker_mu_);
+  worker_cv_.wait(lock, [&] { return stop_ || processed_gen_ >= target; });
+}
+
+void CardinalityEstimator::WorkerLoop() {
+  auto last_reconcile = std::chrono::steady_clock::time_point::min();
+  std::unique_lock<std::mutex> lock(worker_mu_);
+  while (true) {
+    worker_cv_.wait(lock,
+                    [this] { return stop_ || signal_gen_ > processed_gen_; });
+    if (stop_) return;
+    // Pace the passes: a churn storm's signals coalesce into one reconcile
+    // per interval.
+    auto not_before =
+        last_reconcile + std::chrono::milliseconds(min_rebuild_interval_ms_);
+    while (!stop_ && std::chrono::steady_clock::now() < not_before)
+      worker_cv_.wait_until(lock, not_before);
+    if (stop_) return;
+    uint64_t target = signal_gen_;
+    lock.unlock();
+    Reconcile();
+    last_reconcile = std::chrono::steady_clock::now();
+    lock.lock();
+    processed_gen_ = target;
+    worker_cv_.notify_all();  // wake TEST_Refresh waiters
+  }
+}
+
+void CardinalityEstimator::Reconcile() {
   SuperVersion* sv = cfd_->GetReferencedSuperVersion(db_impl_);
-  uint64_t sv_number = sv->version_number;
 
-  // Tier-2 check: fraction of rows sitting in files born or dead since the
+  // Drift check: fraction of rows sitting in files born or dead since the
   // last rebuild, from in-memory metadata only (no table opens).
   std::unordered_map<uint64_t, uint64_t> live;
   uint64_t live_entries = 0;
@@ -139,24 +181,16 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Get() {
   for (const auto& [file, entries] : built_files_)
     if (!live.count(file)) changed += entries;
 
-  // cached_ is written only under rebuild_mu_, which we hold.
   bool fresh_enough =
-      cached_ != nullptr && built_entries_ > 0 &&
+      built_entries_ > 0 &&
       static_cast<double>(changed) <
           kStaleRowFraction * static_cast<double>(built_entries_);
-
-  std::shared_ptr<const GlobalStats> result;
-  if (fresh_enough) {
-    lock_guard<mutex> lock(mu_);
-    checked_sv_number_ = sv_number;  // re-stamp: keep serving the snapshot
-    result = cached_;
-  } else {
-    result = Rebuild(sv);
+  if (!fresh_enough) {
+    std::shared_ptr<const GlobalStats> stats = Rebuild(sv);
     built_files_ = std::move(live);
     built_entries_ = live_entries;
     lock_guard<mutex> lock(mu_);
-    cached_ = result;
-    checked_sv_number_ = sv_number;
+    cached_ = std::move(stats);
   }
 
   if (sv->Unref()) {
@@ -165,7 +199,6 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Get() {
     db_impl_->mutex()->Unlock();
     delete sv;
   }
-  return result;
 }
 
 namespace {
@@ -232,7 +265,7 @@ double ConditionSelectivity(const SABICondition& cond, const GlobalStats& stats,
 }  // namespace
 
 EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
-  std::shared_ptr<const GlobalStats> stats = Get();
+  std::shared_ptr<const GlobalStats> stats = Stats();
   EstimateResult res;
   res.physical_rows = stats->physical_rows;
 
