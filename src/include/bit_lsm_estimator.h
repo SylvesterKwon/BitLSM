@@ -73,9 +73,9 @@ struct GlobalStats {
 // uncorrected — correcting by a live/physical ratio is the caller's job.
 struct EstimateResult {
   // Fraction of physical live-SST rows expected to match the query,
-  // combined across attrs under the independence assumption. In [0, 1];
-  // 0 means "provably matchless in live SSTs" (memtable-only rows excepted,
-  // see D-E3).
+  // combined across attrs under the independence assumption. Floored so
+  // selectivity * physical_rows >= 1: stats have blind spots (memtable,
+  // bounded staleness), so absence is never reported as exactly 0.
   double selectivity = 1.0;
   // Live-SST data entries minus tombstone markers.
   uint64_t physical_rows = 0;

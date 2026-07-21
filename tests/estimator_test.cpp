@@ -322,9 +322,9 @@ TEST_F(BitLSMTestBase, EstimateConjunctionIndependenceProduct) {
 // Workload: red x150 / blue x30 across two SSTs; equality on a tracked value
 //           and on a value absent from the (exact, untruncated) dictionary.
 // Threat: a tracked value must reproduce its merged count; an absent value
-//         under an exact dictionary is provably matchless in live SSTs and
-//         must estimate 0 — flagging it as fallback would push the caller
-//         back onto the magic constants for a known answer.
+//         must floor at one matching row (never exactly 0 — stats have blind
+//         spots and 0 is absorbing in cost arithmetic) without falling back
+//         to the magic constants.
 TEST_F(BitLSMTestBase, EstimateUnorderedEqualityAndAbsentValue) {
   BitLSM& db = OpenDB(EstOptions());
   int64_t key = 0;
@@ -351,7 +351,7 @@ TEST_F(BitLSMTestBase, EstimateUnorderedEqualityAndAbsentValue) {
   q_green.clause_groups = {{Uno(1, "green")}};
   EstimateResult g = db.EstimateSelectivity(q_green);
   EXPECT_TRUE(g.fallback_attrs.empty());
-  EXPECT_DOUBLE_EQ(g.selectivity, 0.0);
+  EXPECT_DOUBLE_EQ(EstimatedRows(g), 1.0);
 }
 
 // Workload: one OR clause spanning both unordered values (red OR blue) over
@@ -414,7 +414,7 @@ TEST_F(BitLSMTestBase, EstimateOrderedEqualityPointMass) {
 
   SABIQuery q43;
   q43.clause_groups = {{Ord(0, CompareOp::EQUAL, 43)}};
-  EXPECT_DOUBLE_EQ(db.EstimateSelectivity(q43).selectivity, 0.0);
+  EXPECT_DOUBLE_EQ(EstimatedRows(db.EstimateSelectivity(q43)), 1.0);
 }
 
 // Workload: zipf-like skew (value v in 1..100 appears floor(1000/v) times,

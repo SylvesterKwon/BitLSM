@@ -227,7 +227,9 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
       product *= ord->RangeMass(w.lo, w.hi) / phys;
   }
 
-  res.selectivity = std::min(1.0, std::max(0.0, product));
+  // Planner convention (cf. Postgres clamp_row_est): never estimate below
+  // one matching row — stats have blind spots and 0 is absorbing in cost math.
+  res.selectivity = std::min(1.0, std::max(product, 1.0 / phys));
   res.fallback_attrs.assign(fallback.begin(), fallback.end());
   return res;
 }
