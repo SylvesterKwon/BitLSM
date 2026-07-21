@@ -5,7 +5,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -554,4 +556,41 @@ TEST_F(BitLSMTestBase, CumulativeDriftTriggersRebuild) {
   std::shared_ptr<const GlobalStats> s2 = db.Estimator().Get();
   EXPECT_NE(s1.get(), s2.get()) << "12% cumulative drift must rebuild";
   EXPECT_EQ(s2->physical_rows, 11200u);
+}
+
+// Workload: seeded-random multi-SST input — 15 distinct values, 10 flushes,
+//           random per-flush row counts; NDV stays under the per-SST bin
+//           budget so per-SST counts are exact.
+// Threat: the global value merge must equal a plain reference merge of the
+//         written rows; any dedup, summing, or ordering bug in the merge
+//         shows up as a per-value count mismatch.
+TEST_F(BitLSMTestBase, UnorderedMergeMatchesReferenceOnRandomInput) {
+  rocksdb_options_.disable_auto_compactions = true;
+  BitLSM& db = OpenDB(EstOptions());
+  std::mt19937 rng(20260721);
+  std::map<std::string, double> reference;
+  int64_t key = 0;
+  for (int flush = 0; flush < 10; ++flush) {
+    int rows = 50 + static_cast<int>(rng() % 150);
+    for (int i = 0; i < rows; ++i, ++key) {
+      std::string v = "v" + std::to_string(rng() % 15);
+      reference[v] += 1.0;
+      // Constant ordered attr: its 1-bin cardinality leaves the whole bin
+      // budget to the unordered attr, keeping per-SST counts exact.
+      ASSERT_TRUE(db.Put("k" + std::to_string(key), {int64_t{7}, v}, "p").ok());
+    }
+    FlushDB(db);
+  }
+
+  std::shared_ptr<const GlobalStats> stats = db.Estimator().Get();
+  ASSERT_TRUE(stats->unordered[1].has_value());
+  const GlobalUnorderedStats& uno = *stats->unordered[1];
+  ASSERT_EQ(uno.value_counts.size(), reference.size());
+  double expected_total = 0;
+  for (const auto& [value, count] : reference) {
+    ASSERT_EQ(uno.value_counts.count(value), 1u) << value;
+    EXPECT_NEAR(uno.value_counts.at(value), count, 1e-9) << value;
+    expected_total += count;
+  }
+  EXPECT_NEAR(uno.total, expected_total, 1e-9);
 }
