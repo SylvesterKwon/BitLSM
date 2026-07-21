@@ -354,8 +354,21 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
                                &handle, sv->mutable_cf_options);
       if (!s.ok()) continue;  // unreadable file contributes nothing
       auto* bbt = static_cast<BlockBasedTable*>(cache_interface.Value(handle));
-      auto* reader = static_cast<SABIReader*>(
-          bbt->get_rep()->index_reader->GetUDIReader());
+      auto* index_reader = bbt->get_rep()->index_reader.get();
+      auto* udi = index_reader ? index_reader->GetUDIReader() : nullptr;
+      if (udi == nullptr) {
+        // Embedded reality (vs the standalone all-SABI guarantee): an SST
+        // built while the CF was not yet bound -- a WAL-recovery flush or an
+        // early compaction at DB open -- carries no SABI block. Planning
+        // stats must degrade, never crash: its rows are fetch candidates all
+        // the same, so count them into the physical total, but no attr stats
+        // exist to harvest.
+        stats->physical_rows += meta->num_entries - meta->num_deletions;
+        stats->live_sst_count++;
+        cache_interface.Release(handle);
+        continue;
+      }
+      auto* reader = static_cast<SABIReader*>(udi);
 
       if (!reader->data_entries_cnt_psum.empty()) {
         // Tombstones are deletion markers, not fetchable rows; shadowed old
