@@ -97,14 +97,19 @@ struct EstimateResult {
 // memtable, D-E3) — acceptable for cost estimation by design.
 class CardinalityEstimator {
  public:
-  static constexpr uint32_t kGridCells = 256;         // D-E2
   static constexpr size_t kMaxTrackedValues = 10000;  // D-E4 NDV cap
   // Rebuild only when this fraction of rows sits in files born or dead
   // since the last rebuild.
   static constexpr double kStaleRowFraction = 0.1;
 
+  // Grid resolution and rebuild pacing come from BitLSMOptions
+  // (estimator_grid_cells, estimator_min_rebuild_interval_ms).
   CardinalityEstimator(rocksdb::DBImpl* db_impl, rocksdb::ColumnFamilyData* cfd,
-                       SABISchema schema);
+                       SABISchema schema, const BitLSMOptions& options);
+
+  // The answer when no estimator (or no stats) is available: selectivity 1,
+  // physical_rows 0, every queried attr flagged as fallback.
+  static EstimateResult FallbackResult(const SABIQuery& q);
 
   // Returns the stats for the current live SST set, rebuilding first when
   // the SuperVersion changed since the cached build. Thread-safe; the
@@ -125,6 +130,8 @@ class CardinalityEstimator {
   rocksdb::DBImpl* db_impl_;
   rocksdb::ColumnFamilyData* cfd_;
   SABISchema schema_;
+  uint32_t grid_cells_;
+  uint32_t min_rebuild_interval_ms_;
 
   std::mutex mu_;                   // guards cached_ / checked_sv_number_
   uint64_t checked_sv_number_ = 0;  // SV number last reconciled; 0 = never

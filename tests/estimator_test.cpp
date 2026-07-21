@@ -29,6 +29,8 @@ BitLSMOptions EstOptions() {
                   AttrSpec{AttrRole::UNORDERED}};
   o.read_seqno = 0;
   o.rho = 0.1;
+  o.enable_estimator = true;
+  o.estimator_min_rebuild_interval_ms = 0;  // deterministic tests
   return o;
 }
 
@@ -58,7 +60,7 @@ TEST_F(BitLSMTestBase, OrderedRangeMassMatchesUniformData) {
   }
   FlushDB(db);
 
-  std::shared_ptr<const GlobalStats> stats = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> stats = db.Estimator()->Get();
   EXPECT_EQ(stats->physical_rows, 1000u);
   EXPECT_EQ(stats->live_sst_count, 2u);
 
@@ -91,8 +93,8 @@ TEST_F(BitLSMTestBase, CachesUntilLiveSetChanges) {
         db.Put("k" + std::to_string(i), {i, std::string("a")}, "p").ok());
   FlushDB(db);
 
-  std::shared_ptr<const GlobalStats> s1 = db.Estimator().Get();
-  std::shared_ptr<const GlobalStats> s2 = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> s1 = db.Estimator()->Get();
+  std::shared_ptr<const GlobalStats> s2 = db.Estimator()->Get();
   EXPECT_EQ(s1.get(), s2.get()) << "unchanged live set must be a cache hit";
   EXPECT_EQ(s1->physical_rows, 100u);
 
@@ -101,7 +103,7 @@ TEST_F(BitLSMTestBase, CachesUntilLiveSetChanges) {
         db.Put("k" + std::to_string(i), {i, std::string("a")}, "p").ok());
   FlushDB(db);
 
-  std::shared_ptr<const GlobalStats> s3 = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> s3 = db.Estimator()->Get();
   EXPECT_NE(s1.get(), s3.get()) << "flush must invalidate the cached stats";
   EXPECT_EQ(s3->physical_rows, 200u);
 }
@@ -122,14 +124,14 @@ TEST_F(BitLSMTestBase, ChurnKeepsEstimatesStable) {
     FlushDB(db);
   }
 
-  std::shared_ptr<const GlobalStats> pre = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> pre = db.Estimator()->Get();
   ASSERT_TRUE(pre->ordered[0].has_value());
   EXPECT_NEAR(pre->ordered[0]->total, 1000.0, 1e-6);
   EXPECT_NEAR(pre->ordered[0]->RangeMass(I64ToOkey(0), I64ToOkey(249)), 250.0,
               35.0);
 
   CompactAllDB(db);
-  std::shared_ptr<const GlobalStats> post = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> post = db.Estimator()->Get();
   ASSERT_TRUE(post->ordered[0].has_value());
   EXPECT_NEAR(post->ordered[0]->total, 1000.0, 1e-6);
   EXPECT_EQ(post->physical_rows, pre->physical_rows);
@@ -157,7 +159,7 @@ TEST_F(BitLSMTestBase, UnorderedCountsMergeAcrossSSTs) {
             .ok());
   FlushDB(db);
 
-  std::shared_ptr<const GlobalStats> stats = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> stats = db.Estimator()->Get();
   ASSERT_TRUE(stats->unordered[1].has_value());
   const GlobalUnorderedStats& uno = *stats->unordered[1];
   EXPECT_DOUBLE_EQ(uno.value_counts.at("red"), 150.0);
@@ -180,7 +182,7 @@ TEST_F(BitLSMTestBase, SingleValueAttrKeepsPointMass) {
   }
   FlushDB(db);
 
-  std::shared_ptr<const GlobalStats> stats = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> stats = db.Estimator()->Get();
   ASSERT_TRUE(stats->ordered[0].has_value());
   const GlobalOrderedStats& ord = *stats->ordered[0];
   EXPECT_EQ(ord.min_okey, I64ToOkey(42));
@@ -205,7 +207,7 @@ TEST_F(BitLSMTestBase, PhysicalRowsCountEntriesNotMarkers) {
     ASSERT_TRUE(db.Delete("k" + std::to_string(i)).ok());
   FlushDB(db);
 
-  std::shared_ptr<const GlobalStats> stats = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> stats = db.Estimator()->Get();
   EXPECT_EQ(stats->physical_rows, 100u)
       << "tombstone markers are not fetched rows";
 
@@ -214,7 +216,7 @@ TEST_F(BitLSMTestBase, PhysicalRowsCountEntriesNotMarkers) {
         db.Put("k" + std::to_string(i), {i, std::string("a")}, "p").ok());
   FlushDB(db);
 
-  stats = db.Estimator().Get();
+  stats = db.Estimator()->Get();
   EXPECT_EQ(stats->physical_rows, 120u)
       << "shadowed old versions stay physical until compacted away";
 }
@@ -229,7 +231,7 @@ TEST_F(BitLSMTestBase, EmptyBeforeFirstFlush) {
     ASSERT_TRUE(
         db.Put("k" + std::to_string(i), {i, std::string("a")}, "p").ok());
 
-  std::shared_ptr<const GlobalStats> stats = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> stats = db.Estimator()->Get();
   EXPECT_EQ(stats->physical_rows, 0u);
   EXPECT_EQ(stats->live_sst_count, 0u);
   ASSERT_EQ(stats->ordered.size(), 2u);
@@ -252,7 +254,7 @@ TEST_F(BitLSMTestBase, NdvCapDemotesToTopK) {
             .ok());
   FlushDB(db);
 
-  std::shared_ptr<const GlobalStats> stats = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> stats = db.Estimator()->Get();
   ASSERT_TRUE(stats->unordered[1].has_value());
   const GlobalUnorderedStats& uno = *stats->unordered[1];
   EXPECT_TRUE(uno.truncated);
@@ -508,7 +510,7 @@ TEST_F(BitLSMTestBase, BelowThresholdFlushServesExistingStats) {
         db.Put("k" + std::to_string(key), {key % 1000, std::string("a")}, "p")
             .ok());
   FlushDB(db);
-  std::shared_ptr<const GlobalStats> s1 = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> s1 = db.Estimator()->Get();
   EXPECT_EQ(s1->physical_rows, 10000u);
 
   for (int i = 0; i < 500; ++i, ++key)
@@ -516,7 +518,7 @@ TEST_F(BitLSMTestBase, BelowThresholdFlushServesExistingStats) {
         db.Put("k" + std::to_string(key), {key % 1000, std::string("a")}, "p")
             .ok());
   FlushDB(db);
-  std::shared_ptr<const GlobalStats> s2 = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> s2 = db.Estimator()->Get();
   EXPECT_EQ(s1.get(), s2.get()) << "5% drift must not trigger a rebuild";
   EXPECT_EQ(s2->physical_rows, 10000u);
 }
@@ -536,7 +538,7 @@ TEST_F(BitLSMTestBase, CumulativeDriftTriggersRebuild) {
         db.Put("k" + std::to_string(key), {key % 1000, std::string("a")}, "p")
             .ok());
   FlushDB(db);
-  std::shared_ptr<const GlobalStats> s1 = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> s1 = db.Estimator()->Get();
 
   for (int flush = 0; flush < 2; ++flush) {
     for (int i = 0; i < 400; ++i, ++key)
@@ -544,7 +546,7 @@ TEST_F(BitLSMTestBase, CumulativeDriftTriggersRebuild) {
           db.Put("k" + std::to_string(key), {key % 1000, std::string("a")}, "p")
               .ok());
     FlushDB(db);
-    EXPECT_EQ(db.Estimator().Get().get(), s1.get())
+    EXPECT_EQ(db.Estimator()->Get().get(), s1.get())
         << "drift " << 4 * (flush + 1) << "% is still below the threshold";
   }
 
@@ -553,7 +555,7 @@ TEST_F(BitLSMTestBase, CumulativeDriftTriggersRebuild) {
         db.Put("k" + std::to_string(key), {key % 1000, std::string("a")}, "p")
             .ok());
   FlushDB(db);
-  std::shared_ptr<const GlobalStats> s2 = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> s2 = db.Estimator()->Get();
   EXPECT_NE(s1.get(), s2.get()) << "12% cumulative drift must rebuild";
   EXPECT_EQ(s2->physical_rows, 11200u);
 }
@@ -582,7 +584,7 @@ TEST_F(BitLSMTestBase, UnorderedMergeMatchesReferenceOnRandomInput) {
     FlushDB(db);
   }
 
-  std::shared_ptr<const GlobalStats> stats = db.Estimator().Get();
+  std::shared_ptr<const GlobalStats> stats = db.Estimator()->Get();
   ASSERT_TRUE(stats->unordered[1].has_value());
   const GlobalUnorderedStats& uno = *stats->unordered[1];
   ASSERT_EQ(uno.value_counts.size(), reference.size());
@@ -593,4 +595,44 @@ TEST_F(BitLSMTestBase, UnorderedMergeMatchesReferenceOnRandomInput) {
     expected_total += count;
   }
   EXPECT_NEAR(uno.total, expected_total, 1e-9);
+}
+
+// Workload: options that never enable the estimator (the default), then an
+//           estimate call against flushed data.
+// Threat: standalone users must pay nothing for the estimator and get a
+//         graceful all-fallback answer, not a crash on a missing component.
+TEST_F(BitLSMTestBase, EstimatorDisabledByDefault) {
+  BitLSMOptions opt = EstOptions();
+  opt.enable_estimator = false;
+  BitLSM& db = OpenDB(opt);
+  EXPECT_EQ(db.Estimator(), nullptr);
+  for (int64_t i = 0; i < 10; ++i)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {i, std::string("a")}, "p").ok());
+  FlushDB(db);
+
+  SABIQuery q;
+  q.clause_groups = {{Ord(0, CompareOp::GREATER_EQUAL, 0)}, {Uno(1, "a")}};
+  EstimateResult r = db.EstimateSelectivity(q);
+  EXPECT_DOUBLE_EQ(r.selectivity, 1.0);
+  EXPECT_EQ(r.physical_rows, 0u);
+  EXPECT_EQ(r.fallback_attrs, (std::vector<uint32_t>{0, 1}));
+}
+
+// Workload: estimator enabled with a non-default 64-cell grid.
+// Threat: the option must actually reach the aggregation (a silently ignored
+//         knob would invalidate every D-E2 resolution experiment).
+TEST_F(BitLSMTestBase, GridCellsOptionControlsResolution) {
+  BitLSMOptions opt = EstOptions();
+  opt.estimator_grid_cells = 64;
+  BitLSM& db = OpenDB(opt);
+  for (int64_t i = 0; i < 500; ++i)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {i, std::string("a")}, "p").ok());
+  FlushDB(db);
+
+  std::shared_ptr<const GlobalStats> stats = db.Estimator()->Get();
+  ASSERT_TRUE(stats->ordered[0].has_value());
+  EXPECT_EQ(stats->ordered[0]->cell_psum.size(), 64u);
+  EXPECT_NEAR(stats->ordered[0]->total, 500.0, 1e-6);
 }

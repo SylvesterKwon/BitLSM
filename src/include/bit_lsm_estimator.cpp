@@ -79,8 +79,22 @@ void ProjectHistogram(const OrderedAttrHistogram& hist, uint64_t min_okey,
 
 CardinalityEstimator::CardinalityEstimator(DBImpl* db_impl,
                                            ColumnFamilyData* cfd,
-                                           SABISchema schema)
-    : db_impl_(db_impl), cfd_(cfd), schema_(std::move(schema)) {}
+                                           SABISchema schema,
+                                           const BitLSMOptions& options)
+    : db_impl_(db_impl),
+      cfd_(cfd),
+      schema_(std::move(schema)),
+      grid_cells_(std::max(1u, options.estimator_grid_cells)),
+      min_rebuild_interval_ms_(options.estimator_min_rebuild_interval_ms) {}
+
+EstimateResult CardinalityEstimator::FallbackResult(const SABIQuery& q) {
+  EstimateResult res;
+  std::set<uint32_t> attrs;
+  for (const auto& clause : q.clause_groups)
+    for (const auto& cond : clause) attrs.insert(cond.attr_idx);
+  res.fallback_attrs.assign(attrs.begin(), attrs.end());
+  return res;
+}
 
 std::shared_ptr<const GlobalStats> CardinalityEstimator::Get() {
   {
@@ -222,15 +236,12 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
   EstimateResult res;
   res.physical_rows = stats->physical_rows;
 
-  std::set<uint32_t> fallback;
   if (stats->live_sst_count == 0 || stats->physical_rows == 0) {
     // D-E3 documented limit: before the first flush (or on an empty CF)
     // there is nothing to estimate from; flag every queried attr.
-    for (const auto& clause : q.clause_groups)
-      for (const auto& cond : clause) fallback.insert(cond.attr_idx);
-    res.fallback_attrs.assign(fallback.begin(), fallback.end());
-    return res;
+    return FallbackResult(q);
   }
+  std::set<uint32_t> fallback;
 
   double phys = static_cast<double>(stats->physical_rows);
   double product = 1.0;
@@ -352,7 +363,7 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
         ord.min_okey = std::min(ord.min_okey, h.boundaries.front());
         ord.max_okey = std::max(ord.max_okey, h.boundaries.back());
       }
-      vector<double> cells(kGridCells, 0);
+      vector<double> cells(grid_cells_, 0);
       for (const auto& h : hists[a])
         ProjectHistogram(h, ord.min_okey, ord.max_okey, cells);
       ord.cell_psum.resize(cells.size());

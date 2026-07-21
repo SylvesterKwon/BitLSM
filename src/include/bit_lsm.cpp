@@ -34,10 +34,12 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
       DB::Open(rocksdb_options_, db_path, column_families, &cf_handles_, &db_);
   if (!s.ok()) throw std::runtime_error("Failed to open DB: " + s.ToString());
 
-  estimator_ = make_unique<CardinalityEstimator>(
-      static_cast<DBImpl*>(db_),
-      static_cast<ColumnFamilyHandleImpl*>(cf_handles_[0])->cfd(),
-      SABISchema::FromOptions(bit_lsm_options_));
+  if (bit_lsm_options_.enable_estimator) {
+    estimator_ = make_unique<CardinalityEstimator>(
+        static_cast<DBImpl*>(db_),
+        static_cast<ColumnFamilyHandleImpl*>(cf_handles_[0])->cfd(),
+        SABISchema::FromOptions(bit_lsm_options_), bit_lsm_options_);
+  }
 }
 
 BitLSM::~BitLSM() {

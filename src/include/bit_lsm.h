@@ -46,14 +46,17 @@ class BitLSM {
   // To use RocksDB API
   rocksdb::DB* GetInternalDB() { return db_; }
 
-  // Live-set cardinality statistics for planning (see bit_lsm_estimator.h)
-  CardinalityEstimator& Estimator() { return *estimator_; }
+  // Live-set cardinality statistics for planning (see bit_lsm_estimator.h).
+  // nullptr unless BitLSMOptions::enable_estimator is set.
+  CardinalityEstimator* Estimator() { return estimator_.get(); }
 
   // Planning-time cardinality estimate for a conjunctive SABI query against
   // the default CF's live SST set. See EstimateResult for the consumption
-  // contract (cost slot vs row slot, fallback flags).
+  // contract (cost slot vs row slot, fallback flags). With the estimator
+  // disabled every queried attr is flagged as fallback.
   EstimateResult EstimateSelectivity(const SABIQuery& q) {
-    return estimator_->Estimate(q);
+    return estimator_ ? estimator_->Estimate(q)
+                      : CardinalityEstimator::FallbackResult(q);
   }
 
   // For debug
