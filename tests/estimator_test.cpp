@@ -2,6 +2,7 @@
 #include <rocksdb/db.h>
 #include <rocksdb/options.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -254,4 +255,190 @@ TEST_F(BitLSMTestBase, NdvCapDemotesToTopK) {
   EXPECT_EQ(uno.value_counts.size(), CardinalityEstimator::kMaxTrackedValues);
   EXPECT_NEAR(uno.total, static_cast<double>(ndv), 1.0)
       << "total keeps the full mass, including untracked values";
+}
+
+namespace {
+
+SABICondition Ord(uint32_t attr, CompareOp op, int64_t v) {
+  return SABICondition{attr, op, I64ToOkey(v), ""};
+}
+
+SABICondition Uno(uint32_t attr, const std::string& v) {
+  return SABICondition{attr, CompareOp::EQUAL, 0, v};
+}
+
+double EstimatedRows(const EstimateResult& r) {
+  return r.selectivity * static_cast<double>(r.physical_rows);
+}
+
+}  // namespace
+
+// Workload: 1000 rows 0..999 over two SSTs; BETWEEN-shaped query arriving as
+//           CNF, i.e. TWO clauses on the same attr (a0 >= 0, a0 <= 499).
+// Threat: treating same-attr clauses as independent predicates squares the
+//         range selectivity (0.5 * 0.5 -> 250 est instead of 500) — the
+//         exact H1 range q-error failure this API exists to fix.
+TEST_F(BitLSMTestBase, EstimateIntersectsSameAttrRanges) {
+  BitLSM& db = OpenDB(EstOptions());
+  for (int64_t i = 0; i < 1000; ++i) {
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {i, std::string("x")}, "p").ok());
+    if (i == 499) FlushDB(db);
+  }
+  FlushDB(db);
+
+  SABIQuery q;
+  q.clause_groups = {{Ord(0, CompareOp::GREATER_EQUAL, 0)},
+                     {Ord(0, CompareOp::LESS_EQUAL, 499)}};
+  EstimateResult r = db.EstimateSelectivity(q);
+  EXPECT_EQ(r.physical_rows, 1000u);
+  EXPECT_TRUE(r.fallback_attrs.empty());
+  EXPECT_NEAR(EstimatedRows(r), 500.0, 40.0);
+}
+
+// Workload: a0 uniform 0..999 and a1 red/blue alternating (statistically
+//           independent), conjunctive query a0 <= 499 AND a1 = "red".
+// Threat: the independence-product combine must land near truth (250) for
+//         uncorrelated attrs — acceptance criterion for the AND path.
+TEST_F(BitLSMTestBase, EstimateConjunctionIndependenceProduct) {
+  BitLSM& db = OpenDB(EstOptions());
+  for (int64_t i = 0; i < 1000; ++i) {
+    ASSERT_TRUE(db.Put("k" + std::to_string(i),
+                       {i, std::string(i % 2 ? "red" : "blue")}, "p")
+                    .ok());
+    if (i == 499) FlushDB(db);
+  }
+  FlushDB(db);
+
+  SABIQuery q;
+  q.clause_groups = {{Ord(0, CompareOp::LESS_EQUAL, 499)}, {Uno(1, "red")}};
+  EstimateResult r = db.EstimateSelectivity(q);
+  EXPECT_TRUE(r.fallback_attrs.empty());
+  EXPECT_NEAR(EstimatedRows(r), 250.0, 40.0);
+}
+
+// Workload: red x150 / blue x30 across two SSTs; equality on a tracked value
+//           and on a value absent from the (exact, untruncated) dictionary.
+// Threat: a tracked value must reproduce its merged count; an absent value
+//         under an exact dictionary is provably matchless in live SSTs and
+//         must estimate 0 — flagging it as fallback would push the caller
+//         back onto the magic constants for a known answer.
+TEST_F(BitLSMTestBase, EstimateUnorderedEqualityAndAbsentValue) {
+  BitLSM& db = OpenDB(EstOptions());
+  int64_t key = 0;
+  for (int i = 0; i < 100; ++i, ++key)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(key), {key, std::string("red")}, "p").ok());
+  FlushDB(db);
+  for (int i = 0; i < 50; ++i, ++key)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(key), {key, std::string("red")}, "p").ok());
+  for (int i = 0; i < 30; ++i, ++key)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(key), {key, std::string("blue")}, "p")
+            .ok());
+  FlushDB(db);
+
+  SABIQuery q_red;
+  q_red.clause_groups = {{Uno(1, "red")}};
+  EstimateResult r = db.EstimateSelectivity(q_red);
+  EXPECT_TRUE(r.fallback_attrs.empty());
+  EXPECT_NEAR(EstimatedRows(r), 150.0, 1e-6);
+
+  SABIQuery q_green;
+  q_green.clause_groups = {{Uno(1, "green")}};
+  EstimateResult g = db.EstimateSelectivity(q_green);
+  EXPECT_TRUE(g.fallback_attrs.empty());
+  EXPECT_DOUBLE_EQ(g.selectivity, 0.0);
+}
+
+// Workload: one OR clause spanning both unordered values (red OR blue) over
+//           the red x150 / blue x30 data.
+// Threat: an OR clause folded like an AND (product) collapses the estimate
+//         to ~14% instead of 100%; the union bound must cap at full mass.
+TEST_F(BitLSMTestBase, EstimateOrClauseUnionBound) {
+  BitLSM& db = OpenDB(EstOptions());
+  int64_t key = 0;
+  for (int i = 0; i < 150; ++i, ++key)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(key), {key, std::string("red")}, "p").ok());
+  for (int i = 0; i < 30; ++i, ++key)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(key), {key, std::string("blue")}, "p")
+            .ok());
+  FlushDB(db);
+
+  SABIQuery q;
+  q.clause_groups = {{Uno(1, "red"), Uno(1, "blue")}};
+  EstimateResult r = db.EstimateSelectivity(q);
+  EXPECT_TRUE(r.fallback_attrs.empty());
+  EXPECT_NEAR(EstimatedRows(r), 180.0, 1e-6);
+}
+
+// Workload: rows only in the memtable (no flush yet), then a query touching
+//           both attrs.
+// Threat: D-E3 excludes the memtable, so the pre-first-flush estimate is
+//         meaningless; the caller must get an explicit per-attr fallback
+//         flag, not a silent selectivity over zero rows.
+TEST_F(BitLSMTestBase, EstimateEmptyLiveSetFlagsFallback) {
+  BitLSM& db = OpenDB(EstOptions());
+  for (int64_t i = 0; i < 100; ++i)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {i, std::string("a")}, "p").ok());
+
+  SABIQuery q;
+  q.clause_groups = {{Ord(0, CompareOp::GREATER_EQUAL, 10)}, {Uno(1, "a")}};
+  EstimateResult r = db.EstimateSelectivity(q);
+  EXPECT_EQ(r.physical_rows, 0u);
+  EXPECT_DOUBLE_EQ(r.selectivity, 1.0);
+  EXPECT_EQ(r.fallback_attrs, (std::vector<uint32_t>{0, 1}));
+}
+
+// Workload: equality on an ORDERED attr whose live span is the single value
+//           42 (EQUAL folds into a degenerate [42,42] window).
+// Threat: EQUAL handled as an unbounded window (or the point mass smeared
+//         away) breaks equality estimates on ordered attrs.
+TEST_F(BitLSMTestBase, EstimateOrderedEqualityPointMass) {
+  BitLSM& db = OpenDB(EstOptions());
+  for (int64_t i = 0; i < 200; ++i)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {int64_t{42}, std::string("a")}, "p")
+            .ok());
+  FlushDB(db);
+
+  SABIQuery q42;
+  q42.clause_groups = {{Ord(0, CompareOp::EQUAL, 42)}};
+  EXPECT_NEAR(EstimatedRows(db.EstimateSelectivity(q42)), 200.0, 1e-6);
+
+  SABIQuery q43;
+  q43.clause_groups = {{Ord(0, CompareOp::EQUAL, 43)}};
+  EXPECT_DOUBLE_EQ(db.EstimateSelectivity(q43).selectivity, 0.0);
+}
+
+// Workload: zipf-like skew (value v in 1..100 appears floor(1000/v) times,
+//           ~5187 rows) over two SSTs; wide range query a0 <= 10 with true
+//           selectivity ~56%.
+// Threat: acceptance criterion — under skew, uniform-within-bin projection
+//         plus grid interpolation must keep wide-range q-error <= 1.5.
+TEST_F(BitLSMTestBase, EstimateZipfWideRangeQError) {
+  BitLSM& db = OpenDB(EstOptions());
+  std::vector<int64_t> vals;
+  for (int64_t v = 1; v <= 100; ++v)
+    for (int64_t c = 0; c < 1000 / v; ++c) vals.push_back(v);
+
+  int64_t truth = 0;
+  for (size_t i = 0; i < vals.size(); ++i) {
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {vals[i], std::string("z")}, "p").ok());
+    if (vals[i] <= 10) ++truth;
+    if (i == vals.size() / 2) FlushDB(db);
+  }
+  FlushDB(db);
+
+  SABIQuery q;
+  q.clause_groups = {{Ord(0, CompareOp::LESS_EQUAL, 10)}};
+  double est = EstimatedRows(db.EstimateSelectivity(q));
+  ASSERT_GT(est, 0.0);
+  double q_error = std::max(est / truth, truth / est);
+  EXPECT_LE(q_error, 1.5) << "est " << est << " vs truth " << truth;
 }

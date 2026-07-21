@@ -1,6 +1,8 @@
 #include "bit_lsm_estimator.h"
 
 #include <algorithm>
+#include <map>
+#include <set>
 
 #include "db/column_family.h"
 #include "db/db_impl/db_impl.h"
@@ -97,6 +99,137 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Get() {
     delete sv;
   }
   return cached_;
+}
+
+namespace {
+
+// Per-attr okey window accumulated from single-condition clauses; conditions
+// on the same attr intersect here instead of multiplying, so BETWEEN-shaped
+// CNF (a >= x, a <= y as two clauses) is estimated as one range.
+struct OkeyWindow {
+  uint64_t lo = 0;
+  uint64_t hi = UINT64_MAX;
+  bool empty = false;  // a strict bound fell off the okey domain edge
+
+  void Apply(CompareOp op, uint64_t okey) {
+    switch (op) {
+      case CompareOp::EQUAL:
+        lo = std::max(lo, okey);
+        hi = std::min(hi, okey);
+        break;
+      case CompareOp::GREATER:
+        if (okey == UINT64_MAX)
+          empty = true;
+        else
+          lo = std::max(lo, okey + 1);
+        break;
+      case CompareOp::GREATER_EQUAL:
+        lo = std::max(lo, okey);
+        break;
+      case CompareOp::LESS:
+        if (okey == 0)
+          empty = true;
+        else
+          hi = std::min(hi, okey - 1);
+        break;
+      case CompareOp::LESS_EQUAL:
+        hi = std::min(hi, okey);
+        break;
+    }
+  }
+};
+
+// Standalone selectivity of one condition (used for OR-clause members).
+// Returns -1 when the condition is unestimatable (caller flags fallback).
+double ConditionSelectivity(const SABICondition& cond, const GlobalStats& stats,
+                            const std::vector<AttrRole>& roles, double phys) {
+  if (cond.attr_idx >= roles.size()) return -1;
+  if (roles[cond.attr_idx] == AttrRole::ORDERED) {
+    const auto& ord = stats.ordered[cond.attr_idx];
+    if (!ord.has_value()) return -1;
+    OkeyWindow w;
+    w.Apply(cond.op, cond.okey);
+    if (w.empty || w.lo > w.hi) return 0;
+    return ord->RangeMass(w.lo, w.hi) / phys;
+  }
+  if (cond.op != CompareOp::EQUAL) return -1;
+  const auto& uno = stats.unordered[cond.attr_idx];
+  if (!uno.has_value()) return -1;
+  auto it = uno->value_counts.find(cond.bytes);
+  if (it != uno->value_counts.end()) return it->second / phys;
+  // Absent from an exact dictionary = provably matchless in live SSTs;
+  // absent after truncation only means "not top-k".
+  return uno->truncated ? -1 : 0;
+}
+
+}  // namespace
+
+EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
+  std::shared_ptr<const GlobalStats> stats = Get();
+  EstimateResult res;
+  res.physical_rows = stats->physical_rows;
+
+  std::set<uint32_t> fallback;
+  if (stats->live_sst_count == 0 || stats->physical_rows == 0) {
+    // D-E3 documented limit: before the first flush (or on an empty CF)
+    // there is nothing to estimate from; flag every queried attr.
+    for (const auto& clause : q.clause_groups)
+      for (const auto& cond : clause) fallback.insert(cond.attr_idx);
+    res.fallback_attrs.assign(fallback.begin(), fallback.end());
+    return res;
+  }
+
+  double phys = static_cast<double>(stats->physical_rows);
+  double product = 1.0;
+  std::map<uint32_t, OkeyWindow> windows;
+
+  for (const auto& clause : q.clause_groups) {
+    if (clause.empty()) continue;  // trivially satisfiable
+    if (clause.size() == 1) {
+      const SABICondition& cond = clause[0];
+      if (cond.attr_idx < schema_.attr_num() &&
+          schema_.roles[cond.attr_idx] == AttrRole::ORDERED) {
+        windows[cond.attr_idx].Apply(cond.op, cond.okey);
+      } else {
+        double f = ConditionSelectivity(cond, *stats, schema_.roles, phys);
+        if (f < 0)
+          fallback.insert(cond.attr_idx);
+        else
+          product *= f;
+      }
+    } else {
+      // OR clause: union bound capped at 1. One unestimatable member makes
+      // the whole clause unbounded, so it contributes factor 1 and a flag.
+      double sum = 0;
+      bool clause_fallback = false;
+      for (const SABICondition& cond : clause) {
+        double f = ConditionSelectivity(cond, *stats, schema_.roles, phys);
+        if (f < 0) {
+          clause_fallback = true;
+          fallback.insert(cond.attr_idx);
+        } else {
+          sum += f;
+        }
+      }
+      if (!clause_fallback) product *= std::min(1.0, sum);
+    }
+  }
+
+  for (const auto& [attr_idx, w] : windows) {
+    const auto& ord = stats->ordered[attr_idx];
+    if (!ord.has_value()) {
+      fallback.insert(attr_idx);
+      continue;
+    }
+    if (w.empty || w.lo > w.hi)
+      product = 0;
+    else
+      product *= ord->RangeMass(w.lo, w.hi) / phys;
+  }
+
+  res.selectivity = std::min(1.0, std::max(0.0, product));
+  res.fallback_attrs.assign(fallback.begin(), fallback.end());
+  return res;
 }
 
 std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(

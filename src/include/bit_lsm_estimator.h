@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "bit_lsm_encoding.h"
+#include "bit_lsm_query.h"  // SABIQuery
 
 namespace rocksdb {
 class DBImpl;
@@ -65,6 +66,26 @@ struct GlobalStats {
   uint64_t live_sst_count = 0;
 };
 
+// What EstimateSelectivity returns. The pair (selectivity, physical_rows)
+// serves both consumer slots: expected fetches (cost) = selectivity *
+// physical_rows, expected output rows = selectivity * the caller's own
+// logical row count. physical_rows is the live-SST sum, shadowing
+// uncorrected — correcting by a live/physical ratio is the caller's job.
+struct EstimateResult {
+  // Fraction of physical live-SST rows expected to match the query,
+  // combined across attrs under the independence assumption. In [0, 1];
+  // 0 means "provably matchless in live SSTs" (memtable-only rows excepted,
+  // see D-E3).
+  double selectivity = 1.0;
+  // Live-SST data entries minus tombstone markers.
+  uint64_t physical_rows = 0;
+  // Attrs whose predicates could not be estimated (no live SSTs yet, attr
+  // without stats, equality on a value dropped by NDV truncation). Their
+  // factor in `selectivity` is 1.0; the caller applies its own fallback
+  // (e.g. sysvar constants) for exactly these attrs.
+  std::vector<uint32_t> fallback_attrs;
+};
+
 // Owns the lazily rebuilt GlobalStats cache for one column family. Get() is
 // the planning hot path: a SuperVersion-number comparison plus a shared_ptr
 // copy on a cache hit. The SST set only changes when a new SuperVersion is
@@ -82,6 +103,14 @@ class CardinalityEstimator {
   // the SuperVersion changed since the cached build. Thread-safe; the
   // returned snapshot is immutable and safe to use without the DB lock.
   std::shared_ptr<const GlobalStats> Get();
+
+  // Planning hot path: cached-stats lookup plus arithmetic only, no bitmap
+  // or row scans. ORDERED conditions from single-condition clauses intersect
+  // into one per-attr okey window (so BETWEEN-shaped CNF is not squared);
+  // UNORDERED equality reads the value dictionary; multi-condition (OR)
+  // clauses use a union bound capped at 1; attrs combine as an independence
+  // product.
+  EstimateResult Estimate(const SABIQuery& q);
 
  private:
   std::shared_ptr<const GlobalStats> Rebuild(rocksdb::SuperVersion* sv);

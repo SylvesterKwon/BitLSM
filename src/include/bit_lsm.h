@@ -49,6 +49,13 @@ class BitLSM {
   // Live-set cardinality statistics for planning (see bit_lsm_estimator.h)
   CardinalityEstimator& Estimator() { return *estimator_; }
 
+  // Planning-time cardinality estimate for a conjunctive SABI query against
+  // the default CF's live SST set. See EstimateResult for the consumption
+  // contract (cost slot vs row slot, fallback flags).
+  EstimateResult EstimateSelectivity(const SABIQuery& q) {
+    return estimator_->Estimate(q);
+  }
+
   // For debug
   void Statistics();
   // ...
