@@ -3,9 +3,11 @@
 #include <rocksdb/options.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "bit_lsm_encoding.h"
@@ -441,4 +443,47 @@ TEST_F(BitLSMTestBase, EstimateZipfWideRangeQError) {
   ASSERT_GT(est, 0.0);
   double q_error = std::max(est / truth, truth / est);
   EXPECT_LE(q_error, 1.5) << "est " << est << " vs truth " << truth;
+}
+
+// Workload: a writer thread doing put+flush churn while the main thread
+//           hammers EstimateSelectivity.
+// Threat: rebuild walks the version storage and table cache while flushes
+//         install new SuperVersions; a lifetime race there corrupts stats or
+//         crashes planning mid-flight.
+TEST_F(BitLSMTestBase, EstimateSafeDuringFlushChurn) {
+  BitLSM& db = OpenDB(EstOptions());
+  for (int64_t i = 0; i < 500; ++i)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {i % 1000, std::string("a")}, "p")
+            .ok());
+  FlushDB(db);
+
+  std::atomic<bool> writer_ok{true};
+  std::thread writer([&db, &writer_ok] {
+    int64_t key = 0;
+    for (int round = 0; round < 20; ++round) {
+      for (int i = 0; i < 200; ++i, ++key) {
+        if (!db.Put("c" + std::to_string(key), {key % 1000, std::string("b")},
+                    "p")
+                 .ok())
+          writer_ok = false;
+      }
+      if (!db.GetInternalDB()->Flush(rocksdb::FlushOptions()).ok())
+        writer_ok = false;
+    }
+  });
+
+  SABIQuery q;
+  q.clause_groups = {{Ord(0, CompareOp::LESS_EQUAL, 500)}, {Uno(1, "a")}};
+  for (int i = 0; i < 2000; ++i) {
+    EstimateResult r = db.EstimateSelectivity(q);
+    EXPECT_GE(r.selectivity, 0.0);
+    EXPECT_LE(r.selectivity, 1.0);
+    EXPECT_GE(r.physical_rows, 500u);
+  }
+  writer.join();
+  EXPECT_TRUE(writer_ok);
+
+  EstimateResult final_r = db.EstimateSelectivity(q);
+  EXPECT_EQ(final_r.physical_rows, 500u + 20u * 200u);
 }
