@@ -5,6 +5,7 @@
 
 #include <string>
 
+#include "bit_lsm_estimator.h"
 #include "bit_lsm_iterator.h"
 #include "bit_lsm_query.h"
 #include "bit_lsm_utils.h"  // Attr
@@ -19,6 +20,7 @@ class BitLSM {
   rocksdb::Options rocksdb_options_;
   BitLSMOptions bit_lsm_options_;
   ValueLayout layout_;
+  std::unique_ptr<CardinalityEstimator> estimator_;
 
   // Helper functions
 
@@ -43,6 +45,9 @@ class BitLSM {
 
   // To use RocksDB API
   rocksdb::DB* GetInternalDB() { return db_; }
+
+  // Live-set cardinality statistics for planning (see bit_lsm_estimator.h)
+  CardinalityEstimator& Estimator() { return *estimator_; }
 
   // For debug
   void Statistics();
