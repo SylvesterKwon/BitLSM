@@ -87,14 +87,21 @@ struct EstimateResult {
 };
 
 // Owns the lazily rebuilt GlobalStats cache for one column family. Get() is
-// the planning hot path: a SuperVersion-number comparison plus a shared_ptr
-// copy on a cache hit. The SST set only changes when a new SuperVersion is
-// installed (flush/compaction), so that number doubles as the dirty flag —
-// no write-path hook needed.
+// the planning hot path, checked in two tiers: (1) SuperVersion number
+// unchanged since the last check -> serve the cached snapshot; (2) on a new
+// SuperVersion, diff the live file set against the last rebuild's (in-memory
+// metadata only, no table opens) and rebuild only when at least
+// kStaleRowFraction of the rows changed — InnoDB-style auto-recalc. While
+// one thread rebuilds, everyone else keeps serving the previous snapshot,
+// so estimates may lag by up to that fraction of the rows (plus the
+// memtable, D-E3) — acceptable for cost estimation by design.
 class CardinalityEstimator {
  public:
   static constexpr uint32_t kGridCells = 256;         // D-E2
   static constexpr size_t kMaxTrackedValues = 10000;  // D-E4 NDV cap
+  // Rebuild only when this fraction of rows sits in files born or dead
+  // since the last rebuild.
+  static constexpr double kStaleRowFraction = 0.1;
 
   CardinalityEstimator(rocksdb::DBImpl* db_impl, rocksdb::ColumnFamilyData* cfd,
                        SABISchema schema);
@@ -119,9 +126,14 @@ class CardinalityEstimator {
   rocksdb::ColumnFamilyData* cfd_;
   SABISchema schema_;
 
-  std::mutex mu_;
-  uint64_t built_sv_number_ = 0;  // 0 = never built
+  std::mutex mu_;                   // guards cached_ / checked_sv_number_
+  uint64_t checked_sv_number_ = 0;  // SV number last reconciled; 0 = never
   std::shared_ptr<const GlobalStats> cached_;
+
+  // Serializes the slow path; fields below are touched only by its holder.
+  std::mutex rebuild_mu_;
+  std::unordered_map<uint64_t, uint64_t> built_files_;  // file# -> entries
+  uint64_t built_entries_ = 0;
 };
 
 }  // namespace bit_lsm

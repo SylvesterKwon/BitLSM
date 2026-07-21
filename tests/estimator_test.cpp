@@ -485,5 +485,73 @@ TEST_F(BitLSMTestBase, EstimateSafeDuringFlushChurn) {
   EXPECT_TRUE(writer_ok);
 
   EstimateResult final_r = db.EstimateSelectivity(q);
-  EXPECT_EQ(final_r.physical_rows, 500u + 20u * 200u);
+  // Staleness bound: unbuilt drift stays under kStaleRowFraction of the
+  // built rows, so the served count may lag the true 4500 by at most ~10%.
+  EXPECT_GE(final_r.physical_rows, 4091u);
+  EXPECT_LE(final_r.physical_rows, 4500u);
+}
+
+// Workload: a 10000-row base SST, then one 500-row flush (5% of the built
+//           rows).
+// Threat: rebuilding on every SuperVersion change ties rebuild frequency to
+//         the LSM event rate instead of the data change rate; sub-threshold
+//         churn must keep serving the existing snapshot (bounded staleness
+//         is the contract).
+TEST_F(BitLSMTestBase, BelowThresholdFlushServesExistingStats) {
+  rocksdb_options_.disable_auto_compactions = true;
+  BitLSM& db = OpenDB(EstOptions());
+  int64_t key = 0;
+  for (int i = 0; i < 10000; ++i, ++key)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(key), {key % 1000, std::string("a")}, "p")
+            .ok());
+  FlushDB(db);
+  std::shared_ptr<const GlobalStats> s1 = db.Estimator().Get();
+  EXPECT_EQ(s1->physical_rows, 10000u);
+
+  for (int i = 0; i < 500; ++i, ++key)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(key), {key % 1000, std::string("a")}, "p")
+            .ok());
+  FlushDB(db);
+  std::shared_ptr<const GlobalStats> s2 = db.Estimator().Get();
+  EXPECT_EQ(s1.get(), s2.get()) << "5% drift must not trigger a rebuild";
+  EXPECT_EQ(s2->physical_rows, 10000u);
+}
+
+// Workload: a 10000-row base SST, then three 400-row flushes — cumulative
+//           drift 4% / 8% / 12% relative to the last rebuild.
+// Threat: measuring drift against the last *check* instead of the last
+//         *rebuild* resets the counter every flush, so small flushes would
+//         never accumulate past the threshold and stats would go stale
+//         forever.
+TEST_F(BitLSMTestBase, CumulativeDriftTriggersRebuild) {
+  rocksdb_options_.disable_auto_compactions = true;
+  BitLSM& db = OpenDB(EstOptions());
+  int64_t key = 0;
+  for (int i = 0; i < 10000; ++i, ++key)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(key), {key % 1000, std::string("a")}, "p")
+            .ok());
+  FlushDB(db);
+  std::shared_ptr<const GlobalStats> s1 = db.Estimator().Get();
+
+  for (int flush = 0; flush < 2; ++flush) {
+    for (int i = 0; i < 400; ++i, ++key)
+      ASSERT_TRUE(
+          db.Put("k" + std::to_string(key), {key % 1000, std::string("a")}, "p")
+              .ok());
+    FlushDB(db);
+    EXPECT_EQ(db.Estimator().Get().get(), s1.get())
+        << "drift " << 4 * (flush + 1) << "% is still below the threshold";
+  }
+
+  for (int i = 0; i < 400; ++i, ++key)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(key), {key % 1000, std::string("a")}, "p")
+            .ok());
+  FlushDB(db);
+  std::shared_ptr<const GlobalStats> s2 = db.Estimator().Get();
+  EXPECT_NE(s1.get(), s2.get()) << "12% cumulative drift must rebuild";
+  EXPECT_EQ(s2->physical_rows, 11200u);
 }

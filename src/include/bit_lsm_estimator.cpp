@@ -83,22 +83,75 @@ CardinalityEstimator::CardinalityEstimator(DBImpl* db_impl,
     : db_impl_(db_impl), cfd_(cfd), schema_(std::move(schema)) {}
 
 std::shared_ptr<const GlobalStats> CardinalityEstimator::Get() {
-  lock_guard<mutex> lock(mu_);
-  if (cached_ && built_sv_number_ == cfd_->GetSuperVersionNumber())
-    return cached_;
+  {
+    lock_guard<mutex> lock(mu_);
+    if (cached_ && checked_sv_number_ == cfd_->GetSuperVersionNumber())
+      return cached_;
+  }
+
+  // Slow path (new SuperVersion): one thread reconciles; everyone else keeps
+  // serving the previous snapshot — bounded staleness is the contract.
+  std::unique_lock<std::mutex> rebuild_lock(rebuild_mu_, std::try_to_lock);
+  if (!rebuild_lock.owns_lock()) {
+    {
+      lock_guard<mutex> lock(mu_);
+      if (cached_) return cached_;
+    }
+    rebuild_lock.lock();  // no snapshot to serve yet: wait for the first build
+  }
+  {
+    lock_guard<mutex> lock(mu_);
+    if (cached_ && checked_sv_number_ == cfd_->GetSuperVersionNumber())
+      return cached_;
+  }
 
   SuperVersion* sv = cfd_->GetReferencedSuperVersion(db_impl_);
-  cached_ = Rebuild(sv);
-  // Record the number of the SuperVersion actually read: if a newer one
-  // landed between the staleness check and the ref, the next Get() rebuilds.
-  built_sv_number_ = sv->version_number;
+  uint64_t sv_number = sv->version_number;
+
+  // Tier-2 check: fraction of rows sitting in files born or dead since the
+  // last rebuild, from in-memory metadata only (no table opens).
+  std::unordered_map<uint64_t, uint64_t> live;
+  uint64_t live_entries = 0;
+  const VersionStorageInfo* storage = sv->current->storage_info();
+  for (int level = 0; level < storage->num_non_empty_levels(); ++level) {
+    for (const FileMetaData* meta : storage->LevelFiles(level)) {
+      live.emplace(meta->fd.GetNumber(), meta->num_entries);
+      live_entries += meta->num_entries;
+    }
+  }
+  uint64_t changed = 0;
+  for (const auto& [file, entries] : live)
+    if (!built_files_.count(file)) changed += entries;
+  for (const auto& [file, entries] : built_files_)
+    if (!live.count(file)) changed += entries;
+
+  // cached_ is written only under rebuild_mu_, which we hold.
+  bool fresh_enough =
+      cached_ != nullptr && built_entries_ > 0 &&
+      static_cast<double>(changed) <
+          kStaleRowFraction * static_cast<double>(built_entries_);
+
+  std::shared_ptr<const GlobalStats> result;
+  if (fresh_enough) {
+    lock_guard<mutex> lock(mu_);
+    checked_sv_number_ = sv_number;  // re-stamp: keep serving the snapshot
+    result = cached_;
+  } else {
+    result = Rebuild(sv);
+    built_files_ = std::move(live);
+    built_entries_ = live_entries;
+    lock_guard<mutex> lock(mu_);
+    cached_ = result;
+    checked_sv_number_ = sv_number;
+  }
+
   if (sv->Unref()) {
     db_impl_->mutex()->Lock();
     sv->Cleanup();
     db_impl_->mutex()->Unlock();
     delete sv;
   }
-  return cached_;
+  return result;
 }
 
 namespace {
