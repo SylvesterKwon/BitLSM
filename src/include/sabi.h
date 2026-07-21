@@ -66,6 +66,16 @@ class SABIUDIIterator;
 class SABIReader;
 class SABIFactory;
 
+// Per-SST histogram of one ORDERED attribute, the raw material for DB-level
+// cardinality estimation: bin i covers okeys [boundaries[i], boundaries[i+1])
+// (the last bin also includes its upper edge), counts[i] is that bin's row
+// count. NULL and tombstone rows sit in no value bin, so they are excluded by
+// construction.
+struct OrderedAttrHistogram {
+  std::vector<uint64_t> boundaries;  // absolute okeys, bin_count + 1
+  std::vector<uint64_t> counts;      // bin_count
+};
+
 class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
  private:
   SABISchema schema_;
@@ -177,6 +187,10 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   // (safe to skip all bitmap work and block fetches). Never returns false
   // for a query that could actually match a row.
   bool QueryCanMatch(const SABIQuery& q) const;
+  // Fills `out` with attr_idx's histogram in absolute okey coordinates.
+  // Returns false when the attr is out of range, not ORDERED, or has zero
+  // binned rows (its stored boundaries are meaningless then).
+  bool OrderedHistogram(uint32_t attr_idx, OrderedAttrHistogram* out) const;
   void Dump();
 };
 

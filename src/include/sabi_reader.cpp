@@ -228,6 +228,34 @@ void SABIReader::Dump() {
   cout << "\n";
 }
 
+bool SABIReader::OrderedHistogram(uint32_t attr_idx,
+                                  OrderedAttrHistogram* out) const {
+  if (attr_idx >= schema_.attr_num()) return false;
+  if (schema_.roles[attr_idx] != AttrRole::ORDERED) return false;
+
+  // The attr's bins occupy a contiguous range of the flat bitmap array,
+  // starting after every preceding attr's bins.
+  uint32_t bin_offset = 0;
+  for (uint32_t i = 0; i < attr_idx; ++i)
+    bin_offset += bitmap_index.bitmap_nums[i];
+  uint32_t bins = bitmap_index.bitmap_nums[attr_idx];
+
+  std::vector<uint64_t> counts(bins);
+  uint64_t total = 0;
+  for (uint32_t b = 0; b < bins; ++b) {
+    counts[b] = bitmap_index.bitmaps[bin_offset + b].cardinality();
+    total += counts[b];
+  }
+  // Zero binned rows (e.g. every row NULL): the stored boundaries come from
+  // an empty t-digest and carry no information.
+  if (total == 0) return false;
+
+  out->boundaries =
+      std::get<std::vector<uint64_t>>(bitmap_index.binning_policy[attr_idx]);
+  out->counts = std::move(counts);
+  return true;
+}
+
 bool SABIReader::QueryCanMatch(const SABIQuery& q) const {
   for (const auto& clause : q.clause_groups) {
     if (clause.empty()) continue;  // empty clause is trivially satisfiable
