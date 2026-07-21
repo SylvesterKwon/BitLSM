@@ -51,10 +51,9 @@ class BitLSM {
   // nullptr unless BitLSMOptions::enable_estimator is set.
   CardinalityEstimator* Estimator() { return estimator_.get(); }
 
-  // Planning-time cardinality estimate for a conjunctive SABI query against
-  // the default CF's live SST set. See EstimateResult for the consumption
-  // contract (cost slot vs row slot, fallback flags). With the estimator
-  // disabled every queried attr is flagged as fallback.
+  // Planning-time cardinality estimate against the default CF's live SST
+  // set; see EstimateResult for the consumption contract. With the
+  // estimator disabled every queried attr is flagged as fallback.
   EstimateResult EstimateSelectivity(const SABIQuery& q) {
     return estimator_ ? estimator_->Estimate(q)
                       : CardinalityEstimator::FallbackResult(q);

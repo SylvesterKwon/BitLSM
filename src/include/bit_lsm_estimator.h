@@ -24,10 +24,9 @@ struct SuperVersion;
 namespace bit_lsm {
 
 // Global per-attr statistics over the live SST set, aggregated from the
-// per-SST SABI accessors (SABIReader::OrderedHistogram / -ValueCounts) at
-// rebuild time. A pure function of the live SST set: projection error is per
-// SST and dies with it, so estimates never drift across compaction churn.
-// The memtable is excluded by design (D-E3): before the first flush every
+// per-SST SABI accessors (SABIReader::OrderedHistogram / -ValueCounts).
+// A pure function of the live SST set, so estimates never drift across
+// compaction churn. The memtable is excluded: before the first flush every
 // attr slot is empty and physical_rows is 0.
 
 // One ORDERED attr: per-SST equi-depth histograms projected onto a uniform
@@ -90,27 +89,23 @@ struct EstimateResult {
   std::vector<uint32_t> fallback_attrs;
 };
 
-// Owns the GlobalStats cache for one column family, refreshed by a small
-// background worker: flush/compaction completion (StatsRefreshListener)
-// signals the worker, which diffs the live file set against the last
-// rebuild's (in-memory metadata only, no table opens) and rebuilds only when
-// at least kStaleRowFraction of the rows changed — InnoDB-style auto-recalc,
-// paced by estimator_min_rebuild_interval_ms so churn storms (bulk load,
-// compaction cascades) coalesce into one pass per interval. Queries never
-// rebuild: Stats() is a snapshot-pointer copy, so estimates may lag by up to
-// the drift threshold (plus the memtable, D-E3) — acceptable for cost
-// estimation by design.
+// Owns the GlobalStats cache for one column family, refreshed by a
+// background worker: flush/compaction completion signals the worker, which
+// diffs the live file set (in-memory metadata only) and rebuilds when at
+// least kStaleRowFraction of the rows changed, at most once per
+// estimator_min_rebuild_interval_ms. Queries never rebuild: Stats() is a
+// snapshot-pointer copy, and estimates may lag by up to the drift threshold
+// plus the memtable.
 class CardinalityEstimator {
  public:
-  static constexpr size_t kMaxTrackedValues = 10000;  // D-E4 NDV cap
+  static constexpr size_t kMaxTrackedValues =
+      10000;  // value-dictionary NDV cap
   // Rebuild only when this fraction of rows sits in files born or dead
   // since the last rebuild.
   static constexpr double kStaleRowFraction = 0.1;
 
-  // Grid resolution and rebuild pacing come from BitLSMOptions
-  // (estimator_grid_cells, estimator_min_rebuild_interval_ms). Starts the
-  // refresh worker and primes it with an initial build of the current live
-  // set (covers reopen, where no flush event ever fires).
+  // Starts the refresh worker and primes an initial build of the current
+  // live set (a reopened DB sees no flush event).
   CardinalityEstimator(rocksdb::DBImpl* db_impl, rocksdb::ColumnFamilyData* cfd,
                        SABISchema schema, const BitLSMOptions& options);
   // Joins the worker. Must run before the DB closes (the worker references
@@ -121,9 +116,8 @@ class CardinalityEstimator {
   // physical_rows 0, every queried attr flagged as fallback.
   static EstimateResult FallbackResult(const SABIQuery& q);
 
-  // Current stats snapshot: a pointer copy, never a rebuild, never null
-  // (empty stats before the first build). Immutable and safe to read
-  // without any lock.
+  // Current stats snapshot: a pointer copy, never null (empty before the
+  // first build), immutable and lock-free to read.
   std::shared_ptr<const GlobalStats> Stats();
 
   // Wakes the refresh worker (called from the RocksDB event listener).
@@ -133,12 +127,10 @@ class CardinalityEstimator {
   // listener timing.
   void TEST_Refresh();
 
-  // Planning hot path: cached-stats lookup plus arithmetic only, no bitmap
-  // or row scans. ORDERED conditions from single-condition clauses intersect
-  // into one per-attr okey window (so BETWEEN-shaped CNF is not squared);
-  // UNORDERED equality reads the value dictionary; multi-condition (OR)
-  // clauses use a union bound capped at 1; attrs combine as an independence
-  // product.
+  // Cached-stats arithmetic only, no bitmap or row scans. Same-attr
+  // conditions intersect into one okey window (BETWEEN-shaped CNF is not
+  // squared); UNORDERED equality reads the value dictionary; OR clauses use
+  // a union bound capped at 1; attrs combine as an independence product.
   EstimateResult Estimate(const SABIQuery& q);
 
  private:

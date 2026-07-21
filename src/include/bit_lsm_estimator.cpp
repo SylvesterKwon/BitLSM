@@ -22,8 +22,8 @@ double GlobalOrderedStats::CumBelow(uint64_t okey) const {
   uint64_t span = max_okey - min_okey;
   uint64_t s = okey - min_okey;
   if (span == 0 || s > span) return total;
-  // Position on the [0, cells] axis; s <= span < 2^64 so the double
-  // conversion works on the shifted span, not the okey magnitude (C5).
+  // Position on the [0, cells] axis, computed on the min-shifted span so
+  // narrow spans at large okey magnitudes keep double precision.
   double p = static_cast<double>(s) / static_cast<double>(span) *
              static_cast<double>(cell_psum.size());
   uint32_t cell = std::min(static_cast<uint32_t>(p),
@@ -44,8 +44,8 @@ namespace {
 
 // Projects one per-SST histogram onto the uniform grid over [min_okey,
 // max_okey]: each source bin's count is spread over the cells it overlaps,
-// proportional to overlap length (uniform-within-bin assumption). All
-// arithmetic runs on min_okey-shifted coordinates (C5).
+// proportional to overlap length (uniform-within-bin assumption), in
+// min_okey-shifted coordinates.
 void ProjectHistogram(const OrderedAttrHistogram& hist, uint64_t min_okey,
                       uint64_t max_okey, vector<double>& cells) {
   uint64_t span = max_okey - min_okey;
@@ -270,8 +270,7 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
   res.physical_rows = stats->physical_rows;
 
   if (stats->live_sst_count == 0 || stats->physical_rows == 0) {
-    // D-E3 documented limit: before the first flush (or on an empty CF)
-    // there is nothing to estimate from; flag every queried attr.
+    // No flushed rows to estimate from; flag every queried attr.
     return FallbackResult(q);
   }
   std::set<uint32_t> fallback;
@@ -324,8 +323,7 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
       product *= ord->RangeMass(w.lo, w.hi) / phys;
   }
 
-  // Planner convention (cf. Postgres clamp_row_est): never estimate below
-  // one matching row — stats have blind spots and 0 is absorbing in cost math.
+  // Never estimate below one matching row: 0 is absorbing in cost math.
   res.selectivity = std::min(1.0, std::max(product, 1.0 / phys));
   res.fallback_attrs.assign(fallback.begin(), fallback.end());
   return res;

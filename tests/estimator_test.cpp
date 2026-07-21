@@ -54,7 +54,7 @@ void CompactAllDB(BitLSM& db) {
 //           the value-500 boundary; query the aggregated stats.
 // Threat: a grid that merges per-SST equi-depth bins wrong (mass lost or
 //         double-counted, boundaries misprojected) skews every downstream
-//         range selectivity; C5-style okey-magnitude collapse would fold the
+//         range selectivity; okey-magnitude precision collapse would fold the
 //         narrow 0..999 span into one cell.
 TEST_F(BitLSMTestBase, OrderedRangeMassMatchesUniformData) {
   BitLSM& db = OpenDB(EstOptions());
@@ -227,7 +227,8 @@ TEST_F(BitLSMTestBase, PhysicalRowsCountEntriesNotMarkers) {
 }
 
 // Workload: rows written but never flushed (memtable only).
-// Threat: D-E3 excludes the memtable, so the pre-first-flush state must be
+// Threat: the memtable is excluded from stats, so the pre-first-flush state
+// must be
 //         visibly empty (callers emit a fallback flag) rather than crash or
 //         fabricate stats.
 TEST_F(BitLSMTestBase, EmptyBeforeFirstFlush) {
@@ -287,8 +288,7 @@ double EstimatedRows(const EstimateResult& r) {
 // Workload: 1000 rows 0..999 over two SSTs; BETWEEN-shaped query arriving as
 //           CNF, i.e. TWO clauses on the same attr (a0 >= 0, a0 <= 499).
 // Threat: treating same-attr clauses as independent predicates squares the
-//         range selectivity (0.5 * 0.5 -> 250 est instead of 500) — the
-//         exact H1 range q-error failure this API exists to fix.
+//         range selectivity (0.5 * 0.5 -> 250 est instead of 500).
 TEST_F(BitLSMTestBase, EstimateIntersectsSameAttrRanges) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 1000; ++i) {
@@ -310,7 +310,7 @@ TEST_F(BitLSMTestBase, EstimateIntersectsSameAttrRanges) {
 // Workload: a0 uniform 0..999 and a1 red/blue alternating (statistically
 //           independent), conjunctive query a0 <= 499 AND a1 = "red".
 // Threat: the independence-product combine must land near truth (250) for
-//         uncorrelated attrs — acceptance criterion for the AND path.
+//         uncorrelated attrs.
 TEST_F(BitLSMTestBase, EstimateConjunctionIndependenceProduct) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 1000; ++i) {
@@ -388,7 +388,8 @@ TEST_F(BitLSMTestBase, EstimateOrClauseUnionBound) {
 
 // Workload: rows only in the memtable (no flush yet), then a query touching
 //           both attrs.
-// Threat: D-E3 excludes the memtable, so the pre-first-flush estimate is
+// Threat: the memtable is excluded from stats, so the pre-first-flush estimate
+// is
 //         meaningless; the caller must get an explicit per-attr fallback
 //         flag, not a silent selectivity over zero rows.
 TEST_F(BitLSMTestBase, EstimateEmptyLiveSetFlagsFallback) {
@@ -429,7 +430,7 @@ TEST_F(BitLSMTestBase, EstimateOrderedEqualityPointMass) {
 // Workload: zipf-like skew (value v in 1..100 appears floor(1000/v) times,
 //           ~5187 rows) over two SSTs; wide range query a0 <= 10 with true
 //           selectivity ~56%.
-// Threat: acceptance criterion — under skew, uniform-within-bin projection
+// Threat: under skew, uniform-within-bin projection
 //         plus grid interpolation must keep wide-range q-error <= 1.5.
 TEST_F(BitLSMTestBase, EstimateZipfWideRangeQError) {
   BitLSM& db = OpenDB(EstOptions());
@@ -635,7 +636,7 @@ TEST_F(BitLSMTestBase, EstimatorDisabledByDefault) {
 
 // Workload: estimator enabled with a non-default 64-cell grid.
 // Threat: the option must actually reach the aggregation (a silently ignored
-//         knob would invalidate every D-E2 resolution experiment).
+//         knob would invalidate every grid-resolution experiment).
 TEST_F(BitLSMTestBase, GridCellsOptionControlsResolution) {
   BitLSMOptions opt = EstOptions();
   opt.estimator_grid_cells = 64;
