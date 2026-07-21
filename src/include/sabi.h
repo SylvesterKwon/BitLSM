@@ -76,6 +76,16 @@ struct OrderedAttrHistogram {
   std::vector<uint64_t> counts;      // bin_count
 };
 
+// Per-SST equality-count material for one UNORDERED attribute: every
+// interned distinct value paired with an estimated row count, sorted by
+// value. The blob persists only per-bin bitmaps, so a value alone in its bin
+// is exact and values sharing a bin split the bin's cardinality uniformly.
+// NULL and tombstone rows sit in no value bin, so they are excluded by
+// construction.
+struct UnorderedAttrValueCounts {
+  std::vector<std::pair<std::string, double>> value_counts;
+};
+
 class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
  private:
   SABISchema schema_;
@@ -171,6 +181,8 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   SABISchema schema_;
   using AlignedPtr = std::unique_ptr<char[], void (*)(void*)>;
   std::vector<AlignedPtr> managed_buffers_;
+  // First index of attr_idx's bin range in the flat bitmap array.
+  uint32_t AttrBinOffset(uint32_t attr_idx) const;
 
  public:
   // Self-describing: the schema residue (attr roles) is parsed from the
@@ -191,6 +203,11 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   // Returns false when the attr is out of range, not ORDERED, or has zero
   // binned rows (its stored boundaries are meaningless then).
   bool OrderedHistogram(uint32_t attr_idx, OrderedAttrHistogram* out) const;
+  // Fills `out` with attr_idx's per-value counts (see UnorderedAttrValueCounts
+  // for exactness). Returns false when the attr is out of range, not
+  // UNORDERED, or has zero binned rows.
+  bool UnorderedValueCounts(uint32_t attr_idx,
+                            UnorderedAttrValueCounts* out) const;
   void Dump();
 };
 

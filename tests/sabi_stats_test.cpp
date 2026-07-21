@@ -227,3 +227,126 @@ TEST(SabiHistogram, AllNullAttrHasNoHistogram) {
   OrderedAttrHistogram h;
   EXPECT_FALSE(built.reader->OrderedHistogram(0, &h));
 }
+
+namespace {
+
+// Single UNORDERED attr; rho 0.1 -> bin budget 10.
+BitLSMOptions UnorderedOptions(bool nullable = false) {
+  BitLSMOptions o;
+  o.attr_num = 1;
+  o.attr_specs = {AttrSpec(AttrRole::UNORDERED, 8, /*is_signed=*/true,
+                           /*is_float=*/true, nullable)};
+  o.read_seqno = 0;
+  o.rho = 0.1;
+  return o;
+}
+
+// {ORDERED i64, UNORDERED}: the leading ordered attr shifts the unordered
+// attr's bitmap range inside the flat bitmap array.
+BitLSMOptions OrderedThenUnorderedOptions() {
+  BitLSMOptions o;
+  o.attr_num = 2;
+  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, /*is_signed=*/true,
+                           /*is_float=*/false),
+                  AttrSpec{AttrRole::UNORDERED}};
+  o.read_seqno = 0;
+  o.rho = 0.1;
+  return o;
+}
+
+double SumCounts(const UnorderedAttrValueCounts& c) {
+  double s = 0;
+  for (const auto& [value, count] : c.value_counts) s += count;
+  return s;
+}
+
+}  // namespace
+
+// Workload: 160 rows over {ORDERED, UNORDERED} where the unordered attr has
+//           3 distinct values with known counts (red 100 / green 50 /
+//           blue 10) and the bin budget covers all of them.
+// Threat: with one value per bin every count must be exact; a crossed
+//         value->bin mapping or an attr offset bug that reads the ordered
+//         neighbor's bitmaps attaches wrong counts to wrong values.
+TEST(SabiValueCounts, ExactCountsWhenBudgetCoversValues) {
+  std::vector<std::vector<Attr>> rows;
+  for (int64_t i = 0; i < 160; ++i) {
+    std::string color = i < 100 ? "red" : (i < 150 ? "green" : "blue");
+    rows.push_back({i, color});
+  }
+  BuiltIndex built = BuildIndex(OrderedThenUnorderedOptions(), rows);
+
+  UnorderedAttrValueCounts c;
+  ASSERT_TRUE(built.reader->UnorderedValueCounts(1, &c));
+  // Entries come back sorted by value, one per interned distinct value.
+  std::vector<std::pair<std::string, double>> expected = {
+      {"blue", 10.0}, {"green", 50.0}, {"red", 100.0}};
+  EXPECT_EQ(c.value_counts, expected);
+}
+
+// Workload: 20 distinct values x 10 rows each on a 10-bin budget, so every
+//           bin holds exactly two values of equal mass.
+// Threat: reporting the full bin cardinality for every value sharing a bin
+//         double-counts the mass (sum 2x the row count), inflating every
+//         equality selectivity built on top.
+TEST(SabiValueCounts, SharedBinsSplitCardinalityUniformly) {
+  std::vector<std::vector<Attr>> rows;
+  for (int64_t v = 0; v < 20; ++v) {
+    std::string value =
+        "v" + std::string(v < 10 ? "0" : "") + std::to_string(v);
+    for (int64_t i = 0; i < 10; ++i) rows.push_back({value});
+  }
+  BuiltIndex built = BuildIndex(UnorderedOptions(), rows);
+
+  UnorderedAttrValueCounts c;
+  ASSERT_TRUE(built.reader->UnorderedValueCounts(0, &c));
+  ASSERT_EQ(c.value_counts.size(), 20u);
+  for (const auto& [value, count] : c.value_counts)
+    EXPECT_DOUBLE_EQ(count, 10.0) << "value " << value;
+  EXPECT_DOUBLE_EQ(SumCounts(c), 200.0);
+}
+
+// Workload: a caller sweeping every attr index of a mixed blob, plus one
+//           index past the end.
+// Threat: an ORDERED attr holds okey boundaries in the variant; reading it
+//         as string entries (or indexing past attr_num) is undefined
+//         behavior instead of a clean "no counts" answer.
+TEST(SabiValueCounts, RejectsOrderedAndOutOfRangeAttrs) {
+  std::vector<std::vector<Attr>> rows;
+  for (int64_t i = 0; i < 100; ++i) rows.push_back({i, std::string("cat")});
+  BuiltIndex built = BuildIndex(OrderedThenUnorderedOptions(), rows);
+
+  UnorderedAttrValueCounts c;
+  EXPECT_FALSE(built.reader->UnorderedValueCounts(0, &c));  // ORDERED
+  EXPECT_FALSE(built.reader->UnorderedValueCounts(2, &c));  // out of range
+}
+
+// Workload: 100 valued rows, 20 rows with a NULL attr, 5 tombstones, one
+//           blob.
+// Threat: NULL and tombstone rows sit in no value bin by construction; a
+//         count that re-adds them overstates the attr's row mass.
+TEST(SabiValueCounts, CountsOnlyBinnedDataRows) {
+  std::vector<std::vector<Attr>> rows;
+  for (int64_t i = 0; i < 100; ++i)
+    rows.push_back({std::string(i % 2 == 0 ? "even" : "odd")});
+  for (int64_t i = 0; i < 20; ++i) rows.push_back({std::monostate{}});
+  BuiltIndex built = BuildIndex(UnorderedOptions(/*nullable=*/true), rows,
+                                /*tombstone_cnt=*/5);
+
+  UnorderedAttrValueCounts c;
+  ASSERT_TRUE(built.reader->UnorderedValueCounts(0, &c));
+  EXPECT_DOUBLE_EQ(SumCounts(c), 100.0);
+}
+
+// Workload: an SST whose UNORDERED attr is NULL on every row.
+// Threat: with no interned values there is no equality material; exposing an
+//         empty-but-true result would make callers treat "no data" as "zero
+//         selectivity for every value".
+TEST(SabiValueCounts, AllNullAttrHasNoCounts) {
+  std::vector<std::vector<Attr>> rows;
+  for (int64_t i = 0; i < 50; ++i) rows.push_back({std::monostate{}});
+  BuiltIndex built = BuildIndex(UnorderedOptions(/*nullable=*/true), rows);
+
+  UnorderedAttrValueCounts c;
+  EXPECT_FALSE(built.reader->UnorderedValueCounts(0, &c));
+}
