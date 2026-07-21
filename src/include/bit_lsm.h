@@ -5,6 +5,7 @@
 
 #include <string>
 
+#include "bit_lsm_estimator.h"
 #include "bit_lsm_iterator.h"
 #include "bit_lsm_query.h"
 #include "bit_lsm_utils.h"  // Attr
@@ -19,6 +20,8 @@ class BitLSM {
   rocksdb::Options rocksdb_options_;
   BitLSMOptions bit_lsm_options_;
   ValueLayout layout_;
+  std::unique_ptr<CardinalityEstimator> estimator_;
+  std::shared_ptr<StatsRefreshListener> stats_listener_;
 
   // Helper functions
 
@@ -43,6 +46,18 @@ class BitLSM {
 
   // To use RocksDB API
   rocksdb::DB* GetInternalDB() { return db_; }
+
+  // Live-set cardinality statistics for planning (see bit_lsm_estimator.h).
+  // nullptr unless BitLSMOptions::enable_estimator is set.
+  CardinalityEstimator* Estimator() { return estimator_.get(); }
+
+  // Planning-time cardinality estimate against the default CF's live SST
+  // set; see EstimateResult for the consumption contract. With the
+  // estimator disabled every queried attr is flagged as fallback.
+  EstimateResult EstimateSelectivity(const SABIQuery& q) {
+    return estimator_ ? estimator_->Estimate(q)
+                      : CardinalityEstimator::FallbackResult(q);
+  }
 
   // For debug
   void Statistics();

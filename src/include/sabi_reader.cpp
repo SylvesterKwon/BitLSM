@@ -228,6 +228,69 @@ void SABIReader::Dump() {
   cout << "\n";
 }
 
+uint32_t SABIReader::AttrBinOffset(uint32_t attr_idx) const {
+  uint32_t offset = 0;
+  for (uint32_t i = 0; i < attr_idx; ++i) offset += bitmap_index.bitmap_nums[i];
+  return offset;
+}
+
+bool SABIReader::OrderedHistogram(uint32_t attr_idx,
+                                  OrderedAttrHistogram* out) const {
+  if (attr_idx >= schema_.attr_num()) return false;
+  if (schema_.roles[attr_idx] != AttrRole::ORDERED) return false;
+
+  uint32_t bin_offset = AttrBinOffset(attr_idx);
+  uint32_t bins = bitmap_index.bitmap_nums[attr_idx];
+
+  std::vector<uint64_t> counts(bins);
+  uint64_t total = 0;
+  for (uint32_t b = 0; b < bins; ++b) {
+    counts[b] = bitmap_index.bitmaps[bin_offset + b].cardinality();
+    total += counts[b];
+  }
+  // Zero binned rows (e.g. every row NULL): the stored boundaries come from
+  // an empty t-digest and carry no information.
+  if (total == 0) return false;
+
+  out->boundaries =
+      std::get<std::vector<uint64_t>>(bitmap_index.binning_policy[attr_idx]);
+  out->counts = std::move(counts);
+  return true;
+}
+
+bool SABIReader::UnorderedValueCounts(uint32_t attr_idx,
+                                      UnorderedAttrValueCounts* out) const {
+  if (attr_idx >= schema_.attr_num()) return false;
+  if (schema_.roles[attr_idx] != AttrRole::UNORDERED) return false;
+
+  const auto& entries = std::get<std::vector<std::pair<std::string, uint32_t>>>(
+      bitmap_index.binning_policy[attr_idx]);
+  if (entries.empty()) return false;  // no interned values (e.g. all NULL)
+
+  uint32_t bin_offset = AttrBinOffset(attr_idx);
+  uint32_t bins = bitmap_index.bitmap_nums[attr_idx];
+
+  // Only per-bin cardinality is persisted, so values sharing a bin split its
+  // mass uniformly (exact when a value has the bin to itself).
+  std::vector<uint32_t> values_in_bin(bins, 0);
+  for (const auto& e : entries) values_in_bin[e.second]++;
+  std::vector<uint64_t> bin_card(bins);
+  uint64_t total = 0;
+  for (uint32_t b = 0; b < bins; ++b) {
+    bin_card[b] = bitmap_index.bitmaps[bin_offset + b].cardinality();
+    total += bin_card[b];
+  }
+  if (total == 0) return false;
+
+  out->value_counts.clear();
+  out->value_counts.reserve(entries.size());
+  for (const auto& e : entries)
+    out->value_counts.emplace_back(
+        e.first,
+        static_cast<double>(bin_card[e.second]) / values_in_bin[e.second]);
+  return true;
+}
+
 bool SABIReader::QueryCanMatch(const SABIQuery& q) const {
   for (const auto& clause : q.clause_groups) {
     if (clause.empty()) continue;  // empty clause is trivially satisfiable

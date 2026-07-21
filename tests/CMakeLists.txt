@@ -50,6 +50,8 @@ bitlsm_add_test(okey_zero_regression_test)
 bitlsm_add_test(candidate_iterator_test)
 bitlsm_add_test(sabi_binning_precision_test)
 bitlsm_add_test(sabi_placeholder_binning_test)
+bitlsm_add_test(sabi_stats_test)
+bitlsm_add_test(estimator_test)
 
 # stress 티어: 큰 시드/스텝 예산. PR CI 는 -LE stress 로 제외하고
 # 로컬에서 ctest -L stress 로 실행한다.

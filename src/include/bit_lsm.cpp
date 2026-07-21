@@ -26,6 +26,12 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
   opts.user_defined_index_factory = make_shared<SABIFactory>(bit_lsm_options_);
   rocksdb_options_.table_factory.reset(NewBlockBasedTableFactory(opts));
 
+  // Registered before Open, armed only once the estimator exists.
+  if (bit_lsm_options_.enable_estimator) {
+    stats_listener_ = make_shared<StatsRefreshListener>();
+    rocksdb_options_.listeners.push_back(stats_listener_);
+  }
+
   ColumnFamilyOptions cf_opts(rocksdb_options_);
   cf_opts.level_compaction_dynamic_level_bytes = true;
   const vector<ColumnFamilyDescriptor> column_families(
@@ -33,9 +39,22 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
   Status s =
       DB::Open(rocksdb_options_, db_path, column_families, &cf_handles_, &db_);
   if (!s.ok()) throw std::runtime_error("Failed to open DB: " + s.ToString());
+
+  if (bit_lsm_options_.enable_estimator) {
+    estimator_ = make_unique<CardinalityEstimator>(
+        static_cast<DBImpl*>(db_),
+        static_cast<ColumnFamilyHandleImpl*>(cf_handles_[0])->cfd(),
+        SABISchema::FromOptions(bit_lsm_options_), bit_lsm_options_);
+    stats_listener_->Arm(estimator_.get());
+  }
 }
 
 BitLSM::~BitLSM() {
+  // Stop stats refresh before the DB goes away: the worker references the
+  // column family, and close-time flushes must not signal a dead estimator.
+  if (stats_listener_) stats_listener_->Disarm();
+  estimator_.reset();
+
   Status s;
   // Close DB gracefully
   for (auto handle : cf_handles_) db_->DestroyColumnFamilyHandle(handle);

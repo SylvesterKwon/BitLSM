@@ -45,5 +45,13 @@ struct BitLSMOptions {
   std::vector<AttrSpec> attr_specs;    // per-attribute spec
   rocksdb::SequenceNumber read_seqno;  // read sequence number
   double rho;  // proportion parameter that determines bitmap budget
+
+  // Cardinality estimator (read-side planning stats; bit_lsm_estimator.h).
+  // Off by default; none of these knobs touch the SST format.
+  bool enable_estimator = false;
+  uint32_t estimator_grid_cells = 256;  // per-attr okey-grid resolution
+  // Floor between stats rebuilds; bounds the refresh worker's duty cycle
+  // under churn.
+  uint32_t estimator_min_rebuild_interval_ms = 1000;
 };
 }  // namespace bit_lsm
