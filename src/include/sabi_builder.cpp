@@ -23,6 +23,7 @@ SABIBuilder::SABIBuilder(SABISchema schema,
       scratch_(schema_.attr_num()) {
   bitmap_index_.bitmap_nums.resize(schema_.attr_num(), 0);
   bitmap_index_.binning_policy.resize(schema_.attr_num());
+  distinct_cnts_.resize(schema_.attr_num(), 0);
   attr_null_rows_.resize(schema_.attr_num());
   attr_buf_.reserve(schema_.attr_num());
   for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
@@ -225,6 +226,8 @@ void SABIBuilder::SetUnorderedPropertyBinningPolicy(uint32_t i) {
   }
   sort(binning.begin(), binning.end());
   bitmap_index_.binning_policy[i] = std::move(binning);
+  // v6 directory field: the interning table is exactly the distinct set.
+  distinct_cnts_[i] = cat.value_by_id.size();
 }
 
 void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
@@ -245,6 +248,17 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
   proj.reserve(v.size());
   for (uint64_t okey : v) proj.push_back(OkeyToTDigest(okey, min_okey));
   digest = digest.merge(folly::Range<const double*>(proj.data(), proj.size()));
+
+  // v6 directory field: exact distinct okeys, for the estimator's equality
+  // floor (sparse integer domains smear point mass into value holes). A
+  // sorted copy costs O(n log n) at flush, same order as the t-digest merge
+  // above; no extra hash table peak.
+  {
+    vector<uint64_t> uniq(v);
+    std::sort(uniq.begin(), uniq.end());
+    distinct_cnts_[i] =
+        std::unique(uniq.begin(), uniq.end()) - uniq.begin();
+  }
 
   // N+1 okey boundary thresholds.
   vector<uint64_t> boundaries(bitmap_index_.bitmap_nums[i] + 1);
@@ -386,6 +400,8 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   for (uint32_t bin_num : bitmap_index_.bitmap_nums)
     PutFixed32(&index_blob_, bin_num);
   PutFixed32(&index_blob_, index_entries_cnt_);
+  // v6: per-attr exact distinct counts (see the format comment in sabi.h).
+  for (uint64_t d : distinct_cnts_) PutFixed64(&index_blob_, d);
   for (uint32_t& oi : policy_offsets) PutFixed32(&index_blob_, oi);
   for (uint32_t& oi : bitmap_offsets) PutFixed32(&index_blob_, oi);
 

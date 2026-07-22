@@ -40,6 +40,21 @@ double GlobalOrderedStats::RangeMass(uint64_t lo, uint64_t hi) const {
   return std::max(0.0, upper - CumBelow(lo));
 }
 
+double GlobalOrderedStats::PointAwareRangeMass(uint64_t lo, uint64_t hi) const {
+  double mass = RangeMass(lo, hi);
+  // NDV equality floor, point windows INSIDE the live span only: the grid
+  // smears mass uniformly over the okey span, so on a sparse domain an
+  // existing point reads ~total/span_used instead of ~total/ndv. Points
+  // OUTSIDE [min_okey, max_okey] keep their zero -- there it is proof of
+  // absence, not smear. (In-span holes do get floored: NDV alone cannot
+  // tell a hole from a value, and overestimating a hole is the conservative
+  // direction.) Range windows integrate over the holes and need no
+  // correction (verified exact on SF2 BETWEENs).
+  if (lo == hi && ndv > 0 && lo >= min_okey && lo <= max_okey)
+    mass = std::max(mass, total / double(ndv));
+  return std::min(mass, total);
+}
+
 namespace {
 
 // Projects one per-SST histogram onto the uniform grid over [min_okey,
@@ -250,7 +265,7 @@ double ConditionSelectivity(const SABICondition& cond, const GlobalStats& stats,
     OkeyWindow w;
     w.Apply(cond.op, cond.okey);
     if (w.empty || w.lo > w.hi) return 0;
-    return ord->RangeMass(w.lo, w.hi) / phys;
+    return ord->PointAwareRangeMass(w.lo, w.hi) / phys;
   }
   if (cond.op != CompareOp::EQUAL) return -1;
   const auto& uno = stats.unordered[cond.attr_idx];
@@ -320,7 +335,7 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
     if (w.empty || w.lo > w.hi)
       product = 0;
     else
-      product *= ord->RangeMass(w.lo, w.hi) / phys;
+      product *= ord->PointAwareRangeMass(w.lo, w.hi) / phys;
   }
 
   // Never estimate below one matching row: 0 is absorbing in cost math.
@@ -406,6 +421,9 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
       for (const auto& h : hists[a]) {
         ord.min_okey = std::min(ord.min_okey, h.boundaries.front());
         ord.max_okey = std::max(ord.max_okey, h.boundaries.back());
+        // Union NDV >= any per-SST distinct count: a safe lower bound (and
+        // exact when every SST sees the full value set, e.g. uniform data).
+        ord.ndv = std::max(ord.ndv, h.distinct);
       }
       vector<double> cells(grid_cells_, 0);
       for (const auto& h : hists[a])

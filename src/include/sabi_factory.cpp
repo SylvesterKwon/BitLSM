@@ -51,10 +51,12 @@ Status SABIFactory::NewReader(
   }
   uint32_t version = DecodeFixed32(index_block.data() + index_block.size() -
                                    2 * sizeof(uint32_t));
-  if (version != kBitLSMFormatVersion) {
-    return Status::Corruption("unsupported BitLSM format version " +
-                              to_string(version) + " (this build reads " +
-                              to_string(kBitLSMFormatVersion) + ")");
+  if (version < kBitLSMMinReadFormatVersion ||
+      version > kBitLSMFormatVersion) {
+    return Status::Corruption(
+        "unsupported BitLSM format version " + to_string(version) +
+        " (this build reads v" + to_string(kBitLSMMinReadFormatVersion) +
+        "..v" + to_string(kBitLSMFormatVersion) + ")");
   }
 
   // Validate the directory prefix (attr_num + roles) this method interprets;

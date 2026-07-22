@@ -40,10 +40,19 @@ namespace bit_lsm {
 //                                  {varint-len string, bin u32} x entry_count
 //   [directory]         [attr_num u32][role u8 x attr_num]
 //                       [bin_count u32 x attr_num][index_entries_cnt u32]
+//                       [distinct_cnt u64 x attr_num]        (v6+)
 //                       [policy offset u32 x (attr_num+1)]
 //                       [bitmap offset u32 x (sum(bin_count)+2)]
 //   [footer]            [directory_off u32][version u32][magic u32]
-inline constexpr uint32_t kBitLSMFormatVersion = 5;
+//
+// v6 adds per-attr exact distinct-value counts (NULL/tombstone rows excluded)
+// to the directory: the estimator's equality floor (a point estimate is at
+// least physical/NDV -- sparse integer domains like yyyymm otherwise smear
+// point mass into value holes). Readers accept v5 blobs; their distinct
+// counts read as 0 = unknown, which disables the floor for that SST.
+inline constexpr uint32_t kBitLSMFormatVersion = 6;
+// Oldest on-disk version this build still reads (v5 = pre-NDV directory).
+inline constexpr uint32_t kBitLSMMinReadFormatVersion = 5;
 // Trailing magic of the SABI blob footer
 inline constexpr uint32_t kSABIFooterMagic =
     0x5AB1B175;  // SABIBITS in hexspeak :^)
@@ -74,6 +83,9 @@ class SABIFactory;
 struct OrderedAttrHistogram {
   std::vector<uint64_t> boundaries;  // absolute okeys, bin_count + 1
   std::vector<uint64_t> counts;      // bin_count
+  // Exact distinct okeys in this SST (v6+ blobs; 0 = unknown/v5). Feeds the
+  // estimator's equality floor on sparse integer domains.
+  uint64_t distinct = 0;
 };
 
 // Per-SST equality-count material for one UNORDERED attribute: every
@@ -139,6 +151,9 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
   uint64_t total_data_entries_size_uncomp_ = 0;  // total size of KVPs (bytes)
   uint32_t data_entries_cnt_ = 0;   // total number of KVPs in current table
   uint32_t index_entries_cnt_ = 0;  // total number of index entries added
+  // Per-attr exact distinct values (v6 directory field). ORDERED: counted in
+  // SetOrderedPropertyBinningPolicy; UNORDERED: the interning table size.
+  std::vector<uint64_t> distinct_cnts_;
 
   // Bitmap Index
   BitmapIndex bitmap_index_;
@@ -192,6 +207,8 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   BitmapIndex bitmap_index;
   std::vector<uint32_t> data_entries_cnt_psum;
   std::vector<rocksdb::BlockHandle> block_handles;
+  // Per-attr exact distinct values (v6 blobs; all-zero for v5 = unknown).
+  std::vector<uint64_t> distinct_cnts;
   std::unique_ptr<rocksdb::UserDefinedIndexIterator> NewIterator(
       const rocksdb::ReadOptions& read_options);
   size_t ApproximateMemoryUsage() const;

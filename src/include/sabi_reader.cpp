@@ -99,6 +99,8 @@ SABIReader::SABIReader(Slice& index_block) {
   assert(index_block.size() >= 3 * sizeof(uint32_t) &&
          DecodeFixed32(index_block.data() + index_block.size() -
                        sizeof(uint32_t)) == kSABIFooterMagic);
+  const uint32_t version = DecodeFixed32(
+      index_block.data() + index_block.size() - 2 * sizeof(uint32_t));
   uint32_t directory_off = DecodeFixed32(
       index_block.data() + index_block.size() - 3 * sizeof(uint32_t));
 
@@ -120,6 +122,15 @@ SABIReader::SABIReader(Slice& index_block) {
   }
   uint32_t index_entries_cnt_ = DecodeFixed32(dir);
   dir += sizeof(uint32_t);
+  // v6+: per-attr exact distinct counts. A v5 blob has no such array; leave
+  // zeros (= unknown, estimator floor disabled for this SST).
+  distinct_cnts.assign(attr_num, 0);
+  if (version >= 6) {
+    for (uint32_t i = 0; i < attr_num; ++i) {
+      distinct_cnts[i] = DecodeFixed64(dir);
+      dir += sizeof(uint64_t);
+    }
+  }
   vector<uint32_t> policy_offsets(attr_num + 1);
   for (uint32_t i = 0; i <= attr_num; ++i) {
     policy_offsets[i] = DecodeFixed32(dir);
@@ -255,6 +266,7 @@ bool SABIReader::OrderedHistogram(uint32_t attr_idx,
   out->boundaries =
       std::get<std::vector<uint64_t>>(bitmap_index.binning_policy[attr_idx]);
   out->counts = std::move(counts);
+  out->distinct = distinct_cnts[attr_idx];  // 0 on v5 blobs = unknown
   return true;
 }
 

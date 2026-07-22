@@ -38,9 +38,17 @@ struct GlobalOrderedStats {
   uint64_t max_okey = 0;
   std::vector<double> cell_psum;  // cell_psum[i] = mass of cells [0, i]
   double total = 0;               // binned-row mass (NULLs excluded)
+  // Attr NDV lower bound: max per-SST exact distinct count (v6 blobs; 0 =
+  // unknown -> floor disabled). Equality floor: a point's mass is at least
+  // total/ndv. Sparse integer domains (yyyymm-style value holes) otherwise
+  // smear point mass into the holes; a lower-bound NDV can only raise the
+  // floor above truth = overestimate = the conservative direction.
+  uint64_t ndv = 0;
 
   // Estimated mass with okey in [lo, hi], both inclusive.
   double RangeMass(uint64_t lo, uint64_t hi) const;
+  // RangeMass with the NDV equality floor applied to POINT windows.
+  double PointAwareRangeMass(uint64_t lo, uint64_t hi) const;
 
  private:
   // Estimated mass with okey strictly below `okey`.

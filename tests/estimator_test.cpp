@@ -690,3 +690,37 @@ TEST_F(BitLSMTestBase, InitialBuildRunsAtReopen) {
   db2.Estimator()->TEST_Refresh();
   EXPECT_EQ(db2.Estimator()->Stats()->physical_rows, 100u);
 }
+
+// Workload: yyyymm-shaped sparse integers -- 84 real values (7 years x 12
+//           months) over a 611-wide okey span with 89-value holes at every
+//           year boundary; 10 rows per value.
+// Threat: the continuous-density grid smears point mass into the holes, so
+//         an equality reads ~total/span instead of ~total/ndv (the SF2 q1_2
+//         11x underestimate). The v6 NDV floor must pull it back to the
+//         per-value truth; RANGE estimates integrate over the holes and must
+//         stay uncorrected.
+TEST_F(BitLSMTestBase, SparseDomainEqualityNdvFloor) {
+  BitLSM& db = OpenDB(EstOptions());
+  int rows = 0;
+  for (int y = 1992; y <= 1998; ++y)
+    for (int m = 1; m <= 12; ++m)
+      for (int r = 0; r < 10; ++r)
+        ASSERT_TRUE(db.Put("k" + std::to_string(rows++),
+                           {int64_t(y * 100 + m), std::string("x")}, "p")
+                        .ok());
+  FlushDB(db);
+
+  std::shared_ptr<const GlobalStats> stats = db.Estimator()->Stats();
+  ASSERT_TRUE(stats->ordered[0].has_value());
+  const GlobalOrderedStats& ord = *stats->ordered[0];
+  EXPECT_EQ(ord.ndv, 84u);
+  // The raw grid smears the point into the holes (~840/611 per okey unit).
+  EXPECT_LT(ord.RangeMass(I64ToOkey(199401), I64ToOkey(199401)), 5.0);
+  // The floor restores the per-value truth (840/84 = 10).
+  EXPECT_NEAR(
+      ord.PointAwareRangeMass(I64ToOkey(199401), I64ToOkey(199401)), 10.0,
+      2.0);
+  // Whole-domain range: mass conserved, no correction.
+  EXPECT_NEAR(ord.RangeMass(I64ToOkey(199201), I64ToOkey(199812)), 840.0,
+              1e-6);
+}
