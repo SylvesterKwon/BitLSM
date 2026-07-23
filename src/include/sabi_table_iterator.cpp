@@ -67,8 +67,6 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
       // since key use delta-encoding and bufffer will be overwritten, we can't
       // zero-copy it
       out_keys[i].PinSelf(biter_->key());
-      // Borrowed straight from the block biter_ pins; valid until the next
-      // block load replaces biter_.
       out_values[i] = biter_->value();
     } else {
       assert(false);

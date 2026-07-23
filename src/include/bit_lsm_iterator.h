@@ -200,9 +200,8 @@ class SABITableIterator : public SABIInternalIterator {
   const SABIQuery& query_;
   const CompiledQuery* compiled_;  // nullptr = skip per-row Eval
   uint32_t block_restart_interval_;
-  // Promoted to a member variable to enable Zero-copy evaluation.
-  // Keeping this iterator alive ensures the underlying data block remains
-  // pinned in the Block Cache, allowing us to safely use PinSlice() for values.
+  // Holds the current data block pinned in the Block Cache, so values can be
+  // borrowed from it instead of copied.
   std::unique_ptr<rocksdb::DataBlockIter> biter_;
 
   // Internal status for iterating
@@ -221,10 +220,7 @@ class SABITableIterator : public SABIInternalIterator {
   int32_t cur_target_block_idx_ = -1;    // current index for target_blocks_
   std::vector<uint32_t> local_indexes_;  // buffer for block-local index
   std::vector<rocksdb::PinnableSlice> keys_buffer_;
-  // Plain Slices, not PinnableSlices: values are borrowed from the data block
-  // that biter_ keeps pinned, so there is nothing to own and nothing to clean
-  // up. A PinnableSlice here would carry a std::string and a cleanup list it
-  // never uses, and would have to be destroyed and rebuilt for every block.
+  // Borrowed from the block biter_ pins; valid until the next block load.
   std::vector<rocksdb::Slice> values_buffer_;
   int32_t buffer_idx_ = 0;  // 버퍼 내 현재 커서
 
