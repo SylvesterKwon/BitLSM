@@ -221,7 +221,11 @@ class SABITableIterator : public SABIInternalIterator {
   int32_t cur_target_block_idx_ = -1;    // current index for target_blocks_
   std::vector<uint32_t> local_indexes_;  // buffer for block-local index
   std::vector<rocksdb::PinnableSlice> keys_buffer_;
-  std::vector<rocksdb::PinnableSlice> values_buffer_;
+  // Plain Slices, not PinnableSlices: values are borrowed from the data block
+  // that biter_ keeps pinned, so there is nothing to own and nothing to clean
+  // up. A PinnableSlice here would carry a std::string and a cleanup list it
+  // never uses, and would have to be destroyed and rebuilt for every block.
+  std::vector<rocksdb::Slice> values_buffer_;
   int32_t buffer_idx_ = 0;  // 버퍼 내 현재 커서
 
   // Get all data entries by indexes from data block
@@ -229,7 +233,7 @@ class SABITableIterator : public SABIInternalIterator {
   void GetAllByIndexesFromDataBlock(
       const rocksdb::BlockHandle& bh, std::vector<uint32_t>& indexes,
       std::vector<rocksdb::PinnableSlice>& out_keys,
-      std::vector<rocksdb::PinnableSlice>& out_values);
+      std::vector<rocksdb::Slice>& out_values);
 
   // A bitmap that is either borrowed from the SABIReader (owned == nullptr)
   // or owned by bitmap_pool_ (owned points to the pool entry).
