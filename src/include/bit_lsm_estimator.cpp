@@ -55,6 +55,50 @@ double GlobalOrderedStats::PointAwareRangeMass(uint64_t lo, uint64_t hi) const {
   return std::min(mass, total);
 }
 
+double GlobalOrderedStats::CandidateMass(uint64_t lo, uint64_t hi,
+                                         double match_mass) const {
+  if (hi < lo || sst_bins.empty()) return match_mass;
+  // Pass 1: span-uniform overlap mass per covering SST -- the weight that
+  // apportions the caller's GLOBAL matching mass across SSTs (the per-SST
+  // stats keep no histogram, only span + bin mass; mass is conserved).
+  double overlap_total = 0;
+  for (const SSTBins& s : sst_bins) {
+    if (hi < s.lo || lo > s.hi || s.total <= 0) continue;
+    double span_len = static_cast<double>(s.hi - s.lo) + 1.0;
+    double ov_len =
+        static_cast<double>(std::min(hi, s.hi) - std::max(lo, s.lo)) + 1.0;
+    overlap_total += s.total * (ov_len / span_len);
+  }
+  // Pass 2: per covering SST, round the matching share out to prune-bin
+  // boundaries. A point candidates the whole bin containing it; a range
+  // overshoots by half a bin per free edge (an edge clipped by the SST span
+  // sits on a pinned boundary and overshoots nothing). At least one bin is
+  // touched whenever the window overlaps the span; never more than the
+  // SST's binned rows.
+  double cand = 0;
+  for (const SSTBins& s : sst_bins) {
+    if (hi < s.lo || lo > s.hi || s.total <= 0) continue;
+    uint64_t c_lo = std::max(lo, s.lo);
+    uint64_t c_hi = std::min(hi, s.hi);
+    double span_len = static_cast<double>(s.hi - s.lo) + 1.0;
+    double ov_len = static_cast<double>(c_hi - c_lo) + 1.0;
+    double match_s =
+        overlap_total > 0
+            ? match_mass * (s.total * (ov_len / span_len)) / overlap_total
+            : 0;
+    double c;
+    if (lo == hi) {
+      c = std::max(s.binmass, match_s);
+    } else {
+      double smear =
+          ((c_lo > s.lo ? 0.5 : 0.0) + (c_hi < s.hi ? 0.5 : 0.0)) * s.binmass;
+      c = std::max(s.binmass, match_s + smear);
+    }
+    cand += std::min(c, s.total);
+  }
+  return std::max(cand, match_mass);
+}
+
 namespace {
 
 // Projects one per-SST histogram onto the uniform grid over [min_okey,
@@ -277,21 +321,52 @@ double ConditionSelectivity(const SABICondition& cond, const GlobalStats& stats,
   return uno->truncated ? -1 : 0;
 }
 
+// Candidate-fraction counterpart of ConditionSelectivity, for a condition
+// whose match fraction f is already known (>= 0): what the bin-granular
+// pruning ADMITS for this condition alone.
+double ConditionCandidate(const SABICondition& cond, const GlobalStats& stats,
+                          const std::vector<AttrRole>& roles, double phys,
+                          double f) {
+  if (roles[cond.attr_idx] == AttrRole::ORDERED) {
+    const auto& ord = stats.ordered[cond.attr_idx];
+    OkeyWindow w;
+    w.Apply(cond.op, cond.okey);
+    if (w.empty || w.lo > w.hi) return 0;
+    return std::min(1.0, ord->CandidateMass(w.lo, w.hi, f * phys) / phys);
+  }
+  // UNORDERED equality: provable absence prunes every SST at execution;
+  // otherwise the value's whole balance-packed bin per SST is fetched, and
+  // a value hotter than the average bin floors at its own match mass.
+  if (f == 0) return 0;
+  const auto& uno = stats.unordered[cond.attr_idx];
+  return std::min(1.0, std::max(f, uno->binmass_sum / phys));
+}
+
 }  // namespace
 
 EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
   std::shared_ptr<const GlobalStats> stats = Stats();
-  EstimateResult res;
-  res.physical_rows = stats->physical_rows;
+  // Live per call, never from the rebuilt snapshot: the memtable count
+  // moves with every write and drops to zero at flush, while stats lag by
+  // design (bounded staleness).
+  uint64_t memtable = MemtableEntries();
 
   if (stats->live_sst_count == 0 || stats->physical_rows == 0) {
-    // No flushed rows to estimate from; flag every queried attr.
-    return FallbackResult(q);
+    // No flushed rows to estimate from; flag every queried attr. The
+    // memtable term still rides along -- pre-first-flush it is the ONLY
+    // fetch mass there is.
+    EstimateResult res = FallbackResult(q);
+    res.memtable_entries = memtable;
+    return res;
   }
+  EstimateResult res;
+  res.physical_rows = stats->physical_rows;
+  res.memtable_entries = memtable;
   std::set<uint32_t> fallback;
 
   double phys = static_cast<double>(stats->physical_rows);
   double product = 1.0;
+  double cand_product = 1.0;  // bin-rounded counterpart of `product`
   std::map<uint32_t, OkeyWindow> windows;
 
   for (const auto& clause : q.clause_groups) {
@@ -303,15 +378,20 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
         windows[cond.attr_idx].Apply(cond.op, cond.okey);
       } else {
         double f = ConditionSelectivity(cond, *stats, schema_.roles, phys);
-        if (f < 0)
+        if (f < 0) {
           fallback.insert(cond.attr_idx);
-        else
+        } else {
           product *= f;
+          cand_product *=
+              ConditionCandidate(cond, *stats, schema_.roles, phys, f);
+        }
       }
     } else {
-      // OR clause: union bound capped at 1. One unestimatable member makes
-      // the whole clause unbounded, so it contributes factor 1 and a flag.
+      // OR clause: union bound capped at 1, for both slots. One
+      // unestimatable member makes the whole clause unbounded, so it
+      // contributes factor 1 and a flag.
       double sum = 0;
+      double cand_sum = 0;
       bool clause_fallback = false;
       for (const SABICondition& cond : clause) {
         double f = ConditionSelectivity(cond, *stats, schema_.roles, phys);
@@ -320,9 +400,13 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
           fallback.insert(cond.attr_idx);
         } else {
           sum += f;
+          cand_sum += ConditionCandidate(cond, *stats, schema_.roles, phys, f);
         }
       }
-      if (!clause_fallback) product *= std::min(1.0, sum);
+      if (!clause_fallback) {
+        product *= std::min(1.0, sum);
+        cand_product *= std::min(1.0, cand_sum);
+      }
     }
   }
 
@@ -332,16 +416,33 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
       fallback.insert(attr_idx);
       continue;
     }
-    if (w.empty || w.lo > w.hi)
+    if (w.empty || w.lo > w.hi) {
       product = 0;
-    else
-      product *= ord->PointAwareRangeMass(w.lo, w.hi) / phys;
+      cand_product = 0;
+    } else {
+      double match_mass = ord->PointAwareRangeMass(w.lo, w.hi);
+      product *= match_mass / phys;
+      cand_product *=
+          std::min(1.0, ord->CandidateMass(w.lo, w.hi, match_mass) / phys);
+    }
   }
 
   // Never estimate below one matching row: 0 is absorbing in cost math.
   res.selectivity = std::min(1.0, std::max(product, 1.0 / phys));
+  // Candidates are a superset of matches; the (floored) selectivity also
+  // carries the >= 1-row floor into the cost slot.
+  res.candidate_selectivity =
+      std::min(1.0, std::max(cand_product, res.selectivity));
   res.fallback_attrs.assign(fallback.begin(), fallback.end());
   return res;
+}
+
+uint64_t CardinalityEstimator::MemtableEntries() {
+  SuperVersion* sv = db_impl_->GetAndRefSuperVersion(cfd_);
+  if (sv == nullptr) return 0;
+  uint64_t n = sv->mem->NumEntries() + sv->imm->GetTotalNumEntries();
+  db_impl_->ReturnAndCleanupSuperVersion(cfd_, sv);
+  return n;
 }
 
 std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
@@ -356,6 +457,7 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
   vector<vector<OrderedAttrHistogram>> hists(attr_num);
   vector<unordered_map<string, double>> value_maps(attr_num);
   vector<double> unordered_totals(attr_num, 0);
+  vector<double> unordered_binmass_sums(attr_num, 0);
 
   TableCache* tc = sv->cfd->table_cache();
   const VersionStorageInfo* storage = sv->current->storage_info();
@@ -401,9 +503,18 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
         } else {
           UnorderedAttrValueCounts c;
           if (reader->UnorderedValueCounts(a, &c)) {
+            double sst_total = 0;
             for (auto& [value, count] : c.value_counts) {
               value_maps[a][value] += count;
-              unordered_totals[a] += count;
+              sst_total += count;
+            }
+            unordered_totals[a] += sst_total;
+            // Candidate scalar: one balance-packed bin of this SST is what
+            // an equality on any tracked value fetches here.
+            if (a < reader->bitmap_index.bitmap_nums.size() &&
+                reader->bitmap_index.bitmap_nums[a] > 0) {
+              unordered_binmass_sums[a] +=
+                  sst_total / reader->bitmap_index.bitmap_nums[a];
             }
           }
         }
@@ -418,12 +529,19 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
       GlobalOrderedStats ord;
       ord.min_okey = UINT64_MAX;
       ord.max_okey = 0;
+      ord.sst_bins.reserve(hists[a].size());
       for (const auto& h : hists[a]) {
         ord.min_okey = std::min(ord.min_okey, h.boundaries.front());
         ord.max_okey = std::max(ord.max_okey, h.boundaries.back());
         // Union NDV >= any per-SST distinct count: a safe lower bound (and
         // exact when every SST sees the full value set, e.g. uniform data).
         ord.ndv = std::max(ord.ndv, h.distinct);
+        GlobalOrderedStats::SSTBins b;
+        b.lo = h.boundaries.front();
+        b.hi = h.boundaries.back();
+        for (uint64_t c : h.counts) b.total += static_cast<double>(c);
+        if (!h.counts.empty()) b.binmass = b.total / h.counts.size();
+        ord.sst_bins.push_back(b);
       }
       vector<double> cells(grid_cells_, 0);
       for (const auto& h : hists[a])
@@ -440,6 +558,7 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
       if (value_maps[a].empty()) continue;
       GlobalUnorderedStats uno;
       uno.total = unordered_totals[a];
+      uno.binmass_sum = unordered_binmass_sums[a];
       if (value_maps[a].size() > kMaxTrackedValues) {
         // NDV cap: demote to top-k by count and say so; total keeps the
         // full mass so untracked lookups can still be flagged as fallback.

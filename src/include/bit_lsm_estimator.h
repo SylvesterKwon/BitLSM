@@ -45,10 +45,29 @@ struct GlobalOrderedStats {
   // floor above truth = overestimate = the conservative direction.
   uint64_t ndv = 0;
 
+  // Per-SST prune-bin geometry for the candidate (FPR) model: what the read
+  // path's bin-granular pruning admits is the matching mass rounded OUT to
+  // bin boundaries, and both the rounding unit (an equi-depth bin's mass)
+  // and the reach (the okey span) are per-SST facts. 24 bytes per SST per
+  // attr; kept flat so planning stays an O(live SSTs) arithmetic scan.
+  struct SSTBins {
+    uint64_t lo = 0;  // attr okey span in this SST (exact data bounds)
+    uint64_t hi = 0;
+    double binmass = 0;  // binned rows / prune-bin count (equi-depth)
+    double total = 0;    // binned rows of this attr in this SST
+  };
+  std::vector<SSTBins> sst_bins;
+
   // Estimated mass with okey in [lo, hi], both inclusive.
   double RangeMass(uint64_t lo, uint64_t hi) const;
   // RangeMass with the NDV equality floor applied to POINT windows.
   double PointAwareRangeMass(uint64_t lo, uint64_t hi) const;
+  // Expected CANDIDATE mass for the window: per covering SST, the matching
+  // share rounded out to prune-bin boundaries -- whole bin for a point,
+  // half a bin per free (unclipped) edge for a range -- floored at one bin,
+  // capped at the SST's binned rows. match_mass is the caller's global
+  // matching-mass estimate for the same window (apportioned span-uniformly).
+  double CandidateMass(uint64_t lo, uint64_t hi, double match_mass) const;
 
  private:
   // Estimated mass with okey strictly below `okey`.
@@ -64,6 +83,13 @@ struct GlobalUnorderedStats {
   std::unordered_map<std::string, double> value_counts;
   double total = 0;
   bool truncated = false;
+  // Candidate (FPR) scalar: sum over live SSTs of that SST's average bin
+  // mass (binned rows / bin count). An equality candidates its value's
+  // whole (balance-packed) bin in every SST, so this sum is the expected
+  // fetch mass of a point lookup. Unlike ORDERED there is no span to
+  // exclude an SST by, so the sum conservatively assumes the value occurs
+  // everywhere (an SST without the value prunes to zero at execution).
+  double binmass_sum = 0;
 };
 
 struct GlobalStats {
@@ -77,11 +103,15 @@ struct GlobalStats {
   uint64_t live_sst_count = 0;
 };
 
-// What EstimateSelectivity returns. The pair (selectivity, physical_rows)
-// serves both consumer slots: expected fetches (cost) = selectivity *
-// physical_rows, expected output rows = selectivity * the caller's own
-// logical row count. physical_rows is the live-SST sum, shadowing
-// uncorrected — correcting by a live/physical ratio is the caller's job.
+// What EstimateSelectivity returns, one number per consumer slot:
+//   output rows (row slot)  = selectivity * the caller's own logical count
+//   expected fetches (cost) = candidate_selectivity * physical_rows
+//                             + memtable_entries
+// The slots differ because the read path fetches bin-rounded CANDIDATES
+// (matching mass rounded out to prune-bin boundaries) plus the whole
+// unfiltered memtable, while the plan's output is the matching rows.
+// physical_rows is the live-SST sum, shadowing uncorrected — correcting by
+// a live/physical ratio is the caller's job.
 struct EstimateResult {
   // Fraction of physical live-SST rows expected to match the query,
   // combined across attrs under the independence assumption. Floored so
@@ -93,8 +123,23 @@ struct EstimateResult {
   // Attrs whose predicates could not be estimated (no live SSTs yet, attr
   // without stats, equality on a value dropped by NDV truncation). Their
   // factor in `selectivity` is 1.0; the caller applies its own fallback
-  // (e.g. sysvar constants) for exactly these attrs.
+  // (e.g. sysvar constants) for exactly these attrs (BOTH slots).
   std::vector<uint32_t> fallback_attrs;
+  // Fraction of physical live-SST rows the read path is expected to FETCH:
+  // bin-granular pruning admits matching rows rounded out to prune-bin
+  // boundaries, so this is selectivity's bin-rounded counterpart (equality:
+  // ~one bin per covering SST even when one row matches). Same independence
+  // combine and fallback contract as `selectivity`; invariant
+  // candidate_selectivity >= selectivity. Cost slot: expected SST fetches =
+  // candidate_selectivity * physical_rows (+ memtable_entries).
+  double candidate_selectivity = 1.0;
+  // Unflushed (active + immutable memtable) entries at estimate time. No
+  // SABI exists before flush, so the read path candidates every one of
+  // them regardless of the predicate; the consumer ADDS this to the SST
+  // fetch count. Read live per call, never from the rebuilt snapshot
+  // (physical_rows deliberately excludes the memtable; this is its
+  // complement). 0 without an estimator.
+  uint64_t memtable_entries = 0;
 };
 
 // Owns the GlobalStats cache for one column family, refreshed by a
@@ -143,6 +188,9 @@ class CardinalityEstimator {
 
  private:
   void WorkerLoop();
+  // Live unflushed entry count (active + immutable memtables), via the
+  // read path's thread-local SuperVersion ref -- hot-path cheap.
+  uint64_t MemtableEntries();
   // One pass: diff the live file set, rebuild + publish if drift crossed
   // the threshold. Worker-thread only.
   void Reconcile();
