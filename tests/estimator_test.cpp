@@ -691,6 +691,230 @@ TEST_F(BitLSMTestBase, InitialBuildRunsAtReopen) {
   EXPECT_EQ(db2.Estimator()->Stats()->physical_rows, 100u);
 }
 
+// ---------------------------------------------------------------------------
+// Candidate (FPR) slot + memtable term: the cost consumer prices FETCHES, and
+// the read path fetches bin-rounded candidates plus every unflushed entry,
+// not matching rows. candidate_selectivity models the former,
+// memtable_entries the latter. (MTR-scale validation: 21-point residual
+// table, 2026-07-22.)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+double CandidateRows(const EstimateResult& r) {
+  return r.candidate_selectivity * static_cast<double>(r.physical_rows);
+}
+
+// 2000 rows in one SST: a0 = 0..1999 unique, a1 = 100 distinct values x20
+// rows. rho 0.1 x 2 attrs -> 20-bin budget, uniform water-fill -> B=[10,10],
+// so ordered bin mass = unordered bin mass = 2000/10 = 200 exactly.
+void FillBinShared2000(BitLSM& db) {
+  for (int64_t i = 0; i < 2000; ++i)
+    ASSERT_TRUE(db.Put("k" + std::to_string(i),
+                       {i, "v" + std::to_string(i % 100)}, "p")
+                    .ok());
+  FlushDB(db);
+}
+
+}  // namespace
+
+// Workload: equality on a high-NDV ordered attr (NDV 2000 >> 10 bins), one
+//           matching row.
+// Threat: pricing fetches by MATCHING mass understates the whole-bin
+//         candidate cost by ~bin_mass/match (the SF2 444x misselection); an
+//         equality must cost one full equi-depth bin, ~total/B.
+TEST_F(BitLSMTestBase, CandidateEqualityCostsWholeBin) {
+  BitLSM& db = OpenDB(EstOptions());
+  FillBinShared2000(db);
+
+  SABIQuery q;
+  q.clause_groups = {{Ord(0, CompareOp::EQUAL, 1000)}};
+  EstimateResult r = db.EstimateSelectivity(q);
+  EXPECT_TRUE(r.fallback_attrs.empty());
+  EXPECT_NEAR(EstimatedRows(r), 1.0, 0.5) << "row slot stays matching mass";
+  EXPECT_NEAR(CandidateRows(r), 200.0, 1.0) << "cost slot pays one bin";
+  EXPECT_GE(r.candidate_selectivity, r.selectivity);
+}
+
+// Workload: interior 400-row range on the same high-NDV attr (both window
+//           edges free, i.e. strictly inside the SST span).
+// Threat: bin-boundary overshoot beyond the matching mass must be priced --
+//         one half-bin per free edge in expectation -- without ballooning a
+//         range whose mass already dwarfs the smear.
+TEST_F(BitLSMTestBase, CandidateRangeAddsEdgeSmear) {
+  BitLSM& db = OpenDB(EstOptions());
+  FillBinShared2000(db);
+
+  SABIQuery q;
+  q.clause_groups = {{Ord(0, CompareOp::GREATER_EQUAL, 500)},
+                     {Ord(0, CompareOp::LESS_EQUAL, 899)}};
+  EstimateResult r = db.EstimateSelectivity(q);
+  EXPECT_NEAR(EstimatedRows(r), 400.0, 20.0);
+  EXPECT_NEAR(CandidateRows(r), 600.0, 30.0)
+      << "match 400 + 2 free edges x half a 200-row bin";
+}
+
+// Workload: two SSTs with disjoint okey spans and 3x different sizes (1500
+//           rows over 0..1499, 500 rows over 1500..1999), point queries into
+//           each span.
+// Threat: one global bin-mass scalar prices both points identically (200);
+//         the real fetch cost is the covering SST's own bin mass (150 vs
+//         50) -- per-SST span awareness is load-bearing (time-ordered ingest
+//         makes disjoint spans the common LSM shape).
+TEST_F(BitLSMTestBase, CandidateFollowsSpanAcrossSSTs) {
+  BitLSM& db = OpenDB(EstOptions());
+  for (int64_t i = 0; i < 1500; ++i)
+    ASSERT_TRUE(db.Put("k" + std::to_string(i),
+                       {i, "v" + std::to_string(i % 100)}, "p")
+                    .ok());
+  FlushDB(db);
+  for (int64_t i = 1500; i < 2000; ++i)
+    ASSERT_TRUE(db.Put("k" + std::to_string(i),
+                       {i, "v" + std::to_string(i % 100)}, "p")
+                    .ok());
+  FlushDB(db);
+
+  SABIQuery q_big;
+  q_big.clause_groups = {{Ord(0, CompareOp::EQUAL, 700)}};
+  EXPECT_NEAR(CandidateRows(db.EstimateSelectivity(q_big)), 150.0, 1.0)
+      << "point in the 1500-row SST pays that SST's bin (1500/10)";
+
+  SABIQuery q_small;
+  q_small.clause_groups = {{Ord(0, CompareOp::EQUAL, 1700)}};
+  EXPECT_NEAR(CandidateRows(db.EstimateSelectivity(q_small)), 50.0, 1.0)
+      << "point in the 500-row SST pays only 500/10";
+}
+
+// Workload: equality on an unordered value sharing its bin with 9 others
+//           (100 distinct values, 10 bins, balanced packing).
+// Threat: the dictionary answers the MATCH exactly (20), but the read path
+//         candidates the whole shared bin (~200); the cost slot must pay the
+//         bin, not the dictionary count.
+TEST_F(BitLSMTestBase, CandidateUnorderedSharedBinMass) {
+  BitLSM& db = OpenDB(EstOptions());
+  FillBinShared2000(db);
+
+  SABIQuery q;
+  q.clause_groups = {{Uno(1, "v37")}};
+  EstimateResult r = db.EstimateSelectivity(q);
+  EXPECT_NEAR(EstimatedRows(r), 20.0, 1.0);
+  EXPECT_NEAR(CandidateRows(r), 200.0, 1.0);
+}
+
+// Workload: conjunction of the 400-row range and the shared-bin unordered
+//           equality (independent by construction).
+// Threat: candidate fractions must compose as an independence product like
+//         match fractions do -- the bitmap AND intersects candidates, which
+//         is exactly why conjunctive queries cancel FPR and stay bi-friendly.
+TEST_F(BitLSMTestBase, CandidateConjunctionMultipliesFractions) {
+  BitLSM& db = OpenDB(EstOptions());
+  FillBinShared2000(db);
+
+  SABIQuery q;
+  q.clause_groups = {{Ord(0, CompareOp::GREATER_EQUAL, 500)},
+                     {Ord(0, CompareOp::LESS_EQUAL, 899)},
+                     {Uno(1, "v37")}};
+  EstimateResult r = db.EstimateSelectivity(q);
+  EXPECT_NEAR(EstimatedRows(r), 4.0, 1.5) << "0.2 x 0.01 x 2000";
+  EXPECT_NEAR(CandidateRows(r), 60.0, 8.0) << "0.3 x 0.1 x 2000";
+}
+
+// Workload: one unordered value carrying 95% of the rows (alone in its bin
+//           under balanced packing), equality on it.
+// Threat: candidates are a superset of matches, so candidate_selectivity <
+//         selectivity is a contradiction the consumer would turn into
+//         fetch_count < output_rows; the invariant must hold under skew
+//         where the avg bin mass (200) sits far below the match (1900).
+TEST_F(BitLSMTestBase, CandidateNeverBelowMatch) {
+  BitLSM& db = OpenDB(EstOptions());
+  for (int64_t i = 0; i < 1900; ++i)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {i, std::string("hot")}, "p").ok());
+  for (int64_t i = 1900; i < 2000; ++i)
+    ASSERT_TRUE(db.Put("k" + std::to_string(i),
+                       {i, "t" + std::to_string(i)}, "p")
+                    .ok());
+  FlushDB(db);
+
+  SABIQuery q;
+  q.clause_groups = {{Uno(1, "hot")}};
+  EstimateResult r = db.EstimateSelectivity(q);
+  EXPECT_NEAR(EstimatedRows(r), 1900.0, 40.0);
+  EXPECT_GE(r.candidate_selectivity, r.selectivity);
+  EXPECT_NEAR(CandidateRows(r), 1900.0, 40.0)
+      << "matches floor the candidates when they exceed the avg bin";
+}
+
+// Workload: an IN-shaped OR clause of three ordered points in three distinct
+//           bins.
+// Threat: each point candidates its own whole bin; summing member matches
+//         (~3) instead of member bins (~600) reintroduces the equality
+//         underpricing through the OR door.
+TEST_F(BitLSMTestBase, CandidateOrClauseSumsMemberBins) {
+  BitLSM& db = OpenDB(EstOptions());
+  FillBinShared2000(db);
+
+  SABIQuery q;
+  q.clause_groups = {
+      {Ord(0, CompareOp::EQUAL, 100), Ord(0, CompareOp::EQUAL, 1000),
+       Ord(0, CompareOp::EQUAL, 1900)}};
+  EstimateResult r = db.EstimateSelectivity(q);
+  EXPECT_NEAR(EstimatedRows(r), 3.0, 1.5);
+  EXPECT_NEAR(CandidateRows(r), 600.0, 5.0);
+}
+
+// Workload: unflushed rows only, then a flush, then more unflushed rows --
+//           estimates taken at each stage.
+// Threat: unflushed entries have no SABI, so the read path candidates every
+//         one of them regardless of the predicate (MTR phase C: a predicate
+//         missing the SST span entirely still fetched exactly the memtable
+//         count). A consumer without this term underprices every fresh
+//         table; a stale count would misprice right after a flush.
+TEST_F(BitLSMTestBase, MemtableEntriesSurfaceInEstimate) {
+  BitLSM& db = OpenDB(EstOptions());
+  for (int64_t i = 0; i < 100; ++i)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {i, std::string("a")}, "p").ok());
+
+  SABIQuery q;
+  q.clause_groups = {{Ord(0, CompareOp::EQUAL, 5)}};
+  EstimateResult r = db.EstimateSelectivity(q);
+  EXPECT_EQ(r.memtable_entries, 100u)
+      << "pre-first-flush: the memtable count must ride the fallback answer";
+  EXPECT_EQ(r.physical_rows, 0u);
+
+  FlushDB(db);
+  r = db.EstimateSelectivity(q);
+  EXPECT_EQ(r.memtable_entries, 0u) << "flush drains the term to zero";
+  EXPECT_EQ(r.physical_rows, 100u);
+
+  for (int64_t i = 100; i < 150; ++i)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {i, std::string("a")}, "p").ok());
+  r = db.EstimateSelectivity(q);
+  EXPECT_EQ(r.memtable_entries, 50u) << "live count, not rebuild-time stale";
+}
+
+// Workload: estimator disabled (standalone default), estimate after a flush.
+// Threat: the new fields must keep neutral defaults on the no-estimator
+//         path -- candidate factor 1 and no memtable term -- so existing
+//         fallback consumers see no behavior change.
+TEST_F(BitLSMTestBase, CandidateFieldsNeutralWhenDisabled) {
+  BitLSMOptions opt = EstOptions();
+  opt.enable_estimator = false;
+  BitLSM& db = OpenDB(opt);
+  for (int64_t i = 0; i < 10; ++i)
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {i, std::string("a")}, "p").ok());
+  FlushDB(db);
+
+  SABIQuery q;
+  q.clause_groups = {{Ord(0, CompareOp::EQUAL, 5)}};
+  EstimateResult r = db.EstimateSelectivity(q);
+  EXPECT_DOUBLE_EQ(r.candidate_selectivity, 1.0);
+  EXPECT_EQ(r.memtable_entries, 0u);
+}
+
 // Workload: yyyymm-shaped sparse integers -- 84 real values (7 years x 12
 //           months) over a 611-wide okey span with 89-value holes at every
 //           year boundary; 10 rows per value.
