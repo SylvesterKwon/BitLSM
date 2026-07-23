@@ -219,10 +219,15 @@ class SABITableIterator : public SABIInternalIterator {
       target_blocks_;                    // {index, blockhandle}
   int32_t cur_target_block_idx_ = -1;    // current index for target_blocks_
   std::vector<uint32_t> local_indexes_;  // buffer for block-local index
+  // Grows to fit the largest block seen, then keeps its slots: entries are
+  // overwritten in place instead of destroyed, so each key slot holds on to
+  // its heap buffer. size() is therefore capacity, not occupancy --
+  // buffer_count_ is the only valid-entry count.
   std::vector<rocksdb::PinnableSlice> keys_buffer_;
   // Borrowed from the block biter_ pins; valid until the next block load.
   std::vector<rocksdb::Slice> values_buffer_;
-  int32_t buffer_idx_ = 0;  // 버퍼 내 현재 커서
+  int32_t buffer_idx_ = 0;    // 버퍼 내 현재 커서
+  int32_t buffer_count_ = 0;  // 버퍼 내 유효 엔트리 수
 
   // Get all data entries by indexes from data block
   // indexes must be sorted and unique
