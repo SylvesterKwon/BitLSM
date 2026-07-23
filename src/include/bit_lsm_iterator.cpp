@@ -100,9 +100,7 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       ParsedInternalKey ikey;
       s = rocksdb::ParseInternalKey(smi_->key(), &ikey, false);
       if (s.ok()) {
-        // Compared as a Slice against the last key kept, so a duplicate --
-        // the common case for a key present at several levels -- costs a
-        // memcmp instead of a copy.
+        // Compared as a Slice, so a duplicate costs a memcmp, not a copy.
         if (ikey.user_key != Slice(latest_user_key_added)) {
           candidate_keys_.emplace_back(ikey.user_key.data(),
                                        ikey.user_key.size());
@@ -118,9 +116,8 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
     // authoritative fetch and per-row verification; the consumer fetches
     // with its own snapshot and re-verifies.
     if (result_mode_ == ResultMode::Candidate) {
-      // Swapped rather than move-assigned: a move would leave candidate_keys_
-      // with no buffer, so the next batch would have to reallocate it.
-      // batch_keys_ was cleared above and still holds its capacity.
+      // swap, not move-assign: a move would leave candidate_keys_ with no
+      // buffer for the next batch.
       batch_keys_.swap(candidate_keys_);
       continue;
     }

@@ -108,9 +108,8 @@ class BitLSMIterator : public SABIInternalIterator {
   std::vector<std::string> batch_values_;
   uint32_t batch_cur_idx_ = 0;
 
-  // Scratch for the dedup pass feeding each batch; a member so the vector's
-  // own buffer survives across batches. Its elements are handed to
-  // batch_keys_, so the strings themselves are not reused.
+  // Dedup scratch per batch; a member so the vector's buffer survives. Its
+  // elements move out into batch_keys_, so the strings are not reused.
   std::vector<std::string> candidate_keys_;
 
   std::string latest_user_key_added;
@@ -224,10 +223,8 @@ class SABITableIterator : public SABIInternalIterator {
       target_blocks_;                    // {index, blockhandle}
   int32_t cur_target_block_idx_ = -1;    // current index for target_blocks_
   std::vector<uint32_t> local_indexes_;  // buffer for block-local index
-  // Grows to fit the largest block seen, then keeps its slots: entries are
-  // overwritten in place instead of destroyed, so each key slot holds on to
-  // its heap buffer. size() is therefore capacity, not occupancy --
-  // buffer_count_ is the only valid-entry count.
+  // Slots are overwritten, never destroyed, so each keeps its buffer: size()
+  // is capacity and buffer_count_ is the valid-entry count.
   std::vector<rocksdb::PinnableSlice> keys_buffer_;
   // Borrowed from the block biter_ pins; valid until the next block load.
   std::vector<rocksdb::Slice> values_buffer_;

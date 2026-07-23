@@ -34,16 +34,13 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
     const BlockHandle& bh, vector<uint32_t>& indexes,
     vector<PinnableSlice>& out_keys, vector<Slice>& out_values) {
   Status s;
-  // Slots persist across blocks: PinSelf below assigns into each slot's
-  // existing buffer, so only the first few blocks allocate. The buffers
-  // therefore only ever grow, and buffer_count_ -- never size() -- is the
-  // number of valid entries.
+  // Grow-only: PinSelf below assigns into each slot's retained buffer, and
+  // buffer_count_ -- never size() -- is the valid-entry count.
   if (out_keys.size() < indexes.size()) {
     out_keys.resize(indexes.size());
     out_values.resize(indexes.size());
   }
-  // Must precede the biter_ reset below: that unpins the block the current
-  // out_values borrow from, so they have to stop being readable first.
+  // Before the biter_ reset, which unpins the block out_values borrow from.
   buffer_count_ = 0;
 
   // Delete previous block iterator to unpin previous block value
@@ -364,9 +361,8 @@ void SABITableIterator::LoadNextBlock() {
       // 5-4. Filter query condition (nullptr compiled = consumer re-verifies)
       if (!compiled_ || compiled_->Eval(values_buffer_[i])) {
         if (i != valid_cursor) {
-          // Copy, not move: a move would hand slot i's buffer to the survivor
-          // and leave slot i empty, so the next block fill would allocate for
-          // it again.
+          // Copy, not move: a move empties slot i and re-allocates it on the
+          // next block.
           keys_buffer_[valid_cursor].PinSelf(keys_buffer_[i]);
           values_buffer_[valid_cursor] = values_buffer_[i];
         }
