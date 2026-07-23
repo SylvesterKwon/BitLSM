@@ -92,40 +92,47 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
   // 2. Try to find next valid batch which contains at least one valid data
   // entry
   while (batch_keys_.empty() && smi_->Valid()) {
-    vector<string> candidate_keys;
-    candidate_keys.reserve(batch_size);
+    candidate_keys_.clear();
+    candidate_keys_.reserve(batch_size);
 
     // 3. Get candidate keys
-    while (smi_->Valid() && candidate_keys.size() < batch_size) {
+    while (smi_->Valid() && candidate_keys_.size() < batch_size) {
       ParsedInternalKey ikey;
       s = rocksdb::ParseInternalKey(smi_->key(), &ikey, false);
       if (s.ok()) {
-        string cur_user_key = ikey.user_key.ToString();
-        if (cur_user_key != latest_user_key_added) {
-          candidate_keys.push_back(cur_user_key);
-          latest_user_key_added = cur_user_key;
+        // Compared as a Slice against the last key kept, so a duplicate --
+        // the common case for a key present at several levels -- costs a
+        // memcmp instead of a copy.
+        if (ikey.user_key != Slice(latest_user_key_added)) {
+          candidate_keys_.emplace_back(ikey.user_key.data(),
+                                       ikey.user_key.size());
+          latest_user_key_added.assign(ikey.user_key.data(),
+                                       ikey.user_key.size());
         }
       }
       smi_->Next();
     }
-    if (candidate_keys.empty()) break;
+    if (candidate_keys_.empty()) break;
 
     // Candidate mode: the bitmap-pruned keys are the result. Skip the
     // authoritative fetch and per-row verification; the consumer fetches
     // with its own snapshot and re-verifies.
     if (result_mode_ == ResultMode::Candidate) {
-      batch_keys_ = std::move(candidate_keys);
+      // Swapped rather than move-assigned: a move would leave candidate_keys_
+      // with no buffer, so the next batch would have to reallocate it.
+      // batch_keys_ was cleared above and still holds its capacity.
+      batch_keys_.swap(candidate_keys_);
       continue;
     }
 
     // 4. MultiGet candidates from RocksDB
     vector<Slice> candidate_key_slices;
-    candidate_key_slices.reserve(candidate_keys.size());
-    for (const auto& k : candidate_keys) {
+    candidate_key_slices.reserve(candidate_keys_.size());
+    for (const auto& k : candidate_keys_) {
       candidate_key_slices.push_back(Slice(k));
     }
-    vector<PinnableSlice> pin_values(candidate_keys.size());
-    vector<Status> statuses(candidate_keys.size());
+    vector<PinnableSlice> pin_values(candidate_keys_.size());
+    vector<Status> statuses(candidate_keys_.size());
     // vector<string> db_values;
     ReadOptions ro;
     ro.snapshot = snapshot_;
@@ -142,7 +149,7 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       // 5-2. Value validation (nullptr compiled = consumer re-verifies)
       if (!query_ctx_.compiled || query_ctx_.compiled->Eval(pin_values[i])) {
         // 5-3. Move key/value to validated batch if valid entry
-        batch_keys_.push_back(std::move(candidate_keys[i]));
+        batch_keys_.push_back(std::move(candidate_keys_[i]));
         // Optimization: Only call ToString() to valid value
         batch_values_.push_back(pin_values[i].ToString());
       }

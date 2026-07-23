@@ -108,6 +108,11 @@ class BitLSMIterator : public SABIInternalIterator {
   std::vector<std::string> batch_values_;
   uint32_t batch_cur_idx_ = 0;
 
+  // Scratch for the dedup pass feeding each batch; a member so the vector's
+  // own buffer survives across batches. Its elements are handed to
+  // batch_keys_, so the strings themselves are not reused.
+  std::vector<std::string> candidate_keys_;
+
   std::string latest_user_key_added;
 
   void FetchNextBatch(uint32_t batch_size);
