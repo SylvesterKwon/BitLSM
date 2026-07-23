@@ -717,10 +717,8 @@ TEST_F(BitLSMTestBase, SparseDomainEqualityNdvFloor) {
   // The raw grid smears the point into the holes (~840/611 per okey unit).
   EXPECT_LT(ord.RangeMass(I64ToOkey(199401), I64ToOkey(199401)), 5.0);
   // The floor restores the per-value truth (840/84 = 10).
-  EXPECT_NEAR(
-      ord.PointAwareRangeMass(I64ToOkey(199401), I64ToOkey(199401)), 10.0,
-      2.0);
+  EXPECT_NEAR(ord.PointAwareRangeMass(I64ToOkey(199401), I64ToOkey(199401)),
+              10.0, 2.0);
   // Whole-domain range: mass conserved, no correction.
-  EXPECT_NEAR(ord.RangeMass(I64ToOkey(199201), I64ToOkey(199812)), 840.0,
-              1e-6);
+  EXPECT_NEAR(ord.RangeMass(I64ToOkey(199201), I64ToOkey(199812)), 840.0, 1e-6);
 }

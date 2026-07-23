@@ -256,8 +256,7 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
   {
     vector<uint64_t> uniq(v);
     std::sort(uniq.begin(), uniq.end());
-    distinct_cnts_[i] =
-        std::unique(uniq.begin(), uniq.end()) - uniq.begin();
+    distinct_cnts_[i] = std::unique(uniq.begin(), uniq.end()) - uniq.begin();
   }
 
   // N+1 okey boundary thresholds.
