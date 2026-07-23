@@ -34,10 +34,14 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
     const BlockHandle& bh, vector<uint32_t>& indexes,
     vector<PinnableSlice>& out_keys, vector<Slice>& out_values) {
   Status s;
-  out_keys.clear();
-  out_values.clear();
-  out_keys.resize(indexes.size());
-  out_values.resize(indexes.size());
+  // Grow-only: PinSelf below assigns into each slot's retained buffer, and
+  // buffer_count_ -- never size() -- is the valid-entry count.
+  if (out_keys.size() < indexes.size()) {
+    out_keys.resize(indexes.size());
+    out_values.resize(indexes.size());
+  }
+  // Before the biter_ reset, which unpins the block out_values borrow from.
+  buffer_count_ = 0;
 
   // Delete previous block iterator to unpin previous block value
   DataBlockIter* new_biter = bbt_->NewDataBlockIterator<DataBlockIter>(
@@ -48,7 +52,6 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
   uint32_t cur_checkpoint =
       UINT32_MAX;  // UINT32_MAX means no valid checkpoint is used
   uint32_t cur_offset = 0;
-  uint32_t result_idx = 0;
 
   for (uint32_t i = 0; i < indexes.size(); i++) {
     uint32_t target_checkpoint = indexes[i] / block_restart_interval_;
@@ -72,6 +75,7 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
       assert(false);
     }
   }
+  buffer_count_ = static_cast<int32_t>(indexes.size());
 }
 
 SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
@@ -331,14 +335,13 @@ void SABITableIterator::LoadNextBlock() {
     if (local_indexes_.empty()) continue;  // Move to next block
 
     // 4. Load data block
-    keys_buffer_.clear(), values_buffer_.clear();
     GetAllByIndexesFromDataBlock(cur_bh, local_indexes_, keys_buffer_,
                                  values_buffer_);
 
     // 5. Validate & filter value (two-pointer filtering)
     Status s;
-    size_t valid_cursor = 0;
-    for (size_t i = 0; i < keys_buffer_.size(); ++i) {
+    int32_t valid_cursor = 0;
+    for (int32_t i = 0; i < buffer_count_; ++i) {
       // 5-1. Skip corrupted key
       ParsedInternalKey ikey;
       s = rocksdb::ParseInternalKey(keys_buffer_[i], &ikey, false);
@@ -358,17 +361,18 @@ void SABITableIterator::LoadNextBlock() {
       // 5-4. Filter query condition (nullptr compiled = consumer re-verifies)
       if (!compiled_ || compiled_->Eval(values_buffer_[i])) {
         if (i != valid_cursor) {
-          keys_buffer_[valid_cursor] = std::move(keys_buffer_[i]);
+          // Copy, not move: a move empties slot i and re-allocates it on the
+          // next block.
+          keys_buffer_[valid_cursor].PinSelf(keys_buffer_[i]);
           values_buffer_[valid_cursor] = values_buffer_[i];
         }
         valid_cursor++;
       }
     }
-    keys_buffer_.resize(valid_cursor);
-    values_buffer_.resize(valid_cursor);
+    buffer_count_ = valid_cursor;
 
     // 6. Finalize loaded buffer
-    if (!keys_buffer_.empty()) {
+    if (buffer_count_ > 0) {
       buffer_idx_ = 0;
       valid_ = true;
       return;
@@ -379,8 +383,7 @@ void SABITableIterator::LoadNextBlock() {
 void SABITableIterator::SeekToFirst() {
   cur_target_block_idx_ = -1;
   buffer_idx_ = 0;
-  keys_buffer_.clear();
-  values_buffer_.clear();
+  buffer_count_ = 0;
   bitmap_iter_ = query_bitmap_->begin();
   LoadNextBlock();
 }
@@ -392,7 +395,7 @@ void SABITableIterator::Next() {
   buffer_idx_++;
 
   // 2. If all buffer entries consumed, load next block
-  if (buffer_idx_ >= keys_buffer_.size()) {
+  if (buffer_idx_ >= buffer_count_) {
     valid_ = false;
     LoadNextBlock();
   }
