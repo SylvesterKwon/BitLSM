@@ -51,7 +51,7 @@ struct GlobalOrderedStats {
   // and the reach (the okey span) are per-SST facts. 24 bytes per SST per
   // attr; kept flat so planning stays an O(live SSTs) arithmetic scan.
   struct SSTBins {
-    uint64_t lo = 0;     // attr okey span in this SST (exact data bounds)
+    uint64_t lo = 0;  // attr okey span in this SST (exact data bounds)
     uint64_t hi = 0;
     double binmass = 0;  // binned rows / prune-bin count (equi-depth)
     double total = 0;    // binned rows of this attr in this SST

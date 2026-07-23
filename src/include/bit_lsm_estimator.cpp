@@ -82,16 +82,16 @@ double GlobalOrderedStats::CandidateMass(uint64_t lo, uint64_t hi,
     uint64_t c_hi = std::min(hi, s.hi);
     double span_len = static_cast<double>(s.hi - s.lo) + 1.0;
     double ov_len = static_cast<double>(c_hi - c_lo) + 1.0;
-    double match_s = overlap_total > 0
-                         ? match_mass * (s.total * (ov_len / span_len)) /
-                               overlap_total
-                         : 0;
+    double match_s =
+        overlap_total > 0
+            ? match_mass * (s.total * (ov_len / span_len)) / overlap_total
+            : 0;
     double c;
     if (lo == hi) {
       c = std::max(s.binmass, match_s);
     } else {
-      double smear = ((c_lo > s.lo ? 0.5 : 0.0) + (c_hi < s.hi ? 0.5 : 0.0)) *
-                     s.binmass;
+      double smear =
+          ((c_lo > s.lo ? 0.5 : 0.0) + (c_hi < s.hi ? 0.5 : 0.0)) * s.binmass;
       c = std::max(s.binmass, match_s + smear);
     }
     cand += std::min(c, s.total);

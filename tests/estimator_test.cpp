@@ -710,9 +710,9 @@ double CandidateRows(const EstimateResult& r) {
 // so ordered bin mass = unordered bin mass = 2000/10 = 200 exactly.
 void FillBinShared2000(BitLSM& db) {
   for (int64_t i = 0; i < 2000; ++i)
-    ASSERT_TRUE(db.Put("k" + std::to_string(i),
-                       {i, "v" + std::to_string(i % 100)}, "p")
-                    .ok());
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {i, "v" + std::to_string(i % 100)}, "p")
+            .ok());
   FlushDB(db);
 }
 
@@ -764,14 +764,14 @@ TEST_F(BitLSMTestBase, CandidateRangeAddsEdgeSmear) {
 TEST_F(BitLSMTestBase, CandidateFollowsSpanAcrossSSTs) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 1500; ++i)
-    ASSERT_TRUE(db.Put("k" + std::to_string(i),
-                       {i, "v" + std::to_string(i % 100)}, "p")
-                    .ok());
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {i, "v" + std::to_string(i % 100)}, "p")
+            .ok());
   FlushDB(db);
   for (int64_t i = 1500; i < 2000; ++i)
-    ASSERT_TRUE(db.Put("k" + std::to_string(i),
-                       {i, "v" + std::to_string(i % 100)}, "p")
-                    .ok());
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {i, "v" + std::to_string(i % 100)}, "p")
+            .ok());
   FlushDB(db);
 
   SABIQuery q_big;
@@ -831,9 +831,9 @@ TEST_F(BitLSMTestBase, CandidateNeverBelowMatch) {
     ASSERT_TRUE(
         db.Put("k" + std::to_string(i), {i, std::string("hot")}, "p").ok());
   for (int64_t i = 1900; i < 2000; ++i)
-    ASSERT_TRUE(db.Put("k" + std::to_string(i),
-                       {i, "t" + std::to_string(i)}, "p")
-                    .ok());
+    ASSERT_TRUE(
+        db.Put("k" + std::to_string(i), {i, "t" + std::to_string(i)}, "p")
+            .ok());
   FlushDB(db);
 
   SABIQuery q;
@@ -855,9 +855,9 @@ TEST_F(BitLSMTestBase, CandidateOrClauseSumsMemberBins) {
   FillBinShared2000(db);
 
   SABIQuery q;
-  q.clause_groups = {
-      {Ord(0, CompareOp::EQUAL, 100), Ord(0, CompareOp::EQUAL, 1000),
-       Ord(0, CompareOp::EQUAL, 1900)}};
+  q.clause_groups = {{Ord(0, CompareOp::EQUAL, 100),
+                      Ord(0, CompareOp::EQUAL, 1000),
+                      Ord(0, CompareOp::EQUAL, 1900)}};
   EstimateResult r = db.EstimateSelectivity(q);
   EXPECT_NEAR(EstimatedRows(r), 3.0, 1.5);
   EXPECT_NEAR(CandidateRows(r), 600.0, 5.0);
@@ -941,10 +941,8 @@ TEST_F(BitLSMTestBase, SparseDomainEqualityNdvFloor) {
   // The raw grid smears the point into the holes (~840/611 per okey unit).
   EXPECT_LT(ord.RangeMass(I64ToOkey(199401), I64ToOkey(199401)), 5.0);
   // The floor restores the per-value truth (840/84 = 10).
-  EXPECT_NEAR(
-      ord.PointAwareRangeMass(I64ToOkey(199401), I64ToOkey(199401)), 10.0,
-      2.0);
+  EXPECT_NEAR(ord.PointAwareRangeMass(I64ToOkey(199401), I64ToOkey(199401)),
+              10.0, 2.0);
   // Whole-domain range: mass conserved, no correction.
-  EXPECT_NEAR(ord.RangeMass(I64ToOkey(199201), I64ToOkey(199812)), 840.0,
-              1e-6);
+  EXPECT_NEAR(ord.RangeMass(I64ToOkey(199201), I64ToOkey(199812)), 840.0, 1e-6);
 }
