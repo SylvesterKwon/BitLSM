@@ -32,7 +32,7 @@ static const roaring::Roaring& EmptyBitmap() {
 
 void SABITableIterator::GetAllByIndexesFromDataBlock(
     const BlockHandle& bh, vector<uint32_t>& indexes,
-    vector<PinnableSlice>& out_keys, vector<PinnableSlice>& out_values) {
+    vector<PinnableSlice>& out_keys, vector<Slice>& out_values) {
   Status s;
   out_keys.clear();
   out_values.clear();
@@ -67,7 +67,7 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
       // since key use delta-encoding and bufffer will be overwritten, we can't
       // zero-copy it
       out_keys[i].PinSelf(biter_->key());
-      out_values[i].PinSlice(biter_->value(), nullptr);
+      out_values[i] = biter_->value();
     } else {
       assert(false);
     }
@@ -359,7 +359,7 @@ void SABITableIterator::LoadNextBlock() {
       if (!compiled_ || compiled_->Eval(values_buffer_[i])) {
         if (i != valid_cursor) {
           keys_buffer_[valid_cursor] = std::move(keys_buffer_[i]);
-          values_buffer_[valid_cursor] = std::move(values_buffer_[i]);
+          values_buffer_[valid_cursor] = values_buffer_[i];
         }
         valid_cursor++;
       }
