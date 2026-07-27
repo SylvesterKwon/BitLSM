@@ -232,7 +232,8 @@ size_t SABIReader::ApproximateMemoryUsage() const {
   // Frozen bitmap storage: actual allocated size, including allocator
   // rounding (buffers come from posix_memalign in the constructor).
   usage += managed_buffers_.capacity() * sizeof(AlignedPtr);
-  for (const auto& buf : managed_buffers_) usage += malloc_usable_size(buf.get());
+  for (const auto& buf : managed_buffers_)
+    usage += malloc_usable_size(buf.get());
 
   // Schema residue parsed out of the blob's directory.
   usage += schema_.roles.capacity() * sizeof(AttrRole);

@@ -206,7 +206,8 @@ class SABITableIterator : public SABIInternalIterator {
   // alive. Declared before every member that references reader state —
   // members are destroyed in reverse order, so this must die last.
   rocksdb::CachableEntry<rocksdb::Block_kUserDefinedIndex> udi_entry_;
-  SABIReader* sabi_reader_ = nullptr;  // points into udi_entry_; null on failure
+  SABIReader* sabi_reader_ =
+      nullptr;  // points into udi_entry_; null on failure
   const SABIQuery& query_;
   const CompiledQuery* compiled_;  // nullptr = skip per-row Eval
   uint32_t block_restart_interval_ = 0;
