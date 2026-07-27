@@ -89,13 +89,20 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
   batch_cur_idx_ = 0;
   valid_ = false;
 
-  // 2. Try to find next valid batch which contains at least one valid data
+  // 2. Never scan on top of a failed merge: the merging iterator stops on the
+  // first child error, so anything it could still yield is a partial answer.
+  if (!smi_->status().ok()) {
+    status_ = smi_->status();
+    return;
+  }
+
+  // 3. Try to find next valid batch which contains at least one valid data
   // entry
   while (batch_keys_.empty() && smi_->Valid()) {
     candidate_keys_.clear();
     candidate_keys_.reserve(batch_size);
 
-    // 3. Get candidate keys
+    // 4. Get candidate keys
     while (smi_->Valid() && candidate_keys_.size() < batch_size) {
       ParsedInternalKey ikey;
       s = rocksdb::ParseInternalKey(smi_->key(), &ikey, false);
@@ -110,6 +117,15 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       }
       smi_->Next();
     }
+    // The merge may have stopped on an error partway through this batch.
+    // Half a batch is worse than none, so drop it and report the failure.
+    if (!smi_->status().ok()) {
+      status_ = smi_->status();
+      candidate_keys_.clear();
+      batch_keys_.clear();
+      batch_values_.clear();
+      return;
+    }
     if (candidate_keys_.empty()) break;
 
     // Candidate mode: the bitmap-pruned keys are the result. Skip the
@@ -122,7 +138,7 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       continue;
     }
 
-    // 4. MultiGet candidates from RocksDB
+    // 5. MultiGet candidates from RocksDB
     vector<Slice> candidate_key_slices;
     candidate_key_slices.reserve(candidate_keys_.size());
     for (const auto& k : candidate_keys_) {
@@ -138,14 +154,14 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
                   candidate_key_slices.data(), pin_values.data(),
                   statuses.data(), true);
 
-    // 5. Cross check
+    // 6. Cross check
     for (uint32_t i = 0; i < candidate_key_slices.size(); ++i) {
-      // 5-1. Check given candidate key exists in DB
+      // 6-1. Check given candidate key exists in DB
       if (!statuses[i].ok()) continue;
 
-      // 5-2. Value validation (nullptr compiled = consumer re-verifies)
+      // 6-2. Value validation (nullptr compiled = consumer re-verifies)
       if (!query_ctx_.compiled || query_ctx_.compiled->Eval(pin_values[i])) {
-        // 5-3. Move key/value to validated batch if valid entry
+        // 6-3. Move key/value to validated batch if valid entry
         batch_keys_.push_back(std::move(candidate_keys_[i]));
         // Optimization: Only call ToString() to valid value
         batch_values_.push_back(pin_values[i].ToString());
@@ -153,7 +169,7 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
     }
   }
 
-  // 6. Update valid_
+  // 7. Update valid_
   if (!batch_keys_.empty()) valid_ = true;
 }
 

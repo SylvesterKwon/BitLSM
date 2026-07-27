@@ -48,6 +48,12 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
       ReadOptions(), bh, nullptr, BlockType::kData, nullptr, nullptr, nullptr,
       false, false, s, true);
   biter_.reset(new_biter);
+  if (!s.ok()) {
+    // The block the bitmap pointed at is unreadable. Its rows cannot be
+    // skipped silently, so stop the scan here and let the status propagate.
+    status_ = s;
+    return;  // buffer_count_ stays 0
+  }
 
   uint32_t cur_checkpoint =
       UINT32_MAX;  // UINT32_MAX means no valid checkpoint is used
@@ -94,7 +100,12 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
   // bitmap borrowed from the reader below.
   Status s = bbt_->GetUserDefinedIndexReader(ReadOptions(), &udi_entry_);
   if (!s.ok()) {
+    // Every failure here is fatal for the scan, NotFound (an SST carrying no
+    // SABI block) included: the query path has no fallback scan, so skipping
+    // this file would silently drop every row it holds. Record the status so
+    // the parent iterators stop instead of reading it as "no matching rows".
     cerr << "Failed to load SABI: " << s.ToString() << "\n";
+    status_ = s;
     return;  // stays !Valid(); SeekToFirst is a no-op
   }
   sabi_reader_ = static_cast<SABIReader*>(udi_entry_.GetValue()->reader());
@@ -347,6 +358,10 @@ void SABITableIterator::LoadNextBlock() {
     // 4. Load data block
     GetAllByIndexesFromDataBlock(cur_bh, local_indexes_, keys_buffer_,
                                  values_buffer_);
+    if (!status_.ok()) {
+      valid_ = false;
+      return;
+    }
 
     // 5. Validate & filter value (two-pointer filtering)
     Status s;

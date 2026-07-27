@@ -10,6 +10,7 @@
 #include "db/column_family.h"
 #include "db/db_impl/db_impl.h"
 #include "db/version_set.h"
+#include "rocksdb/status.h"
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
 
@@ -20,12 +21,19 @@ namespace bit_lsm {
 class SABIInternalIterator {
  protected:
   bool valid_ = false;
+  // OK unless iteration hit an error. Sticky: once an iterator fails it stays
+  // failed, because the failure (a SABI block that will not load) is not
+  // recoverable by re-seeking the same iterator. Every layer must therefore
+  // distinguish "!Valid() and OK" (exhausted) from "!Valid() and !OK"
+  // (stopped early), never treating the latter as end-of-data.
+  rocksdb::Status status_;
 
  public:
   virtual ~SABIInternalIterator() {};
   virtual void SeekToFirst() = 0;
   virtual void Next() = 0;
   bool Valid() const { return valid_; };
+  virtual rocksdb::Status status() const { return status_; };
   virtual rocksdb::Slice key() const = 0;
   virtual rocksdb::Slice value() const = 0;
 };
@@ -78,7 +86,11 @@ struct ScanContext {
         cf_opts(sv->mutable_cf_options) {}
 };
 
-// Iterator for SABI
+// Iterator for SABI.
+// rocksdb-Iterator style: !Valid() alone only means "no more rows". Callers
+// that must not accept a partial answer check status() -- non-OK there means
+// the scan stopped on an error (typically an SST whose SABI block could not be
+// loaded), so the rows produced so far are an incomplete result.
 class BitLSMIterator : public SABIInternalIterator {
  private:
   rocksdb::DB* db_;

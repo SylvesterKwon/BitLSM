@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <rocksdb/cache.h>
+#include <rocksdb/db.h>
 #include <rocksdb/table.h>
 
 #include <cstdio>
@@ -126,6 +127,9 @@ class UDIBlockCacheTest : public BitLSMTestBase {
     EXPECT_NE(it, nullptr);
     size_t n = 0;
     for (it->SeekToFirst(); it->Valid(); it->Next()) n++;
+    // A complete scan: the iterator stopped because it ran out of rows, not
+    // because a SABI load failed somewhere below it.
+    EXPECT_TRUE(it->status().ok()) << it->status().ToString();
     return n;
   }
 
@@ -204,6 +208,9 @@ TEST_F(UDIBlockCacheTest, LiveIteratorKeepsSABIPinnedAgainstEviction) {
   ASSERT_NE(empty_it, nullptr);
   empty_it->SeekToFirst();
   ASSERT_FALSE(empty_it->Valid());
+  // Invalid because nothing matched, which must stay distinguishable from
+  // invalid because the SABI block could not be loaded.
+  EXPECT_TRUE(empty_it->status().ok()) << empty_it->status().ToString();
 
   cache_->EraseUnRefEntries();
   EXPECT_GT(cache_->GetUsage(), usage_evicted);
@@ -213,6 +220,57 @@ TEST_F(UDIBlockCacheTest, LiveIteratorKeepsSABIPinnedAgainstEviction) {
   empty_it.reset();
   cache_->EraseUnRefEntries();
   EXPECT_EQ(cache_->GetUsage(), usage_evicted);
+}
+
+// Workload: an SST written by a plain RocksDB (no user-defined index factory),
+//           then reopened through BitLSM and queried.
+// Threat: the file carries no SABI block, so the table iterator cannot produce
+//         a single one of its rows -- and an iterator that reports that as a
+//         plain !Valid() is indistinguishable from "nothing matched", turning
+//         an unreadable file into a silently incomplete query result.
+TEST_F(UDIBlockCacheTest, SABILessSSTFailsTheQueryInsteadOfSkippingRows) {
+  const BitLSMOptions o = TwoAttrOptions();
+
+  // 1. Write the SST from a plain RocksDB: the default table factory emits no
+  // user-defined index block. Values are still BitLSM-encoded, so the query
+  // has to fail on the missing index rather than on a decode.
+  {
+    // Inherits the fixture's env (MEM_ENV) and create_if_missing.
+    rocksdb::Options plain_options = rocksdb_options_;
+    plain_options.table_factory.reset(
+        rocksdb::NewBlockBasedTableFactory(rocksdb::BlockBasedTableOptions()));
+    rocksdb::DB* raw_db = nullptr;
+    BITLSM_ASSERT_OK(rocksdb::DB::Open(plain_options, db_path_, &raw_db));
+    std::unique_ptr<rocksdb::DB> plain_db(raw_db);
+    for (int i = 0; i < 16; ++i) {
+      char key[16];
+      std::snprintf(key, sizeof(key), "k%08d", i);
+      std::string value;
+      EncodeValue(o,
+                  {std::string("c") + std::to_string(i % 10),
+                   static_cast<double>(i % 1000)},
+                  "payload", value);
+      BITLSM_ASSERT_OK(plain_db->Put(rocksdb::WriteOptions(), key, value));
+    }
+    BITLSM_ASSERT_OK(plain_db->Flush(rocksdb::FlushOptions()));
+    BITLSM_ASSERT_OK(plain_db->Close());
+  }
+
+  // 2. Reopen the same path through BitLSM. fail_if_no_udi_on_open defaults to
+  // false, so the open succeeds with a warning and the failure can only
+  // surface at query time.
+  BitLSM& db = OpenDB(o);
+
+  BitLSMQuery q = ConjunctiveQuery();
+  auto it = db.NewIterator(q);
+  ASSERT_NE(it, nullptr);
+  it->SeekToFirst();
+
+  // 3. The scan stops, and says why: NotFound is what the table reader returns
+  // for a file with no user-defined index.
+  EXPECT_FALSE(it->Valid());
+  EXPECT_FALSE(it->status().ok());
+  EXPECT_TRUE(it->status().IsNotFound()) << it->status().ToString();
 }
 
 // Workload: two parsed SABIReaders over indexes of very different size.
