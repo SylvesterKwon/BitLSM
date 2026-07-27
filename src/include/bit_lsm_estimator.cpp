@@ -471,21 +471,29 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
                                &handle, sv->mutable_cf_options);
       if (!s.ok()) continue;  // unreadable file contributes nothing
       auto* bbt = static_cast<BlockBasedTable*>(cache_interface.Value(handle));
-      auto* index_reader = bbt->get_rep()->index_reader.get();
-      auto* udi = index_reader ? index_reader->GetUDIReader() : nullptr;
-      if (udi == nullptr) {
+      // Holds the SABI entry for this file's harvest: a block cache pin when
+      // cache_index_and_filter_blocks is on (evictable after release), or an
+      // unowned reference to the table-lifetime pin in Rep when off. Either
+      // way valid only while the table reader stays alive. Everything
+      // harvested below is copied out, so it only has to outlive this
+      // iteration.
+      CachableEntry<Block_kUserDefinedIndex> udi_entry;
+      Status udi_s = bbt->GetUserDefinedIndexReader(ReadOptions(), &udi_entry);
+      if (!udi_s.ok()) {
         // Embedded reality (vs the standalone all-SABI guarantee): an SST
         // built while the CF was not yet bound -- a WAL-recovery flush or an
-        // early compaction at DB open -- carries no SABI block. Planning
-        // stats must degrade, never crash: its rows are fetch candidates all
-        // the same, so count them into the physical total, but no attr stats
-        // exist to harvest.
+        // early compaction at DB open -- carries no SABI block (NotFound), and
+        // a damaged one fails to parse (Corruption). Any other failure to
+        // obtain the reader, an IO error on the re-read included, degrades the
+        // same way: planning stats must degrade, never crash. The file's rows
+        // are fetch candidates all the same, so count them into the physical
+        // total, but no attr stats are available to harvest.
         stats->physical_rows += meta->num_entries - meta->num_deletions;
         stats->live_sst_count++;
         cache_interface.Release(handle);
         continue;
       }
-      auto* reader = static_cast<SABIReader*>(udi);
+      auto* reader = static_cast<SABIReader*>(udi_entry.GetValue()->reader());
 
       if (!reader->data_entries_cnt_psum.empty()) {
         // Tombstones are deletion markers, not fetchable rows; shadowed old

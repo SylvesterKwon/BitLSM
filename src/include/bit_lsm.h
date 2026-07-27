@@ -37,6 +37,9 @@ class BitLSM {
                            const std::vector<std::vector<Attr>>& attrs_list,
                            const std::vector<std::string>& payloads);
   rocksdb::Status Delete(const std::string& key);
+  // Flushes the default CF's memtable to an SST (blocks until done), so the
+  // rows just written become visible through the SABI bitmap path.
+  rocksdb::Status Flush();
   // With the defaults (default CF, Verified mode, no injected snapshot)
   // this behaves exactly like the original standalone entry point.
   std::unique_ptr<BitLSMIterator> NewIterator(

@@ -10,6 +10,7 @@
 #include "db/column_family.h"
 #include "db/db_impl/db_impl.h"
 #include "db/version_set.h"
+#include "rocksdb/status.h"
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
 
@@ -20,12 +21,19 @@ namespace bit_lsm {
 class SABIInternalIterator {
  protected:
   bool valid_ = false;
+  // OK unless iteration hit an error. Sticky: once an iterator fails it stays
+  // failed, because the failure (a SABI block that will not load) is not
+  // recoverable by re-seeking the same iterator. Every layer must therefore
+  // distinguish "!Valid() and OK" (exhausted) from "!Valid() and !OK"
+  // (stopped early), never treating the latter as end-of-data.
+  rocksdb::Status status_;
 
  public:
   virtual ~SABIInternalIterator() {};
   virtual void SeekToFirst() = 0;
   virtual void Next() = 0;
   bool Valid() const { return valid_; };
+  virtual rocksdb::Status status() const { return status_; };
   virtual rocksdb::Slice key() const = 0;
   virtual rocksdb::Slice value() const = 0;
 };
@@ -78,7 +86,11 @@ struct ScanContext {
         cf_opts(sv->mutable_cf_options) {}
 };
 
-// Iterator for SABI
+// Iterator for SABI.
+// rocksdb-Iterator style: !Valid() alone only means "no more rows". Callers
+// that must not accept a partial answer check status() -- non-OK there means
+// the scan stopped on an error (typically an SST whose SABI block could not be
+// loaded), so the rows produced so far are an incomplete result.
 class BitLSMIterator : public SABIInternalIterator {
  private:
   rocksdb::DB* db_;
@@ -199,19 +211,27 @@ class SABITableIterator : public SABIInternalIterator {
   // Table & query context
   const BitLSMOptions& options_;
   rocksdb::BlockBasedTable* bbt_;
-  rocksdb::BlockBasedTable::IndexReader* index_reader_;
-  SABIReader* sabi_reader_;
+  // Holds the SABI entry (and its parsed SABIReader) for this iterator's
+  // lifetime: a block cache pin when cache_index_and_filter_blocks is on
+  // (evictable after release), or an unowned reference to the table-lifetime
+  // pin in Rep when off. Either way valid only while the table reader stays
+  // alive. Declared before every member that references reader state —
+  // members are destroyed in reverse order, so this must die last.
+  rocksdb::CachableEntry<rocksdb::Block_kUserDefinedIndex> udi_entry_;
+  SABIReader* sabi_reader_ =
+      nullptr;  // points into udi_entry_; null on failure
   const SABIQuery& query_;
   const CompiledQuery* compiled_;  // nullptr = skip per-row Eval
-  uint32_t block_restart_interval_;
+  uint32_t block_restart_interval_ = 0;
   // Holds the current data block pinned in the Block Cache, so values can be
   // borrowed from it instead of copied.
   std::unique_ptr<rocksdb::DataBlockIter> biter_;
 
   // Internal status for iterating
   // The query bitmap is either borrowed from the SABIReader's frozen bitmaps
-  // (the reader outlives this iterator via the table cache handle) or owned
-  // by bitmap_pool_. query_bitmap_ always points at the live bitmap.
+  // (the reader outlives this iterator: udi_entry_ holds either a block
+  // cache pin or an unowned reference to the table-lifetime pin in Rep) or
+  // owned by bitmap_pool_. query_bitmap_ always points at the live bitmap.
   // bitmap_pool_ must remain a std::deque: element pointers (query_bitmap_,
   // BitmapRef::owned) must stay valid across emplace_back.
   std::deque<roaring::Roaring> bitmap_pool_;
