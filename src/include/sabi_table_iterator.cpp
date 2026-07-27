@@ -406,6 +406,12 @@ void SABITableIterator::LoadNextBlock() {
 }
 
 void SABITableIterator::SeekToFirst() {
+  // A failure is sticky: never restart a scan that already lost data.
+  if (!status_.ok()) {
+    valid_ = false;
+    return;
+  }
+
   // The SABI block failed to load in the constructor: nothing to scan.
   if (sabi_reader_ == nullptr) {
     valid_ = false;

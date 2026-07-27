@@ -156,8 +156,19 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
 
     // 6. Cross check
     for (uint32_t i = 0; i < candidate_key_slices.size(); ++i) {
-      // 6-1. Check given candidate key exists in DB
-      if (!statuses[i].ok()) continue;
+      // 6-1. Check given candidate key exists in DB. NotFound is expected: the
+      // candidate row was shadowed/deleted between the index read and this
+      // fetch. Any other non-OK status is a real MultiGet failure, so this
+      // batch is unverifiable -- drop it and report the failure the same way
+      // a mid-batch smi_ error does above.
+      if (!statuses[i].ok()) {
+        if (statuses[i].IsNotFound()) continue;
+        status_ = statuses[i];
+        candidate_keys_.clear();
+        batch_keys_.clear();
+        batch_values_.clear();
+        return;
+      }
 
       // 6-2. Value validation (nullptr compiled = consumer re-verifies)
       if (!query_ctx_.compiled || query_ctx_.compiled->Eval(pin_values[i])) {

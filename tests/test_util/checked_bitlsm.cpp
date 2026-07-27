@@ -141,6 +141,9 @@ std::map<std::string, Record> CheckedBitLSM::ScanEngine(BitLSMQuery& query) {
     r.payload = PayloadOf(val, options_);
     out.emplace(std::move(key), std::move(r));
   }
+  if (!it->status().ok())
+    ADD_FAILURE() << "BitLSM iterator error: " << it->status().ToString()
+                  << " for " << query.ToString() << Context();
   return out;
 }
 
