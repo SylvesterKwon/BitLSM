@@ -66,7 +66,8 @@ BitLSMMergingIterator::BitLSMMergingIterator(const ScanContext& scan_ctx,
 
 BitLSMMergingIterator::~BitLSMMergingIterator() {
   // 1. Free children iterators (before releasing the handles below: the L0
-  // SABITableIterators borrow bitmaps from SABIReaders pinned by them)
+  // SABITableIterators hold a raw BlockBasedTable pointer and a pinned data
+  // block, both only valid while the handle keeps the table reader alive)
   for (auto* ch : ch_iters_) delete ch;
   ch_iters_.clear();
 
