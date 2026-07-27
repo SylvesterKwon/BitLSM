@@ -84,11 +84,19 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
       bbt_(bbt),
       query_(query_ctx.sabi_query),
       compiled_(query_ctx.compiled),
-      index_reader_(bbt_->get_rep()->index_reader.get()),
-      sabi_reader_(static_cast<SABIReader*>(index_reader_->GetUDIReader())),
       query_bitmap_(&EmptyBitmap()),
       bitmap_iter_(query_bitmap_->begin()),
       bitmap_end_(query_bitmap_->end()) {
+  // 0. Pin the SABI block in the block cache (reads + re-parses on a miss).
+  // The pin lives as long as this iterator, so every bitmap borrowed from the
+  // reader below stays valid.
+  Status s = bbt_->GetUserDefinedIndexReader(ReadOptions(), &udi_entry_);
+  if (!s.ok()) {
+    cerr << "Failed to load SABI: " << s.ToString() << "\n";
+    return;  // stays !Valid(); SeekToFirst is a no-op
+  }
+  sabi_reader_ = static_cast<SABIReader*>(udi_entry_.GetValue()->reader());
+
   block_restart_interval_ =
       bbt->get_rep()->table_options.block_restart_interval;
 
@@ -381,6 +389,11 @@ void SABITableIterator::LoadNextBlock() {
 }
 
 void SABITableIterator::SeekToFirst() {
+  // The SABI block failed to load in the constructor: nothing to scan.
+  if (sabi_reader_ == nullptr) {
+    valid_ = false;
+    return;
+  }
   cur_target_block_idx_ = -1;
   buffer_idx_ = 0;
   buffer_count_ = 0;

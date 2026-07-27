@@ -108,6 +108,8 @@ Status BitLSM::Delete(const string& key) {
   return db_->Delete(WriteOptions(), key);
 }
 
+Status BitLSM::Flush() { return db_->Flush(FlushOptions(), cf_handles_[0]); }
+
 unique_ptr<BitLSMIterator> BitLSM::NewIterator(BitLSMQuery& query,
                                                ColumnFamilyHandle* cfh,
                                                ResultMode result_mode,

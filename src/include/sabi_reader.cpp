@@ -1,3 +1,4 @@
+#include <malloc.h>  // malloc_usable_size
 #include <sabi.h>
 #include <sys/types.h>
 
@@ -226,8 +227,51 @@ unique_ptr<UserDefinedIndexIterator> SABIReader::NewIterator(
 // The memory usage of the index, including the size of the raw contents and
 // any other heap data structures allocated by the reader
 size_t SABIReader::ApproximateMemoryUsage() const {
-  // TODO: implement this
-  return 0;
+  size_t usage = sizeof(*this);
+
+  // Frozen bitmap storage: actual allocated size, including allocator
+  // rounding (buffers come from posix_memalign in the constructor).
+  usage += managed_buffers_.capacity() * sizeof(AlignedPtr);
+  for (const auto& buf : managed_buffers_) usage += malloc_usable_size(buf.get());
+
+  // Schema residue parsed out of the blob's directory.
+  usage += schema_.roles.capacity() * sizeof(AttrRole);
+
+  usage += bitmap_index.bitmaps.capacity() * sizeof(roaring::Roaring);
+  usage += bitmap_index.bitmap_nums.capacity() * sizeof(uint32_t);
+  usage += bitmap_index.binning_policy.capacity() *
+           sizeof(decltype(bitmap_index.binning_policy)::value_type);
+  for (const auto& policy : bitmap_index.binning_policy) {
+    if (const auto* ord = std::get_if<vector<uint64_t>>(&policy)) {
+      usage += ord->capacity() * sizeof(uint64_t);
+    } else if (const auto* cat =
+                   std::get_if<vector<pair<string, uint32_t>>>(&policy)) {
+      usage += cat->capacity() * sizeof(pair<string, uint32_t>);
+      // Count heap allocations only; short values live inline (SSO), and an
+      // empty string's capacity is exactly that inline budget.
+      static const size_t kSSOCapacity = string().capacity();
+      for (const auto& entry : *cat)
+        if (entry.first.capacity() > kSSOCapacity)
+          usage += entry.first.capacity() + 1;  // + NUL
+    }
+  }
+  usage += data_entries_cnt_psum.capacity() * sizeof(uint32_t);
+  usage += block_handles.capacity() * sizeof(BlockHandle);
+  usage += distinct_cnts.capacity() * sizeof(uint64_t);
+
+  // Frozen views allocate a separate metadata arena (the bitmap struct plus
+  // the container pointer array); the keys, typecodes and the container
+  // payloads themselves live in the frozen buffer already counted via
+  // managed_buffers_. Approximate the arena from the container count.
+  auto frozen_arena_usage = [](const roaring::Roaring& rb) -> size_t {
+    size_t n_containers = rb.roaring.high_low_container.size;
+    return sizeof(roaring::api::roaring_bitmap_t) +
+           n_containers * (sizeof(void*) + 16);
+  };
+  for (const auto& rb : bitmap_index.bitmaps) usage += frozen_arena_usage(rb);
+  usage += frozen_arena_usage(bitmap_index.tombstone_bitmap);
+
+  return usage;
 };
 
 void SABIReader::Dump() {

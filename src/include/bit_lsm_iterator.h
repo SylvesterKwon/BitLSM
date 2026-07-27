@@ -199,19 +199,23 @@ class SABITableIterator : public SABIInternalIterator {
   // Table & query context
   const BitLSMOptions& options_;
   rocksdb::BlockBasedTable* bbt_;
-  rocksdb::BlockBasedTable::IndexReader* index_reader_;
-  SABIReader* sabi_reader_;
+  // Pins the SABI block (and its parsed SABIReader) in the block cache for the
+  // lifetime of this iterator; released on destruction so the entry becomes
+  // evictable again. Declared before every member that references reader state
+  // — members are destroyed in reverse order, so the pin must die last.
+  rocksdb::CachableEntry<rocksdb::Block_kUserDefinedIndex> udi_entry_;
+  SABIReader* sabi_reader_ = nullptr;  // points into udi_entry_; null on failure
   const SABIQuery& query_;
   const CompiledQuery* compiled_;  // nullptr = skip per-row Eval
-  uint32_t block_restart_interval_;
+  uint32_t block_restart_interval_ = 0;
   // Holds the current data block pinned in the Block Cache, so values can be
   // borrowed from it instead of copied.
   std::unique_ptr<rocksdb::DataBlockIter> biter_;
 
   // Internal status for iterating
   // The query bitmap is either borrowed from the SABIReader's frozen bitmaps
-  // (the reader outlives this iterator via the table cache handle) or owned
-  // by bitmap_pool_. query_bitmap_ always points at the live bitmap.
+  // (the reader outlives this iterator via udi_entry_'s block cache pin) or
+  // owned by bitmap_pool_. query_bitmap_ always points at the live bitmap.
   // bitmap_pool_ must remain a std::deque: element pointers (query_bitmap_,
   // BitmapRef::owned) must stay valid across emplace_back.
   std::deque<roaring::Roaring> bitmap_pool_;
