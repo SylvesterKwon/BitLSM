@@ -140,7 +140,7 @@ index 094b0e0cb..8490522cb 100644
  // metaindex
  // block and its iterator.
 diff --git a/table/block_based/block_based_table_reader.h b/table/block_based/block_based_table_reader.h
-index b20d0db19..4fa293ae8 100644
+index b20d0db19..8bf516f44 100644
 --- a/table/block_based/block_based_table_reader.h
 +++ b/table/block_based/block_based_table_reader.h
 @@ -20,6 +20,7 @@
@@ -187,7 +187,22 @@ index b20d0db19..4fa293ae8 100644
    friend class MockedBlockBasedTable;
    friend class BlockBasedTableReaderTestVerifyChecksum_ChecksumMismatch_Test;
    BlockCacheTracer* const block_cache_tracer_;
-@@ -717,7 +733,17 @@ struct BlockBasedTable::Rep {
+@@ -631,6 +647,14 @@ struct BlockBasedTable::Rep {
+   // Footer contains the fixed table information
+   Footer footer;
+ 
++  // When cache_index_and_filter_blocks is false, the UDI block is read and
++  // parsed once at open and pinned here for the table's lifetime (heap
++  // resident, not charged to the block cache) — mirroring how the regular
++  // index behaves with that option off. Empty when the option is true.
++  // Declared before index_reader: the UserDefinedIndexReaderWrapper owned by
++  // index_reader reads this entry, so it must be destroyed after it.
++  CachableEntry<Block_kUserDefinedIndex> udi_block_pinned;
++
+   std::unique_ptr<IndexReader> index_reader;
+   std::unique_ptr<FilterBlockReader> filter;
+   std::unique_ptr<UncompressionDictReader> uncompression_dict_reader;
+@@ -717,7 +741,11 @@ struct BlockBasedTable::Rep {
    std::unique_ptr<CacheReservationManager::CacheReservationHandle>
        table_reader_cache_res_handle = nullptr;
  
@@ -197,12 +212,6 @@ index b20d0db19..4fa293ae8 100644
 +  // the block cache (or is re-read on demand) and is intentionally NOT pinned
 +  // here; see udi_block_pinned below for the option-off case.
 +  BlockHandle udi_handle = BlockHandle::NullBlockHandle();
-+
-+  // When cache_index_and_filter_blocks is false, the UDI block is read and
-+  // parsed once at open and pinned here for the table's lifetime (heap
-+  // resident, not charged to the block cache) — mirroring how the regular
-+  // index behaves with that option off. Empty when the option is true.
-+  CachableEntry<Block_kUserDefinedIndex> udi_block_pinned;
  
    SequenceNumber get_global_seqno(BlockType block_type) const {
      return (block_type == BlockType::kFilterPartitionIndex ||
