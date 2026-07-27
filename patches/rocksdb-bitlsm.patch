@@ -40,7 +40,7 @@ index 7d7011d40..5a09084e0 100644
    ~BlockIter() override {
      // Assert that the BlockIter is never deleted while Pinning is Enabled.
 diff --git a/table/block_based/block_based_table_reader.cc b/table/block_based/block_based_table_reader.cc
-index 094b0e0cb..c6125413d 100644
+index 094b0e0cb..8490522cb 100644
 --- a/table/block_based/block_based_table_reader.cc
 +++ b/table/block_based/block_based_table_reader.cc
 @@ -1356,32 +1356,35 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
@@ -95,7 +95,7 @@ index 094b0e0cb..c6125413d 100644
            }
          }
        }
-@@ -1480,6 +1483,44 @@ size_t BlockBasedTable::ApproximateMemoryUsage() const {
+@@ -1480,6 +1483,43 @@ size_t BlockBasedTable::ApproximateMemoryUsage() const {
    return usage;
  }
  
@@ -115,7 +115,6 @@ index 094b0e0cb..c6125413d 100644
 +                              rep_->file->file_name());
 +    }
 +    assert(rep_->udi_block_pinned.GetValue()->reader() != nullptr);
-+    out_entry->Reset();
 +    out_entry->SetUnownedValue(rep_->udi_block_pinned.GetValue());
 +    return Status::OK();
 +  }
@@ -301,7 +300,7 @@ index 564dcf006..20a6185c3 100644
  
  struct BlockCreateContext : public Cache::CreateContext {
 diff --git a/table/block_based/user_defined_index_wrapper.h b/table/block_based/user_defined_index_wrapper.h
-index b65ba147e..3a990c1ee 100644
+index b65ba147e..038c992cb 100644
 --- a/table/block_based/user_defined_index_wrapper.h
 +++ b/table/block_based/user_defined_index_wrapper.h
 @@ -101,9 +101,13 @@ class UserDefinedIndexBuilderWrapper : public IndexBuilder {
@@ -403,7 +402,24 @@ index b65ba147e..3a990c1ee 100644
    }
  
    virtual Status CacheDependencies(
-@@ -321,6 +341,6 @@ class UserDefinedIndexReaderWrapper : public BlockBasedTable::IndexReader {
+@@ -310,7 +330,15 @@ class UserDefinedIndexReaderWrapper : public BlockBasedTable::IndexReader {
+   }
+ 
+   size_t ApproximateMemoryUsage() const override {
+-    return reader_->ApproximateMemoryUsage();
++    size_t usage = reader_->ApproximateMemoryUsage();
++    // When cache_index_and_filter_blocks is false, the UDI block (and its
++    // parsed reader) is heap-pinned in Rep for the table's lifetime; count
++    // it like a regular index reader counts its pinned index block.
++    const auto& pinned = table_->get_rep()->udi_block_pinned;
++    if (!pinned.IsEmpty()) {
++      usage += pinned.GetValue()->ApproximateMemoryUsage();
++    }
++    return usage;
+   }
+ 
+   virtual void EraseFromCacheBeforeDestruction(
+@@ -321,6 +349,6 @@ class UserDefinedIndexReaderWrapper : public BlockBasedTable::IndexReader {
   private:
    std::string name_;
    std::unique_ptr<BlockBasedTable::IndexReader> reader_;
@@ -412,7 +428,7 @@ index b65ba147e..3a990c1ee 100644
  };
  }  // namespace ROCKSDB_NAMESPACE
 diff --git a/table/table_test.cc b/table/table_test.cc
-index ae4fbea0e..1f95c0c79 100644
+index ae4fbea0e..7b4c07993 100644
 --- a/table/table_test.cc
 +++ b/table/table_test.cc
 @@ -7493,11 +7493,15 @@ class UserDefinedIndexTestBase : public BlockBasedTableTestBase {
@@ -448,7 +464,7 @@ index ae4fbea0e..1f95c0c79 100644
  
       private:
        class TestUserDefinedIndexIterator : public UserDefinedIndexIterator {
-@@ -8041,6 +8053,220 @@ TEST_P(UserDefinedIndexTest, BasicTestWithoutPartitionedIndex) {
+@@ -8041,6 +8053,228 @@ TEST_P(UserDefinedIndexTest, BasicTestWithoutPartitionedIndex) {
    BasicTest(/*use_partitioned_index=*/false);
  }
  
@@ -641,6 +657,9 @@ index ae4fbea0e..1f95c0c79 100644
 +  // The block was read and parsed exactly once, eagerly, at open.
 +  ASSERT_EQ(udi_factory->reader_create_count_, 1u);
 +  const size_t usage_before_gets = cache->GetUsage();
++  // The pinned UDI block (and its parsed reader) must be counted in the
++  // table reader's own memory accounting, not left untracked.
++  ASSERT_GE(table->ApproximateMemoryUsage(), udi_factory->last_reader_memory_);
 +
 +  // 1. Fetch: served from the table-lifetime pin, not from the cache.
 +  CachableEntry<Block_kUserDefinedIndex> entry;
@@ -648,7 +667,10 @@ index ae4fbea0e..1f95c0c79 100644
 +  ASSERT_FALSE(entry.IsEmpty());
 +  ASSERT_NE(entry.GetValue()->reader(), nullptr);
 +  ASSERT_FALSE(entry.IsCached());
++  // Unowned reference to the Rep-pinned block, not a copy owned by `entry`.
++  ASSERT_FALSE(entry.GetOwnValue());
 +  ASSERT_EQ(udi_factory->reader_create_count_, 1u);
++  const Block_kUserDefinedIndex* first_ptr = entry.GetValue();
 +
 +  // 2. Evicting the block cache cannot take the pinned block away.
 +  entry.Reset();
@@ -661,6 +683,8 @@ index ae4fbea0e..1f95c0c79 100644
 +  ASSERT_FALSE(entry2.IsCached());
 +  // No re-read and no re-parse: still the one reader built at open.
 +  ASSERT_EQ(udi_factory->reader_create_count_, 1u);
++  // Both gets alias the same Rep-owned object.
++  ASSERT_EQ(first_ptr, entry2.GetValue());
 +
 +  // The UDI block never entered the block cache, so the gets charged nothing.
 +  ASSERT_EQ(cache->GetUsage(), usage_before_gets);
