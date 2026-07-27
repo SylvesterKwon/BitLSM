@@ -40,10 +40,10 @@ index 7d7011d40..5a09084e0 100644
    ~BlockIter() override {
      // Assert that the BlockIter is never deleted while Pinning is Enabled.
 diff --git a/table/block_based/block_based_table_reader.cc b/table/block_based/block_based_table_reader.cc
-index 094b0e0cb..71f8a6085 100644
+index 094b0e0cb..c6125413d 100644
 --- a/table/block_based/block_based_table_reader.cc
 +++ b/table/block_based/block_based_table_reader.cc
-@@ -1356,32 +1356,28 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
+@@ -1356,32 +1356,35 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
      // If the UDI block size is 0, that means there's effectively no user
      // defined index. In that case, skip setting up the reader.
      if (udi_block_handle.size() > 0) {
@@ -51,10 +51,12 @@ index 094b0e0cb..71f8a6085 100644
 -      // not compressed. RetrieveBlock will verify the checksum.
 +      rep_->udi_handle = udi_block_handle;
        if (s.ok()) {
-+        // Validate that the UDI block parses, and warm the block cache if
-+        // enabled. The entry is released at the end of this scope; queries
-+        // re-fetch it via GetUserDefinedIndexReader (block cache hit, or
-+        // re-read + re-parse on a miss).
++        // Validate that the UDI block parses. With cache_index_and_filter_
++        // blocks on this also warms the block cache and the entry is released
++        // at the end of this scope; queries re-fetch it via
++        // GetUserDefinedIndexReader (block cache hit, or re-read + re-parse on
++        // a miss). With the option off the entry is heap owned and is kept in
++        // rep_->udi_block_pinned for the table's lifetime.
 +        CachableEntry<Block_kUserDefinedIndex> udi_block;
          s = RetrieveBlock(prefetch_buffer, ro, udi_block_handle,
 -                          rep_->decompressor.get(), &rep_->udi_block,
@@ -83,12 +85,17 @@ index 094b0e0cb..71f8a6085 100644
                                     udi_name + " in file " +
                                     rep_->file->file_name());
 +          } else {
++            if (!use_cache) {
++              // Option off: pin for the table's lifetime (heap resident),
++              // mirroring regular index behavior without the cache.
++              rep_->udi_block_pinned = std::move(udi_block);
++            }
 +            index_reader = std::make_unique<UserDefinedIndexReaderWrapper>(
 +                udi_name, std::move(index_reader), this);
            }
          }
        }
-@@ -1480,6 +1476,32 @@ size_t BlockBasedTable::ApproximateMemoryUsage() const {
+@@ -1480,6 +1483,44 @@ size_t BlockBasedTable::ApproximateMemoryUsage() const {
    return usage;
  }
  
@@ -99,6 +106,18 @@ index 094b0e0cb..71f8a6085 100644
 +  if (rep_->udi_handle.IsNull()) {
 +    return Status::NotFound("No user-defined index in file " +
 +                            rep_->file->file_name());
++  }
++  if (!rep_->table_options.cache_index_and_filter_blocks) {
++    // The block was read and parsed once at open and is pinned for the
++    // table's lifetime; hand out an unowned reference to it.
++    if (rep_->udi_block_pinned.IsEmpty()) {
++      return Status::NotFound("No user-defined index in file " +
++                              rep_->file->file_name());
++    }
++    assert(rep_->udi_block_pinned.GetValue()->reader() != nullptr);
++    out_entry->Reset();
++    out_entry->SetUnownedValue(rep_->udi_block_pinned.GetValue());
++    return Status::OK();
 +  }
 +  BlockCacheLookupContext lookup_context{TableReaderCaller::kUserIterator};
 +  Status s = RetrieveBlock(
@@ -122,7 +141,7 @@ index 094b0e0cb..71f8a6085 100644
  // metaindex
  // block and its iterator.
 diff --git a/table/block_based/block_based_table_reader.h b/table/block_based/block_based_table_reader.h
-index b20d0db19..56c52a75c 100644
+index b20d0db19..4fa293ae8 100644
 --- a/table/block_based/block_based_table_reader.h
 +++ b/table/block_based/block_based_table_reader.h
 @@ -20,6 +20,7 @@
@@ -169,15 +188,22 @@ index b20d0db19..56c52a75c 100644
    friend class MockedBlockBasedTable;
    friend class BlockBasedTableReaderTestVerifyChecksum_ChecksumMismatch_Test;
    BlockCacheTracer* const block_cache_tracer_;
-@@ -717,7 +733,10 @@ struct BlockBasedTable::Rep {
+@@ -717,7 +733,17 @@ struct BlockBasedTable::Rep {
    std::unique_ptr<CacheReservationManager::CacheReservationHandle>
        table_reader_cache_res_handle = nullptr;
  
 -  CachableEntry<Block_kUserDefinedIndex> udi_block;
 +  // Handle of the user-defined index block, if present in this file.
-+  // The UDI block itself lives in the block cache (or is re-read on
-+  // demand); it is intentionally NOT pinned here.
++  // When cache_index_and_filter_blocks is true the UDI block itself lives in
++  // the block cache (or is re-read on demand) and is intentionally NOT pinned
++  // here; see udi_block_pinned below for the option-off case.
 +  BlockHandle udi_handle = BlockHandle::NullBlockHandle();
++
++  // When cache_index_and_filter_blocks is false, the UDI block is read and
++  // parsed once at open and pinned here for the table's lifetime (heap
++  // resident, not charged to the block cache) — mirroring how the regular
++  // index behaves with that option off. Empty when the option is true.
++  CachableEntry<Block_kUserDefinedIndex> udi_block_pinned;
  
    SequenceNumber get_global_seqno(BlockType block_type) const {
      return (block_type == BlockType::kFilterPartitionIndex ||
@@ -386,7 +412,7 @@ index b65ba147e..3a990c1ee 100644
  };
  }  // namespace ROCKSDB_NAMESPACE
 diff --git a/table/table_test.cc b/table/table_test.cc
-index ae4fbea0e..c90b5960e 100644
+index ae4fbea0e..1f95c0c79 100644
 --- a/table/table_test.cc
 +++ b/table/table_test.cc
 @@ -7493,11 +7493,15 @@ class UserDefinedIndexTestBase : public BlockBasedTableTestBase {
@@ -422,7 +448,7 @@ index ae4fbea0e..c90b5960e 100644
  
       private:
        class TestUserDefinedIndexIterator : public UserDefinedIndexIterator {
-@@ -8041,6 +8053,138 @@ TEST_P(UserDefinedIndexTest, BasicTestWithoutPartitionedIndex) {
+@@ -8041,6 +8053,220 @@ TEST_P(UserDefinedIndexTest, BasicTestWithoutPartitionedIndex) {
    BasicTest(/*use_partitioned_index=*/false);
  }
  
@@ -556,6 +582,88 @@ index ae4fbea0e..c90b5960e 100644
 +  // The re-fetch must have re-parsed the reader (i.e. a real reload, not a
 +  // still-cached or re-pinned entry).
 +  ASSERT_GT(udi_factory->reader_create_count_, creates_after_first);
++}
++
++TEST_P(UserDefinedIndexTest, PinnedWhenCacheIndexOptionOff) {
++  BlockBasedTableOptions table_options;
++  std::string dbname = test::PerThreadDBPath("udi_pinned_no_cache_test");
++  std::string sst_file = dbname + "test.sst";
++
++  auto udi_factory = std::make_shared<TestUserDefinedIndexFactory>();
++  std::shared_ptr<Cache> cache = NewLRUCache(32 << 20);
++  table_options.user_defined_index_factory = udi_factory;
++  table_options.block_cache = cache;
++  // With this option off the UDI block must be parsed once at open and
++  // pinned for the table's lifetime, outside the block cache.
++  table_options.cache_index_and_filter_blocks = false;
++  table_options.flush_block_policy_factory =
++      std::make_shared<CustomFlushBlockPolicyFactory>();
++  options_.table_factory.reset(NewBlockBasedTableFactory(table_options));
++
++  std::unique_ptr<SstFileWriter> writer(
++      new SstFileWriter(EnvOptions(), options_));
++  ASSERT_OK(writer->Open(sst_file));
++  auto kvs = generateKVs(/*key_count*/ 100);
++  for (const auto& kv : kvs) {
++    ASSERT_OK(writer->Put(kv.first, kv.second));
++  }
++  ASSERT_OK(writer->Finish());
++  writer.reset();
++
++  // Open a BlockBasedTable directly so we can exercise the new API.
++  ImmutableOptions ioptions(options_);
++  MutableCFOptions moptions((ColumnFamilyOptions(options_)));
++  EnvOptions eoptions(options_);
++  TableReaderOptions toptions(
++      ioptions, moptions.prefix_extractor,
++      /*_compression_manager=*/nullptr, eoptions, ioptions.internal_comparator,
++      moptions.block_protection_bytes_per_key,
++      /*skip_filters*/ false, /*immortal*/ false,
++      /*force_direct_prefetch*/ false, /*level*/ -1,
++      /*block_cache_tracer*/ nullptr,
++      /*max_file_size_for_l0_meta_pin*/ 0, /*cur_db_session_id*/ "",
++      /*cur_file_num*/ 0,
++      /* unique_id */ {}, /* largest_seqno */ 0,
++      /* tail_size */ 0, ioptions.persist_user_defined_timestamps);
++  uint64_t file_size = 0;
++  std::unique_ptr<FSRandomAccessFile> file;
++  const auto& fs = options_.env->GetFileSystem();
++  ASSERT_OK(fs->GetFileSize(sst_file, IOOptions(), &file_size, nullptr));
++  ASSERT_OK(fs->NewRandomAccessFile(sst_file, eoptions, &file, nullptr));
++  std::unique_ptr<RandomAccessFileReader> file_reader(
++      new RandomAccessFileReader(std::move(file), sst_file));
++  std::unique_ptr<TableReader> table;
++  ASSERT_OK(options_.table_factory->NewTableReader(
++      toptions, std::move(file_reader), file_size, &table,
++      /*prefetch_index_and_filter_in_cache=*/true));
++  auto* bbt = static_cast<BlockBasedTable*>(table.get());
++
++  // The block was read and parsed exactly once, eagerly, at open.
++  ASSERT_EQ(udi_factory->reader_create_count_, 1u);
++  const size_t usage_before_gets = cache->GetUsage();
++
++  // 1. Fetch: served from the table-lifetime pin, not from the cache.
++  CachableEntry<Block_kUserDefinedIndex> entry;
++  ASSERT_OK(bbt->GetUserDefinedIndexReader(ReadOptions(), &entry));
++  ASSERT_FALSE(entry.IsEmpty());
++  ASSERT_NE(entry.GetValue()->reader(), nullptr);
++  ASSERT_FALSE(entry.IsCached());
++  ASSERT_EQ(udi_factory->reader_create_count_, 1u);
++
++  // 2. Evicting the block cache cannot take the pinned block away.
++  entry.Reset();
++  cache->EraseUnRefEntries();
++
++  CachableEntry<Block_kUserDefinedIndex> entry2;
++  ASSERT_OK(bbt->GetUserDefinedIndexReader(ReadOptions(), &entry2));
++  ASSERT_FALSE(entry2.IsEmpty());
++  ASSERT_NE(entry2.GetValue()->reader(), nullptr);
++  ASSERT_FALSE(entry2.IsCached());
++  // No re-read and no re-parse: still the one reader built at open.
++  ASSERT_EQ(udi_factory->reader_create_count_, 1u);
++
++  // The UDI block never entered the block cache, so the gets charged nothing.
++  ASSERT_EQ(cache->GetUsage(), usage_before_gets);
 +}
 +
  TEST_P(UserDefinedIndexTest, InvalidArgumentTest1) {
