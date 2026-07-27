@@ -471,9 +471,12 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
                                &handle, sv->mutable_cf_options);
       if (!s.ok()) continue;  // unreadable file contributes nothing
       auto* bbt = static_cast<BlockBasedTable*>(cache_interface.Value(handle));
-      // Pin the SABI block in the block cache for this file's harvest (reads
-      // + re-parses on a miss). Everything harvested below is copied out, so
-      // the pin only has to outlive this iteration.
+      // Holds the SABI entry for this file's harvest: a block cache pin when
+      // cache_index_and_filter_blocks is on (evictable after release), or an
+      // unowned reference to the table-lifetime pin in Rep when off. Either
+      // way valid only while the table reader stays alive. Everything
+      // harvested below is copied out, so it only has to outlive this
+      // iteration.
       CachableEntry<Block_kUserDefinedIndex> udi_entry;
       Status udi_s = bbt->GetUserDefinedIndexReader(ReadOptions(), &udi_entry);
       if (!udi_s.ok()) {

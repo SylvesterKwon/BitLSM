@@ -28,7 +28,8 @@ BitLSMLevelIterator::BitLSMLevelIterator(uint32_t level,
       cur_sti_(nullptr) {}
 
 BitLSMLevelIterator::~BitLSMLevelIterator() {
-  // cur_sti_ holds a raw BlockBasedTable pointer and a pinned data block, so
+  // cur_sti_ dereferences a raw BlockBasedTable pointer, and its
+  // udi_entry_/sabi_reader_ may alias memory owned by that table's Rep, so
   // it must be destroyed before the table cache handle that keeps that table
   // reader alive is released.
   if (cur_sti_) delete cur_sti_;
@@ -39,8 +40,9 @@ void BitLSMLevelIterator::LoadFile(size_t idx) {
   // cout << "[BitLSMLevelIterator] level " << level_ << ", " << idx
   //      << " th file is loading\n";
 
-  // 1. Clean up existing iterator & table handle (iterator first: it holds a
-  // raw BlockBasedTable pointer and a pinned data block from that table)
+  // 1. Clean up existing iterator & table handle (iterator first: it
+  // dereferences a raw BlockBasedTable pointer, and its
+  // udi_entry_/sabi_reader_ may alias memory owned by that table's Rep)
   valid_ = false;
   TableCache::CacheInterface cache_interface = scan_ctx_.tc->get_cache();
   if (cur_sti_ != nullptr) {

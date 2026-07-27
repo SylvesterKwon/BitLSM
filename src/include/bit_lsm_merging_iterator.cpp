@@ -66,8 +66,9 @@ BitLSMMergingIterator::BitLSMMergingIterator(const ScanContext& scan_ctx,
 
 BitLSMMergingIterator::~BitLSMMergingIterator() {
   // 1. Free children iterators (before releasing the handles below: the L0
-  // SABITableIterators hold a raw BlockBasedTable pointer and a pinned data
-  // block, both only valid while the handle keeps the table reader alive)
+  // SABITableIterators dereference a raw BlockBasedTable pointer, and their
+  // udi_entry_/sabi_reader_ may alias memory owned by that table's Rep, both
+  // only valid while the handle keeps the table reader alive)
   for (auto* ch : ch_iters_) delete ch;
   ch_iters_.clear();
 
