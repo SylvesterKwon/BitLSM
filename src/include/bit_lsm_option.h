@@ -1,8 +1,10 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
+#include "rocksdb/status.h"
 #include "rocksdb/types.h"
 
 namespace bit_lsm {
@@ -45,6 +47,10 @@ struct BitLSMOptions {
   std::vector<AttrSpec> attr_specs;    // per-attribute spec
   rocksdb::SequenceNumber read_seqno;  // read sequence number
   double rho;  // proportion parameter that determines bitmap budget
+  // Level-aware rho decay constant: a level at distance d from the deepest one
+  // gets rho_effective = min(rho * gamma^d, 0.5), so shallower levels spend a
+  // smaller bitmap budget. 1.0 (default) = off, byte-identical SABI blobs.
+  double gamma = 1.0;
 
   // Cardinality estimator (read-side planning stats; bit_lsm_estimator.h).
   // Off by default; none of these knobs touch the SST format.
@@ -53,5 +59,20 @@ struct BitLSMOptions {
   // Floor between stats rebuilds; bounds the refresh worker's duty cycle
   // under churn.
   uint32_t estimator_min_rebuild_interval_ms = 1000;
+
+  rocksdb::Status Validate() const {
+    // NaN compares false against everything, so reject non-finite explicitly.
+    if (!std::isfinite(gamma) || gamma < 1.0) {
+      return rocksdb::Status::InvalidArgument(
+          "BitLSMOptions::gamma must be a finite value >= 1.0");
+    }
+    // With rho above the 0.5 clamp, decay would give shallower levels a
+    // *larger* budget than the deepest one — reject the inverted combination.
+    if (gamma > 1.0 && rho > 0.5) {
+      return rocksdb::Status::InvalidArgument(
+          "BitLSMOptions::gamma > 1.0 requires rho <= 0.5");
+    }
+    return rocksdb::Status::OK();
+  }
 };
 }  // namespace bit_lsm

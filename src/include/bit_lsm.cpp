@@ -20,6 +20,9 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
     : db_path_(db_path),
       bit_lsm_options_(bit_lsm_options),
       layout_(bit_lsm_options) {
+  Status v = bit_lsm_options_.Validate();
+  if (!v.ok()) throw std::invalid_argument(v.ToString());
+
   rocksdb_options_ = rocksdb_options;
 
   BlockBasedTableOptions opts = table_options;
