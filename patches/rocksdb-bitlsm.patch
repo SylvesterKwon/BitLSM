@@ -1,5 +1,5 @@
 diff --git a/db/memtable_list.h b/db/memtable_list.h
-index eb42e1c72..5498ca8b3 100644
+index eb42e1c7276a9772b4db50a0d2a775422b532b0d..5498ca8b3769aad7fcd1bc0c9e3486a6c4d1034e 100644
 --- a/db/memtable_list.h
 +++ b/db/memtable_list.h
 @@ -155,6 +155,9 @@ class MemTableListVersion {
@@ -13,7 +13,7 @@ index eb42e1c72..5498ca8b3 100644
    friend class MemTableList;
  
 diff --git a/include/rocksdb/user_defined_index.h b/include/rocksdb/user_defined_index.h
-index 395f9fbf3..777546567 100644
+index 395f9fbf35306b366872df5a0cd24701c621b017..da86899537df53a7ee80a50fb07d2f538369f868 100644
 --- a/include/rocksdb/user_defined_index.h
 +++ b/include/rocksdb/user_defined_index.h
 @@ -40,6 +40,9 @@ class UserDefinedIndexBuilder {
@@ -26,8 +26,20 @@ index 395f9fbf3..777546567 100644
    };
  
    // File offset and size of the data block
+@@ -147,6 +150,11 @@ class UserDefinedIndexReader {
+ // Options for user defined index
+ struct UserDefinedIndexOption {
+   const Comparator* comparator = BytewiseComparator();
++  // Level context of the file being built, copied from TableBuilderOptions at
++  // the NewBuilder call site. -1 = unknown (e.g. SstFileWriter-driven builds,
++  // reader-side option instances).
++  int level_at_creation = -1;
++  int num_levels = -1;
+ };
+ 
+ // Factory for creating user-defined index builders.
 diff --git a/table/block_based/block.h b/table/block_based/block.h
-index 7d7011d40..5a09084e0 100644
+index 7d7011d40571bd7694ea6515aed74d43de3752d6..5a09084e06e90a317a3e41fba148c39e5ce2bf76 100644
 --- a/table/block_based/block.h
 +++ b/table/block_based/block.h
 @@ -384,6 +384,8 @@ class BlockIter : public InternalIteratorBase<TValue> {
@@ -39,8 +51,21 @@ index 7d7011d40..5a09084e0 100644
  #ifndef NDEBUG
    ~BlockIter() override {
      // Assert that the BlockIter is never deleted while Pinning is Enabled.
+diff --git a/table/block_based/block_based_table_builder.cc b/table/block_based/block_based_table_builder.cc
+index 74c90edea01b6c4f1cd57be841c74c4857a2e185..cf55e708434e2f38b99bff829050510dfe940d51 100644
+--- a/table/block_based/block_based_table_builder.cc
++++ b/table/block_based/block_based_table_builder.cc
+@@ -1218,6 +1218,8 @@ struct BlockBasedTableBuilder::Rep {
+         std::unique_ptr<UserDefinedIndexBuilder> user_defined_index_builder;
+         UserDefinedIndexOption udi_options;
+         udi_options.comparator = internal_comparator.user_comparator();
++        udi_options.level_at_creation = tbo.level_at_creation;
++        udi_options.num_levels = tbo.num_levels;
+         auto s = table_options.user_defined_index_factory->NewBuilder(
+             udi_options, user_defined_index_builder);
+         if (!s.ok()) {
 diff --git a/table/block_based/block_based_table_reader.cc b/table/block_based/block_based_table_reader.cc
-index 094b0e0cb..8490522cb 100644
+index 094b0e0cb01b23c499d8e9ad5f72e21f6567e82b..8490522cba58d8622419ea80546d8190eee11155 100644
 --- a/table/block_based/block_based_table_reader.cc
 +++ b/table/block_based/block_based_table_reader.cc
 @@ -1356,32 +1356,35 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
@@ -140,7 +165,7 @@ index 094b0e0cb..8490522cb 100644
  // metaindex
  // block and its iterator.
 diff --git a/table/block_based/block_based_table_reader.h b/table/block_based/block_based_table_reader.h
-index b20d0db19..8bf516f44 100644
+index b20d0db194e63c9f06145f35ba09078758b8e84f..8bf516f440bb90f1b32b282df7e48c6087d6c53c 100644
 --- a/table/block_based/block_based_table_reader.h
 +++ b/table/block_based/block_based_table_reader.h
 @@ -20,6 +20,7 @@
@@ -216,7 +241,7 @@ index b20d0db19..8bf516f44 100644
    SequenceNumber get_global_seqno(BlockType block_type) const {
      return (block_type == BlockType::kFilterPartitionIndex ||
 diff --git a/table/block_based/block_cache.cc b/table/block_based/block_cache.cc
-index 28d181db5..243eee620 100644
+index 28d181db5652a9b4ce501750519a94ef58739f3c..243eee620de496d5b5872085c89c5337fc45d916 100644
 --- a/table/block_based/block_cache.cc
 +++ b/table/block_based/block_cache.cc
 @@ -5,6 +5,7 @@
@@ -268,7 +293,7 @@ index 28d181db5..243eee620 100644
      }};
  }  // namespace
 diff --git a/table/block_based/block_cache.h b/table/block_based/block_cache.h
-index 564dcf006..20a6185c3 100644
+index 564dcf0062dbbaff4b5f7b17ed4a303aa35f2f57..20a6185c317902263236930e656080b76b05ab88 100644
 --- a/table/block_based/block_cache.h
 +++ b/table/block_based/block_cache.h
 @@ -12,6 +12,7 @@
@@ -309,7 +334,7 @@ index 564dcf006..20a6185c3 100644
  
  struct BlockCreateContext : public Cache::CreateContext {
 diff --git a/table/block_based/user_defined_index_wrapper.h b/table/block_based/user_defined_index_wrapper.h
-index b65ba147e..038c992cb 100644
+index b65ba147e2fc7ab948ecda02fde336658eec3574..038c992cb723d4d25ed8e7733abce8b40d40829d 100644
 --- a/table/block_based/user_defined_index_wrapper.h
 +++ b/table/block_based/user_defined_index_wrapper.h
 @@ -101,9 +101,13 @@ class UserDefinedIndexBuilderWrapper : public IndexBuilder {
@@ -437,7 +462,7 @@ index b65ba147e..038c992cb 100644
  };
  }  // namespace ROCKSDB_NAMESPACE
 diff --git a/table/table_test.cc b/table/table_test.cc
-index ae4fbea0e..7b4c07993 100644
+index ae4fbea0e85ceed24604294ddb950ba736fc9786..7b4c07993eb1b62b8c7278649091d264af1dd51e 100644
 --- a/table/table_test.cc
 +++ b/table/table_test.cc
 @@ -7493,11 +7493,15 @@ class UserDefinedIndexTestBase : public BlockBasedTableTestBase {
