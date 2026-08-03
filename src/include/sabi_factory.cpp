@@ -30,7 +30,19 @@ const char* SABIFactory::Name() const { return "SABIFactory"; }
 
 UserDefinedIndexBuilder* SABIFactory::NewBuilder() const {
   assert(extractor_factory_);  // reader-only factories cannot build
-  return new SABIBuilder(schema_, extractor_factory_());
+  // Legacy entry point without level context: unknown-level fallback.
+  return new SABIBuilder(schema_, extractor_factory_(),
+                         LevelDistanceFromDeepest(-1, -1));
+}
+
+Status SABIFactory::NewBuilder(
+    const UserDefinedIndexOption& option,
+    unique_ptr<UserDefinedIndexBuilder>& builder) const {
+  assert(extractor_factory_);  // reader-only factories cannot build
+  builder.reset(new SABIBuilder(
+      schema_, extractor_factory_(),
+      LevelDistanceFromDeepest(option.level_at_creation, option.num_levels)));
+  return Status::OK();
 }
 
 unique_ptr<UserDefinedIndexReader> SABIFactory::NewReader(

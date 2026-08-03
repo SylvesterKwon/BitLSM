@@ -17,8 +17,10 @@ namespace bit_lsm {
 // SABIBuilder Implementation
 // ========================================================================
 SABIBuilder::SABIBuilder(SABISchema schema,
-                         std::unique_ptr<AttrExtractor> extractor)
+                         std::unique_ptr<AttrExtractor> extractor,
+                         uint32_t level_d)
     : schema_(std::move(schema)),
+      level_d_(level_d),
       extractor_(std::move(extractor)),
       scratch_(schema_.attr_num()) {
   bitmap_index_.bitmap_nums.resize(schema_.attr_num(), 0);
@@ -130,8 +132,10 @@ void SABIBuilder::SetBinningPolicy() {
   // total_bitmaps_cnt = attr_num / fpr
   // rho: expected bin selectivity per point query (0, 1]
   // e.g. rho=0.1 means 10 bins per attr on avg.
-  uint32_t target_total_bitmaps_cnt =
-      (uint32_t)(schema_.attr_num() / schema_.rho);
+  // Levels above the deepest one get a gamma-decayed budget (no-op at
+  // gamma = 1.0).
+  double rho_eff = EffectiveRho(schema_.rho, schema_.gamma, level_d_);
+  uint32_t target_total_bitmaps_cnt = (uint32_t)(schema_.attr_num() / rho_eff);
 
   // 2. Set # of bitmaps for each attr
   vector<uint32_t> cardinality(schema_.attr_num(), 0);

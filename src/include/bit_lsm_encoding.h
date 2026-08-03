@@ -5,6 +5,7 @@
 // attributes with a single unsigned comparison; UNORDERED attrs stay opaque
 // bytes.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -97,12 +98,39 @@ inline uint64_t TDigestBoundaryToOkey(double d, uint64_t min_okey) {
   return min_okey + static_cast<uint64_t>(d);
 }
 
+// ---- Level-aware rho (gamma decay) ----
+
+// RocksDB's default; BitLSM never overrides Options::num_levels, so the LSM
+// spans L0..L6.
+inline constexpr int kDefaultNumLevels = 7;
+
+// d = distance from the deepest level. Unknown level (-1, e.g.
+// SstFileWriter-driven builds) falls back to the maximum distance = maximum
+// decay = minimum budget.
+inline uint32_t LevelDistanceFromDeepest(int level_at_creation,
+                                         int num_levels) {
+  if (num_levels <= 0) num_levels = kDefaultNumLevels;
+  if (level_at_creation < 0 || level_at_creation >= num_levels) {
+    return static_cast<uint32_t>(num_levels - 1);
+  }
+  return static_cast<uint32_t>((num_levels - 1) - level_at_creation);
+}
+
+// gamma == 1.0 short-circuits to plain rho: the exact same double flows into
+// the bin-budget division (byte-identical blobs), and the 0.5 clamp — which
+// would alter behavior for rho > 0.5 — is never applied.
+inline double EffectiveRho(double rho, double gamma, uint32_t d) {
+  if (gamma == 1.0) return rho;
+  return std::min(rho * std::pow(gamma, static_cast<double>(d)), 0.5);
+}
+
 // ---- The complete schema residue visible to SABI ----
 // Width/signedness/collation are absorbed by the adapter; NULL arrives as a
 // per-row monostate from the extractor, never as a static flag.
 struct SABISchema {
   std::vector<AttrRole> roles;
-  double rho = 0.01;  // bitmap budget knob; only the builder consumes it
+  double rho = 0.01;   // bitmap budget knob; only the builder consumes it
+  double gamma = 1.0;  // level-aware rho decay constant; 1.0 = off
 
   uint32_t attr_num() const { return static_cast<uint32_t>(roles.size()); }
 
@@ -111,6 +139,7 @@ struct SABISchema {
     s.roles.reserve(o.attr_num);
     for (const auto& sp : o.attr_specs) s.roles.push_back(sp.role);
     s.rho = o.rho;
+    s.gamma = o.gamma;
     return s;
   }
 };

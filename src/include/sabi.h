@@ -101,6 +101,7 @@ struct UnorderedAttrValueCounts {
 class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
  private:
   SABISchema schema_;
+  uint32_t level_d_;  // build-time distance from the deepest level
   std::unique_ptr<AttrExtractor> extractor_;  // exclusively owned
   std::vector<EncodedAttr>
       scratch_;  // per-row extraction buffer, attr_num slots
@@ -168,7 +169,10 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
   void CalculateBitmapIndex();
 
  public:
-  SABIBuilder(SABISchema schema, std::unique_ptr<AttrExtractor> extractor);
+  // level_d defaults to the deepest level (plain rho); RocksDB builds inject
+  // the real distance through SABIFactory::NewBuilder(option, ...).
+  SABIBuilder(SABISchema schema, std::unique_ptr<AttrExtractor> extractor,
+              uint32_t level_d = 0);
   rocksdb::Slice AddIndexEntry(
       const rocksdb::Slice& last_key_in_current_block,
       const rocksdb::Slice* first_key_in_next_block,
@@ -248,6 +252,11 @@ class SABIFactory : public rocksdb::UserDefinedIndexFactory {
         }) {}
   const char* Name() const override;
   rocksdb::UserDefinedIndexBuilder* NewBuilder() const override;
+  // Real build entry point: derives the level distance for gamma decay from
+  // the option's level context (unknown level falls back to maximum decay).
+  rocksdb::Status NewBuilder(const rocksdb::UserDefinedIndexOption& option,
+                             std::unique_ptr<rocksdb::UserDefinedIndexBuilder>&
+                                 builder) const override;
   std::unique_ptr<rocksdb::UserDefinedIndexReader> NewReader(
       rocksdb::Slice& index_block_) const override;
   // Rejects blobs with a missing or unsupported version footer, an invalid
