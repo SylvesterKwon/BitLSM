@@ -467,8 +467,8 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
   for (int level = 0; level < storage->num_non_empty_levels(); ++level) {
     for (FileMetaData* meta : storage->LevelFiles(level)) {
       TableCache::TypedHandle* handle = nullptr;
-      Status s = tc->FindTable(ReadOptions(), FileOptions(), *icmp, *meta,
-                               &handle, sv->mutable_cf_options);
+      Status s = tc->FindTable(ReadOptions(), *sv->cfd->soptions(), *icmp,
+                               *meta, &handle, sv->mutable_cf_options);
       if (!s.ok()) continue;  // unreadable file contributes nothing
       auto* bbt = static_cast<BlockBasedTable*>(cache_interface.Value(handle));
       // Holds the SABI entry for this file's harvest: a block cache pin when

@@ -61,13 +61,12 @@ void BitLSMLevelIterator::LoadFile(size_t idx) {
 
   // 3. Read BlockBasedTable
   const ReadOptions& read_options = ReadOptions();
-  const FileOptions& file_options = FileOptions();
   TableCache::TypedHandle* new_table_handle = nullptr;
   const FileMetaData* file_meta = files_[idx];
   const bool no_io = false;
 
   Status s = scan_ctx_.tc->FindTable(
-      read_options, file_options, *scan_ctx_.icmp, *file_meta,
+      read_options, scan_ctx_.file_opts, *scan_ctx_.icmp, *file_meta,
       &new_table_handle, scan_ctx_.cf_opts, no_io);
   if (!s.ok()) {
     // Unreadable SST: its rows cannot be skipped silently, so record the

@@ -40,7 +40,7 @@ BitLSMMergingIterator::BitLSMMergingIterator(const ScanContext& scan_ctx,
   for (FileMetaData* meta : l0_files) {
     TableCache::TypedHandle* table_handle = nullptr;
     ReadOptions ro;
-    Status s = scan_ctx_.tc->FindTable(ro, FileOptions(), *scan_ctx_.icmp,
+    Status s = scan_ctx_.tc->FindTable(ro, scan_ctx_.file_opts, *scan_ctx_.icmp,
                                        *meta, &table_handle, scan_ctx_.cf_opts);
     if (!s.ok()) {
       // Skipping the file would silently drop every row it holds, so record
