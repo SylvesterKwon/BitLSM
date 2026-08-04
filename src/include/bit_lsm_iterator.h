@@ -77,13 +77,19 @@ struct ScanContext {
   const rocksdb::VersionStorageInfo* storage_info;
   const rocksdb::InternalKeyComparator* icmp;
   const rocksdb::MutableCFOptions& cf_opts;
+  // CF-configured file options (direct I/O, rate limiter, ...). Table opens
+  // must pass these, not a default-constructed FileOptions: the table cache
+  // keeps whichever reader the first opener created, so one open with the
+  // wrong options pins the wrong I/O path for the file's cached lifetime.
+  const rocksdb::FileOptions& file_opts;
 
   explicit ScanContext(rocksdb::SuperVersion* sv)
       : sv(sv),
         tc(sv->cfd->table_cache()),
         storage_info(sv->current->storage_info()),
         icmp(storage_info->InternalComparator()),
-        cf_opts(sv->mutable_cf_options) {}
+        cf_opts(sv->mutable_cf_options),
+        file_opts(*sv->cfd->soptions()) {}
 };
 
 // Iterator for SABI.
