@@ -59,7 +59,43 @@ BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
   // 3. Save snapshot's seqno to SABIOption
   options_.read_seqno = snapshot_->GetSequenceNumber();
 
-  // 4. Create merging iterator
+  // 4. Authoritative-scan check, once per iterator (the SuperVersion is
+  // pinned, so this cannot change mid-scan). All four conditions together
+  // prove every candidate row the scan yields is the newest visible version
+  // of its key, making the MultiGet re-fetch redundant:
+  //  - empty active/immutable memtables and empty L0: nothing newer above
+  //    the sorted run,
+  //  - a single non-empty level: per-level key ranges are disjoint, so a key
+  //    lives in exactly one file,
+  //  - every file seqno-zeroed (largest_seqno == 0): RocksDB zeroes seqnos in
+  //    bottommost compaction only when a single visible version remains, so
+  //    a zeroed file cannot hide an in-file older/newer version pair.
+  if (result_mode_ == ResultMode::Verified) {
+    const rocksdb::VersionStorageInfo* vsi = scan_ctx_.storage_info;
+    bool above_empty = sv_->mem->NumEntries() == 0 &&
+                       sv_->imm->NumNotFlushed() == 0 &&
+                       vsi->NumLevelFiles(0) == 0;
+    int non_empty_level = -1;
+    bool single_level = above_empty;
+    for (int level = 1; single_level && level < vsi->num_non_empty_levels();
+         ++level) {
+      if (vsi->NumLevelFiles(level) == 0) continue;
+      if (non_empty_level != -1) single_level = false;
+      non_empty_level = level;
+    }
+    bool all_zeroed = single_level && non_empty_level != -1;
+    if (all_zeroed) {
+      for (const rocksdb::FileMetaData* f : vsi->LevelFiles(non_empty_level)) {
+        if (f->fd.largest_seqno != 0) {
+          all_zeroed = false;
+          break;
+        }
+      }
+    }
+    authoritative_scan_ = all_zeroed;
+  }
+
+  // 5. Create merging iterator
   smi_ = new BitLSMMergingIterator(scan_ctx_, query_ctx_);
 }
 
@@ -101,6 +137,8 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
   while (batch_keys_.empty() && smi_->Valid()) {
     candidate_keys_.clear();
     candidate_keys_.reserve(batch_size);
+    candidate_values_.clear();
+    if (authoritative_scan_) candidate_values_.reserve(batch_size);
 
     // 4. Get candidate keys
     while (smi_->Valid() && candidate_keys_.size() < batch_size) {
@@ -113,6 +151,10 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
                                        ikey.user_key.size());
           latest_user_key_added.assign(ikey.user_key.data(),
                                        ikey.user_key.size());
+          if (authoritative_scan_) {
+            Slice v = smi_->value();
+            candidate_values_.emplace_back(v.data(), v.size());
+          }
         }
       }
       smi_->Next();
@@ -135,6 +177,16 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       // swap, not move-assign: a move would leave candidate_keys_ with no
       // buffer for the next batch.
       batch_keys_.swap(candidate_keys_);
+      continue;
+    }
+
+    // Authoritative scan (see the constructor check): the rows the scan just
+    // yielded are the newest visible versions, and per-row verification
+    // already ran in the leaf iterators, so they are the answer as-is.
+    if (authoritative_scan_) {
+      batch_keys_.swap(candidate_keys_);
+      batch_values_.swap(candidate_values_);
+      skipped_batches_++;
       continue;
     }
 

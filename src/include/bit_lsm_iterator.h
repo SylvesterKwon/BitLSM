@@ -131,8 +131,19 @@ class BitLSMIterator : public SABIInternalIterator {
   // Dedup scratch per batch; a member so the vector's buffer survives. Its
   // elements move out into batch_keys_, so the strings are not reused.
   std::vector<std::string> candidate_keys_;
+  // Scan-row values collected alongside candidate_keys_, only on the
+  // authoritative-scan path (copied immediately: the source Slice dies when
+  // the child iterator loads its next block).
+  std::vector<std::string> candidate_values_;
 
   std::string latest_user_key_added;
+
+  // True when this scan's SuperVersion proves every candidate is already the
+  // newest visible version — empty memtables, empty L0, a single non-empty
+  // level, and every file seqno-zeroed (one version per key guaranteed) — so
+  // batches are answered from the scan rows and MultiGet is skipped.
+  bool authoritative_scan_ = false;
+  uint64_t skipped_batches_ = 0;
 
   void FetchNextBatch(uint32_t batch_size);
 
@@ -149,6 +160,8 @@ class BitLSMIterator : public SABIInternalIterator {
   void Next() override;
   rocksdb::Slice key() const override;
   rocksdb::Slice value() const override;
+  // Batches answered from the scan alone (authoritative-scan MultiGet skip).
+  uint64_t TEST_SkippedBatches() const { return skipped_batches_; }
   void TEST_DumpValue(rocksdb::Slice slice);  // Inspect Value for debug
 };
 
