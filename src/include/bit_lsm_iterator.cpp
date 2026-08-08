@@ -222,6 +222,15 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       }
       checked_keys_ += candidate_keys_.size();
       skipped_keys_ += candidate_keys_.size() - dirty_idx_.size();
+      // Kill switch: with a low skip rate every key pays the probe AND the
+      // full MultiGet, so checking is pure overhead — stop for the rest of
+      // this iterator. Bounded loss: at most the first sample window.
+      constexpr uint64_t kCheckSampleKeys = 4096;
+      constexpr uint64_t kMinSkipRatePct = 25;
+      if (checked_keys_ >= kCheckSampleKeys &&
+          skipped_keys_ * 100 < checked_keys_ * kMinSkipRatePct) {
+        check_enabled_ = false;
+      }
     } else {
       dirty_idx_.resize(candidate_keys_.size());
       std::iota(dirty_idx_.begin(), dirty_idx_.end(), 0);

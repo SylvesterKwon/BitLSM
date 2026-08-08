@@ -178,6 +178,40 @@ TEST_F(BitLSMTestBase, UpdatedKeysFallBackToMultiGet) {
   ASSERT_TRUE(db.VerifyQuery(q));
 }
 
+// Workload: every key rewritten OUT of the query's range in a second flush,
+//           so every bitmap candidate is a stale old version and every check
+//           answers dirty; more than the sample window flows through.
+//           (Rewrites that stay IN range are not dirty: the scan sees both
+//           versions and dedup already keeps the newest.)
+// Threat: an all-dirty workload pays probe + full MultiGet per key forever —
+//         the check must notice its own futility and turn itself off.
+TEST_F(BitLSMTestBase, AllDirtyWorkloadTripsKillSwitch) {
+  table_options_.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
+  BitLSMOptions opt = ContOpt();
+  BitLSM& db = OpenDB(opt);
+  FillRows(db, 6000, 0);
+  ASSERT_TRUE(db.Flush().ok());
+  const std::string payload(32, 'u');
+  for (int i = 0; i < 6000; ++i) {  // move every key out of the query range
+    char key[16];
+    std::snprintf(key, sizeof(key), "k%05d", i);
+    ASSERT_TRUE(db.Put(key, {1000000.0}, payload).ok());
+  }
+  ASSERT_TRUE(db.Flush().ok());
+
+  BitLSMQuery q(
+      std::vector<QueryCondition>{{0, CompareOp::LESS_EQUAL, 5999.0}});
+  auto it = db.NewIterator(q);
+  uint64_t n = 0;
+  for (it->SeekToFirst(); it->Valid(); it->Next()) ++n;
+  ASSERT_TRUE(it->status().ok());
+  ASSERT_EQ(n, 0u) << "stale out-of-range rows leaked into the result";
+  EXPECT_FALSE(it->TEST_CheckEnabled())
+      << "check stayed on for an all-dirty scan";
+  EXPECT_LT(it->TEST_CheckedKeys(), 6001u)
+      << "kept checking after the switch should have tripped";
+}
+
 // Workload: update + delete traffic, then a second full compaction settles
 //           the DB again before the scan.
 // Threat: after re-settling, either the skip fails to re-engage (perf loss)
