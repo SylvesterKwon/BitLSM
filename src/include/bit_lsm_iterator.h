@@ -13,6 +13,7 @@
 #include "rocksdb/status.h"
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
+#include "table/block_based/block_prefetcher.h"
 
 namespace bit_lsm {
 
@@ -232,6 +233,11 @@ class SABITableIterator : public SABIInternalIterator {
   // Holds the current data block pinned in the Block Cache, so values can be
   // borrowed from it instead of copied.
   std::unique_ptr<rocksdb::DataBlockIter> biter_;
+  // RocksDB's standard adaptive readahead for this scan's data block reads,
+  // the same mechanism BlockBasedTableIterator uses. Its FilePrefetchBuffer
+  // is created lazily by PrefetchIfNeeded once the block access pattern turns
+  // near-sequential, so sparse target sets never trigger readahead.
+  rocksdb::BlockPrefetcher block_prefetcher_;
 
   // Internal status for iterating
   // The query bitmap is either borrowed from the SABIReader's frozen bitmaps
