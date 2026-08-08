@@ -46,6 +46,10 @@ class BitLSMLevelIterator;
 class SABITableIterator;
 class BitLSMMemTableIterator;
 
+// Source level of candidates that came from a memtable child; nothing in the
+// SST tree can be newer than a memtable row except other memtable entries.
+inline constexpr int kMemtableSourceLevel = -1;
+
 // What BitLSMIterator emits.
 enum class ResultMode {
   // Bitmap pruning + authoritative MultiGet fetch + per-row verification:
