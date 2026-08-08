@@ -53,6 +53,7 @@ bitlsm_add_test(sabi_placeholder_binning_test)
 bitlsm_add_test(sabi_stats_test)
 bitlsm_add_test(estimator_test)
 bitlsm_add_test(udi_block_cache_test)
+bitlsm_add_test(scan_prefetch_test)
 
 # stress 티어: 큰 시드/스텝 예산. PR CI 는 -LE stress 로 제외하고
 # 로컬에서 ctest -L stress 로 실행한다.
