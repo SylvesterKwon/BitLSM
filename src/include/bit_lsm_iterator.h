@@ -257,7 +257,7 @@ class BitLSMLevelIterator : public SABIInternalIterator {
   void Next() override;
   rocksdb::Slice key() const override;
   rocksdb::Slice value() const override;
-  int SourceLevel() const override;        // delegates to cur_sti_
+  int SourceLevel() const override;  // delegates to cur_sti_
   uint64_t SourceFileNumber() const override;
   void TEST_DumpValue(rocksdb::Slice slice);  // Inspect Value for debug
 };
