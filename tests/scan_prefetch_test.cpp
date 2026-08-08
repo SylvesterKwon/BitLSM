@@ -3,6 +3,7 @@
 #include <rocksdb/statistics.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -12,6 +13,9 @@
 #include <vector>
 
 #include "test_util/bitlsm_test_base.h"
+#ifndef NDEBUG
+#include "test_util/sync_point.h"
+#endif
 
 using namespace bit_lsm;
 
@@ -40,11 +44,11 @@ bool DirectIOSupported(const std::string& dir) {
   return ok;
 }
 
-// Write `n` rows with sequential ordered-attr values and a padded payload so
-// one Flush yields a single SST spanning many data blocks.
-void FillRows(BitLSM& db, int n) {
+// Write rows [start, start+n) with sequential ordered-attr values and a
+// padded payload so one Flush yields a single SST spanning many data blocks.
+void FillRows(BitLSM& db, int n, int start = 0) {
   const std::string payload(32, 'p');
-  for (int i = 0; i < n; ++i) {
+  for (int i = start; i < start + n; ++i) {
     char key[16];
     std::snprintf(key, sizeof(key), "k%05d", i);
     ASSERT_TRUE(db.Put(key, {static_cast<double>(i)}, payload).ok());
@@ -122,4 +126,53 @@ TEST_F(BitLSMTestBase, PrefetchOnOffResultsIdentical) {
     ASSERT_EQ(rows_on[i].second, rows_off[i].second)
         << "value mismatch at " << i;
   }
+}
+
+// Workload: rows compacted into several small L1+ SST files (tiny
+//           target_file_size_base); a full-range scan walks them through
+//           BitLSMLevelIterator in file order.
+// Threat: the adaptive-readahead ramp restarts from scratch on every file —
+//         readahead state is never carried across SSTs, so a level scan pays
+//         the single-block warmup and the 8K-up ramp once per file instead of
+//         once per level.
+TEST_F(BitLSMTestBase, LevelScanCarriesReadaheadAcrossFiles) {
+#ifdef NDEBUG
+  GTEST_SKIP() << "sync points require a debug build";
+#else
+  // Direct I/O so the readahead goes through FilePrefetchBuffer: on buffered
+  // POSIX the ramp is served by FS prefetch (fadvise) without a buffer, and
+  // there is no state object to carry across files (same as vanilla).
+  const char* mem = std::getenv("MEM_ENV");
+  if (mem && std::string_view(mem) == "1")
+    GTEST_SKIP() << "direct I/O is not supported on MemEnv";
+  if (!DirectIOSupported(db_path_))
+    GTEST_SKIP() << "filesystem rejects O_DIRECT";
+  rocksdb_options_.use_direct_reads = true;
+
+  table_options_.block_size = 512;
+
+  BitLSMOptions opt = ContOpt();
+  BitLSM& db = OpenDB(opt);
+  // Build 4 disjoint-range files on the bottom level: each chunk is flushed
+  // and compacted alone, and since it overlaps nothing already there, it
+  // lands as its own SST instead of merging.
+  rocksdb::CompactRangeOptions cro;
+  for (int chunk = 0; chunk < 4; ++chunk) {
+    FillRows(db, 2500, chunk * 2500);
+    ASSERT_TRUE(db.GetInternalDB()->CompactRange(cro, nullptr, nullptr).ok());
+  }
+
+  std::atomic<int> transfers{0};
+  rocksdb::SyncPoint::GetInstance()->SetCallBack(
+      "BlockPrefetcher::SetReadaheadState",
+      [&transfers](void*) { transfers.fetch_add(1); });
+  rocksdb::SyncPoint::GetInstance()->EnableProcessing();
+  auto rows = ScanAll(db);
+  rocksdb::SyncPoint::GetInstance()->DisableProcessing();
+  rocksdb::SyncPoint::GetInstance()->ClearAllCallBacks();
+
+  ASSERT_EQ(rows.size(), 10000u);
+  EXPECT_GT(transfers.load(), 0)
+      << "readahead state never carried across files";
+#endif
 }

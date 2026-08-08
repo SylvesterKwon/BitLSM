@@ -418,6 +418,25 @@ void SABITableIterator::LoadNextBlock() {
   }
 }
 
+void SABITableIterator::GetReadaheadState(
+    ReadaheadFileInfo* readahead_file_info) {
+  if (block_prefetcher_.prefetch_buffer() != nullptr) {
+    block_prefetcher_.prefetch_buffer()->GetReadaheadState(
+        &(readahead_file_info->data_block_readahead_info));
+  }
+}
+
+void SABITableIterator::SetReadaheadState(
+    ReadaheadFileInfo* readahead_file_info) {
+  // A zero readahead_size means no prior file built a prefetch buffer;
+  // applying it would set this file's initial size to 0 and disable
+  // auto-readahead entirely, so keep the fresh-start defaults instead.
+  if (readahead_file_info->data_block_readahead_info.readahead_size > 0) {
+    block_prefetcher_.SetReadaheadState(
+        &(readahead_file_info->data_block_readahead_info));
+  }
+}
+
 void SABITableIterator::SeekToFirst() {
   // A failure is sticky: never restart a scan that already lost data.
   if (!status_.ok()) {
