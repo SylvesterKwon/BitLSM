@@ -10,6 +10,7 @@
 #include "db/column_family.h"
 #include "db/db_impl/db_impl.h"
 #include "db/version_set.h"
+#include "file/readahead_file_info.h"
 #include "rocksdb/status.h"
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
@@ -198,6 +199,9 @@ class BitLSMLevelIterator : public SABIInternalIterator {
   uint32_t cur_file_idx_;
   rocksdb::TableCache::TypedHandle* cur_table_handle_;
   SABITableIterator* cur_sti_;
+  // Readahead state of the last file whose scan built a prefetch buffer,
+  // handed to each newly opened file so the ramp survives file switches.
+  rocksdb::ReadaheadFileInfo readahead_file_info_;
 
   void LoadFile(size_t idx);  // Open file with index
 
@@ -292,6 +296,11 @@ class SABITableIterator : public SABIInternalIterator {
   void Next() override;  // Get Next Data Entries
   rocksdb::Slice key() const override;
   rocksdb::Slice value() const override;
+  // Carry the adaptive-readahead ramp across the files of a level scan, the
+  // way LevelIterator hands ReadaheadFileInfo between BlockBasedTableIterators
+  // so a new file resumes at the ramped readahead size instead of 8K.
+  void GetReadaheadState(rocksdb::ReadaheadFileInfo* readahead_file_info);
+  void SetReadaheadState(rocksdb::ReadaheadFileInfo* readahead_file_info);
   void TEST_DumpValue(rocksdb::Slice slice);  // Inspect Value for debug
 };
 
