@@ -18,6 +18,10 @@
 
 namespace bit_lsm {
 
+// Source level of candidates that came from a memtable child; nothing in the
+// SST tree can be newer than a memtable row except other memtable entries.
+inline constexpr int kMemtableSourceLevel = -1;
+
 // Abstract class for internal iterator like SABITableIterator,
 // BitLSMMemTableIterator
 class SABIInternalIterator {
@@ -38,6 +42,10 @@ class SABIInternalIterator {
   virtual rocksdb::Status status() const { return status_; };
   virtual rocksdb::Slice key() const = 0;
   virtual rocksdb::Slice value() const = 0;
+  // Where the current row came from; the shadow check bounds its search with
+  // this. Memtable children keep the defaults.
+  virtual int SourceLevel() const { return kMemtableSourceLevel; }
+  virtual uint64_t SourceFileNumber() const { return 0; }
 };
 
 class BitLSMIterator;
@@ -45,10 +53,7 @@ class BitLSMMergingIterator;
 class BitLSMLevelIterator;
 class SABITableIterator;
 class BitLSMMemTableIterator;
-
-// Source level of candidates that came from a memtable child; nothing in the
-// SST tree can be newer than a memtable row except other memtable entries.
-inline constexpr int kMemtableSourceLevel = -1;
+class ShadowChecker;
 
 // What BitLSMIterator emits.
 enum class ResultMode {
@@ -149,6 +154,18 @@ class BitLSMIterator : public SABIInternalIterator {
   bool authoritative_scan_ = false;
   uint64_t skipped_batches_ = 0;
 
+  // Per-key shadow check (v2): candidates proven newest by memtable/bloom
+  // probes keep their scan row; only the rest go through MultiGet. Aligned
+  // with candidate_keys_ by index; scratch buffers like candidate_keys_.
+  std::vector<rocksdb::SequenceNumber> candidate_seqnos_;
+  std::vector<int> candidate_src_levels_;
+  std::vector<uint64_t> candidate_src_files_;
+  std::vector<uint32_t> dirty_idx_;
+  std::unique_ptr<ShadowChecker> checker_;
+  bool check_enabled_ = false;
+  uint64_t checked_keys_ = 0;
+  uint64_t skipped_keys_ = 0;
+
   void FetchNextBatch(uint32_t batch_size);
 
  public:
@@ -166,6 +183,10 @@ class BitLSMIterator : public SABIInternalIterator {
   rocksdb::Slice value() const override;
   // Batches answered from the scan alone (authoritative-scan MultiGet skip).
   uint64_t TEST_SkippedBatches() const { return skipped_batches_; }
+  // Per-key shadow-check telemetry (v2).
+  uint64_t TEST_SkippedKeys() const { return skipped_keys_; }
+  uint64_t TEST_CheckedKeys() const { return checked_keys_; }
+  bool TEST_CheckEnabled() const { return check_enabled_; }
   void TEST_DumpValue(rocksdb::Slice slice);  // Inspect Value for debug
 };
 
@@ -201,6 +222,12 @@ class BitLSMMergingIterator : public SABIInternalIterator {
   void Next() override;
   rocksdb::Slice key() const override;
   rocksdb::Slice value() const override;
+  // Valid only while Valid(), like key(): delegates to the child that owns
+  // the current row.
+  int SourceLevel() const override { return heap_.top()->SourceLevel(); }
+  uint64_t SourceFileNumber() const override {
+    return heap_.top()->SourceFileNumber();
+  }
   void TEST_DumpValue(rocksdb::Slice slice);  // Inspect Value for debug
 };
 
@@ -230,6 +257,8 @@ class BitLSMLevelIterator : public SABIInternalIterator {
   void Next() override;
   rocksdb::Slice key() const override;
   rocksdb::Slice value() const override;
+  int SourceLevel() const override;        // delegates to cur_sti_
+  uint64_t SourceFileNumber() const override;
   void TEST_DumpValue(rocksdb::Slice slice);  // Inspect Value for debug
 };
 
@@ -251,6 +280,10 @@ class SABITableIterator : public SABIInternalIterator {
   const SABIQuery& query_;
   const CompiledQuery* compiled_;  // nullptr = skip per-row Eval
   uint32_t block_restart_interval_ = 0;
+  // Position of this iterator's SST in the LSM, reported through
+  // SourceLevel()/SourceFileNumber() for the shadow check.
+  int source_level_ = 0;
+  uint64_t file_number_ = 0;
   // Holds the current data block pinned in the Block Cache, so values can be
   // borrowed from it instead of copied.
   std::unique_ptr<rocksdb::DataBlockIter> biter_;
@@ -308,11 +341,14 @@ class SABITableIterator : public SABIInternalIterator {
 
  public:
   SABITableIterator(rocksdb::BlockBasedTable* bbt,
-                    const QueryContext& query_ctx);
+                    const QueryContext& query_ctx, int source_level,
+                    uint64_t file_number);
   void SeekToFirst() override;
   void Next() override;  // Get Next Data Entries
   rocksdb::Slice key() const override;
   rocksdb::Slice value() const override;
+  int SourceLevel() const override { return source_level_; }
+  uint64_t SourceFileNumber() const override { return file_number_; }
   // Carry the adaptive-readahead ramp across the files of a level scan, the
   // way LevelIterator hands ReadaheadFileInfo between BlockBasedTableIterators
   // so a new file resumes at the ramped readahead size instead of 8K.

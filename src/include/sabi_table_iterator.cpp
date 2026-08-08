@@ -95,11 +95,14 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
 }
 
 SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
-                                     const QueryContext& query_ctx)
+                                     const QueryContext& query_ctx,
+                                     int source_level, uint64_t file_number)
     : options_(query_ctx.options),
       bbt_(bbt),
       query_(query_ctx.sabi_query),
       compiled_(query_ctx.compiled),
+      source_level_(source_level),
+      file_number_(file_number),
       block_prefetcher_(
           /*compaction_readahead_size=*/0,
           bbt->get_rep()->table_options.initial_auto_readahead_size),

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <rocksdb/filter_policy.h>
 
 #include <string>
 #include <utility>
@@ -120,6 +121,61 @@ TEST_F(BitLSMTestBase, L0FileDisablesSkip) {
   auto rows = DrainWithSkipCount(raw, &skipped);
   EXPECT_EQ(skipped, 0u) << "skip engaged with a non-empty L0";
   ASSERT_TRUE(db.VerifyFullScan());
+}
+
+// Workload: two disjoint-range L0 flushes (bloom on), NO compaction — the
+//           multi-level live state the OLTP benchmarks keep; full-range scan.
+// Threat: v1's global condition can never hold here, so without per-key
+//         checks every candidate still pays the MultiGet re-fetch.
+TEST_F(BitLSMTestBase, MultiLevelCleanScanSkipsPerKey) {
+  table_options_.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
+  BitLSMOptions opt = ContOpt();
+  BitLSM& db = OpenDB(opt);
+  FillRows(db, 1000, 0);
+  ASSERT_TRUE(db.Flush().ok());
+  FillRows(db, 1000, 1000);
+  ASSERT_TRUE(db.Flush().ok());
+
+  BitLSMQuery q = FullRange();
+  auto it = db.NewIterator(q);
+  std::vector<std::pair<std::string, std::string>> rows;
+  for (it->SeekToFirst(); it->Valid(); it->Next())
+    rows.emplace_back(it->key().ToString(), it->value().ToString());
+  ASSERT_TRUE(it->status().ok());
+  ASSERT_EQ(rows.size(), 2000u);
+  EXPECT_EQ(it->TEST_SkippedBatches(), 0u);  // v1 path must NOT be active
+  EXPECT_EQ(it->TEST_SkippedKeys(), 2000u)
+      << "clean multi-level candidates still re-fetched";
+  EXPECT_EQ(it->TEST_CheckedKeys(), 2000u);
+}
+
+// Workload: 1000 rows flushed, then 100 of them updated OUT of the query
+//           range and flushed again (newer shadowing L0 file); query
+//           attr <= 1999 sees the old versions as bitmap candidates.
+// Threat: a skipped stale candidate resurfaces a row whose newest version no
+//         longer matches — the exact bug the MultiGet re-fetch existed for.
+TEST_F(BitLSMTestBase, UpdatedKeysFallBackToMultiGet) {
+  table_options_.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
+  BitLSMOptions opt = ContOpt();
+  BitLSM& raw = OpenDB(opt);
+  CheckedBitLSM db(&raw, opt);
+  for (int i = 0; i < 1000; ++i)
+    ASSERT_TRUE(db.Put("k" + std::to_string(i), {static_cast<double>(i)}, "p"));
+  ASSERT_TRUE(db.Flush());
+  for (int i = 0; i < 100; ++i)  // move out of the query's range
+    ASSERT_TRUE(db.Put("k" + std::to_string(i * 10), {5000.0}, "u"));
+  ASSERT_TRUE(db.Flush());
+
+  BitLSMQuery q(
+      std::vector<QueryCondition>{{0, CompareOp::LESS_EQUAL, 1999.0}});
+  auto it = raw.NewIterator(q);
+  uint64_t n = 0;
+  for (it->SeekToFirst(); it->Valid(); it->Next()) ++n;
+  ASSERT_TRUE(it->status().ok());
+  EXPECT_EQ(n, 900u) << "stale shadowed rows leaked into the result";
+  EXPECT_GT(it->TEST_SkippedKeys(), 0u);  // untouched keys skip
+  EXPECT_LT(it->TEST_SkippedKeys(), it->TEST_CheckedKeys());
+  ASSERT_TRUE(db.VerifyQuery(q));
 }
 
 // Workload: update + delete traffic, then a second full compaction settles

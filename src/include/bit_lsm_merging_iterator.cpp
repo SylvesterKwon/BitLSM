@@ -54,7 +54,9 @@ BitLSMMergingIterator::BitLSMMergingIterator(const ScanContext& scan_ctx,
     BlockBasedTable* bbt = static_cast<BlockBasedTable*>(table);
 
     // cout << "[BitLSMMergingIterator] Added L0 SST iterator\n";
-    ch_iters_.push_back(new SABITableIterator(bbt, query_ctx));
+    ch_iters_.push_back(new SABITableIterator(bbt, query_ctx,
+                                              /*source_level=*/0,
+                                              meta->fd.GetNumber()));
     l0_handles_.push_back(table_handle);
   }
 
