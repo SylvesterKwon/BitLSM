@@ -83,7 +83,8 @@ void BitLSMLevelIterator::LoadFile(size_t idx) {
 
   // 4. Prepare new SABITableIterator
   cur_table_handle_ = new_table_handle;
-  cur_sti_ = new SABITableIterator(bbt, query_ctx_);
+  cur_sti_ = new SABITableIterator(bbt, query_ctx_, static_cast<int>(level_),
+                                   file_meta->fd.GetNumber());
   cur_sti_->SetReadaheadState(&readahead_file_info_);
 }
 
@@ -158,6 +159,18 @@ void BitLSMLevelIterator::Next() {
       }
     }
   }
+}
+
+int BitLSMLevelIterator::SourceLevel() const {
+  return cur_sti_ ? cur_sti_->SourceLevel() : kMemtableSourceLevel;
+}
+
+uint64_t BitLSMLevelIterator::SourceFileNumber() const {
+  return cur_sti_ ? cur_sti_->SourceFileNumber() : 0;
+}
+
+bool BitLSMLevelIterator::SourceHasNewerVersion() const {
+  return cur_sti_ ? cur_sti_->SourceHasNewerVersion() : false;
 }
 
 Slice BitLSMLevelIterator::key() const {

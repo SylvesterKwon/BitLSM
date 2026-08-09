@@ -20,6 +20,7 @@ class CheckedBitLSM {
  public:
   CheckedBitLSM(BitLSM* engine, BitLSMOptions options)
       : engine_(engine), options_(std::move(options)), ref_(options_) {}
+  ~CheckedBitLSM() { ReleaseHeldSnapshot(); }
 
   // Mutations: applied to both sides + appended to the trace.
   ::testing::AssertionResult Put(const std::string& key,
@@ -34,6 +35,13 @@ class CheckedBitLSM {
   // LSM shape changes: engine only; logical state unchanged.
   ::testing::AssertionResult Flush();
   ::testing::AssertionResult CompactAll();
+  // Holds an engine snapshot until ReleaseHeldSnapshot(). Writes flushed
+  // while one is open keep both versions of a rewritten key inside the same
+  // SST (flush preserves one version per snapshot stripe), which is the shape
+  // that exercises in-file shadowing. Logical state unchanged; re-holding
+  // while already held is a no-op.
+  void HoldSnapshot();
+  void ReleaseHeldSnapshot();
 
   // The core differential checks.
   ::testing::AssertionResult VerifyQuery(BitLSMQuery query);
@@ -51,6 +59,7 @@ class CheckedBitLSM {
   std::string Context() const;  // seed + op trace for failure messages
 
   BitLSM* engine_;
+  const rocksdb::Snapshot* held_snapshot_ = nullptr;
   BitLSMOptions options_;
   ReferenceDB ref_;
   std::vector<std::string> trace_;

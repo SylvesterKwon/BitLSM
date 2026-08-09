@@ -18,6 +18,10 @@ struct DiffParams {
   uint32_t verify_every = 25;      // ops between query batteries
   uint32_t queries_per_check = 4;  // random queries per battery
   uint32_t final_queries = 16;     // battery after the last op
+  // Ops between snapshot toggles (0 = never hold one). Writes that are
+  // flushed while a snapshot is open leave several versions of a key inside
+  // one SST, which no other op sequence produces.
+  uint32_t snapshot_every = 40;
   WorkloadParams workload;
 };
 
@@ -84,6 +88,14 @@ inline void RunRandomizedDiff(CheckedBitLSM& db, Rng& rng,
         ASSERT_TRUE(db.CompactAll());
         break;
     }
+    // Alternate windows with and without an open snapshot so some flushes
+    // retain multiple versions of a key in one file.
+    if (p.snapshot_every > 0 && step % p.snapshot_every == 0) {
+      if (step % (2 * p.snapshot_every) == 0)
+        db.ReleaseHeldSnapshot();
+      else
+        db.HoldSnapshot();
+    }
     if (step % p.verify_every == 0) {
       for (uint32_t q = 0; q < p.queries_per_check; ++q)
         ASSERT_TRUE(db.VerifyQuery(
@@ -91,6 +103,7 @@ inline void RunRandomizedDiff(CheckedBitLSM& db, Rng& rng,
       ASSERT_TRUE(db.VerifyFullScan());
     }
   }
+  db.ReleaseHeldSnapshot();
   for (uint32_t q = 0; q < p.final_queries; ++q)
     ASSERT_TRUE(
         db.VerifyQuery(GenerateQuery(rng, schema, p.workload, db.reference())));
