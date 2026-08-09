@@ -108,6 +108,19 @@ std::string CheckedBitLSM::Context() const {
   return ::testing::AssertionSuccess();
 }
 
+void CheckedBitLSM::HoldSnapshot() {
+  if (held_snapshot_ != nullptr) return;
+  trace_.push_back("HoldSnapshot()");
+  held_snapshot_ = engine_->GetInternalDB()->GetSnapshot();
+}
+
+void CheckedBitLSM::ReleaseHeldSnapshot() {
+  if (held_snapshot_ == nullptr) return;
+  trace_.push_back("ReleaseHeldSnapshot()");
+  engine_->GetInternalDB()->ReleaseSnapshot(held_snapshot_);
+  held_snapshot_ = nullptr;
+}
+
 ::testing::AssertionResult CheckedBitLSM::CompactAll() {
   trace_.push_back("CompactAll()");
   rocksdb::Status s = engine_->GetInternalDB()->CompactRange(
