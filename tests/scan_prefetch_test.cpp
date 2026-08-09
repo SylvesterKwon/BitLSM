@@ -270,11 +270,8 @@ TEST_F(BitLSMTestBase, LevelScanCarriesReadaheadAcrossFiles) {
   rocksdb_options_.use_direct_reads = true;
 
   table_options_.block_size = 512;
-  // Pin the readahead ceiling below the smallest window the scan planner will
-  // open, so this scan runs on the implicit adaptive ramp — the only path
-  // whose state is worth carrying between files. Anything larger and the
-  // planner picks an explicit window sized from each file's own target list,
-  // which needs no warmup to carry forward.
+  // Below the smallest window the scan planner will open, so this scan runs
+  // on the implicit ramp -- the only path with state to carry between files.
   table_options_.max_auto_readahead_size = 4096;
 
   BitLSMOptions opt = ContOpt();
