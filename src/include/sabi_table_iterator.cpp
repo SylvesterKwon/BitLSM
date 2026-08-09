@@ -1,5 +1,6 @@
 #include <bit_lsm_query.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <memory>
@@ -30,6 +31,79 @@ static const roaring::Roaring& EmptyBitmap() {
   return kEmptyBitmap;
 }
 
+namespace bit_lsm {
+namespace {
+
+// Cost of one read request and of one KiB of sequential transfer, measured on
+// the QD1 direct-I/O NVMe the scan path was profiled on: a read costs ~81us
+// almost regardless of size up to ~256KB, the point where transfer time at
+// ~3.1 GB/s catches up with the latency floor. Merging two target blocks into
+// one request therefore pays off as long as the non-target bytes it drags in
+// are cheaper than the request it saves, which works out to ~245KiB of slack.
+// The model adds latency and transfer, which the device actually overlaps, so
+// it under-merges rather than over-merges.
+constexpr uint64_t kReadRequestNs = 81000;
+constexpr uint64_t kSequentialNsPerKiB = 330;
+
+// Smallest window worth opening: RocksDB's own readahead ramp starts here.
+constexpr size_t kMinScanReadaheadSize = 8 * 1024;
+
+// Modeled cost of reading `target_blocks` through a `window`-byte readahead
+// window. RocksDB reads the block plus `window` bytes when a target falls
+// outside the buffer, and serves every later target inside that span from the
+// buffer, so this walk mirrors what FilePrefetchBuffer will actually do.
+uint64_t ScanIoCostNs(
+    const std::vector<std::pair<uint32_t, BlockHandle>>& target_blocks,
+    size_t window) {
+  uint64_t requests = 0;
+  uint64_t bytes = 0;
+  uint64_t buffered_end = 0;
+  for (const auto& [block_idx, handle] : target_blocks) {
+    const uint64_t len = BlockBasedTable::BlockSizeWithTrailer(handle);
+    if (handle.offset() + len <= buffered_end) continue;
+    requests++;
+    bytes += len + window;
+    buffered_end = handle.offset() + len + window;
+  }
+  return requests * kReadRequestNs + (bytes >> 10) * kSequentialNsPerKiB;
+}
+
+}  // namespace
+
+size_t ChooseScanReadaheadSize(
+    const std::vector<std::pair<uint32_t, BlockHandle>>& target_blocks,
+    size_t max_readahead_size) {
+  // max_readahead_size == 0 is the table's readahead kill switch, and a lone
+  // target block has nothing to merge with.
+  if (max_readahead_size < kMinScanReadaheadSize || target_blocks.size() < 2)
+    return 0;
+
+  // A window wider than the whole target span can merge nothing more than one
+  // spanning the targets exactly, so it only ever adds waste. Capping the
+  // search there also keeps the doubling below the top of size_t, which an
+  // unbounded max_readahead_size would otherwise wrap past.
+  const BlockHandle& last = target_blocks.back().second;
+  const uint64_t span = last.offset() +
+                        BlockBasedTable::BlockSizeWithTrailer(last) -
+                        target_blocks.front().second.offset();
+  const size_t ceiling =
+      static_cast<size_t>(std::min<uint64_t>(max_readahead_size, span));
+  if (ceiling < kMinScanReadaheadSize) return 0;
+
+  size_t best_window = 0;
+  uint64_t best_cost = ScanIoCostNs(target_blocks, 0);
+  for (size_t window = kMinScanReadaheadSize; window <= ceiling; window *= 2) {
+    const uint64_t cost = ScanIoCostNs(target_blocks, window);
+    if (cost < best_cost) {
+      best_cost = cost;
+      best_window = window;
+    }
+  }
+  return best_window;
+}
+
+}  // namespace bit_lsm
+
 void SABITableIterator::GetAllByIndexesFromDataBlock(
     const BlockHandle& bh, vector<uint32_t>& indexes,
     vector<PinnableSlice>& out_keys, vector<Slice>& out_values) {
@@ -45,10 +119,13 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
   // Before the biter_ reset, which unpins the block out_values borrow from.
   buffer_count_ = 0;
 
-  // Standard iterator readahead (implicit auto mode: ReadOptions default
-  // readahead_size == 0). The prefetcher only allocates its buffer after
-  // enough sequential reads, so this call is cheap for sparse targets.
+  // Standard iterator readahead. A non-zero scan_readahead_size_ takes
+  // PrefetchIfNeeded's explicit branch, which skips the adjacency check and
+  // serves every target inside the window from one read; 0 falls back to the
+  // implicit ramp, which only allocates its buffer after enough sequential
+  // reads and so stays cheap for sparse targets.
   ReadOptions read_options;
+  read_options.readahead_size = scan_readahead_size_;
   block_prefetcher_.PrefetchIfNeeded(
       bbt_->get_rep(), bh, read_options.readahead_size,
       /*is_for_compaction=*/false, /*no_sequential_checking=*/false,
@@ -196,6 +273,12 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
   //      << (double)target_blocks_.size() /
   //             sabi_reader_->data_entries_cnt_psum.size()
   //      << ")\n";
+
+  // 3. Plan this scan's readahead from the finished target list, before the
+  // first block is read. The layout is fully known here, so the window is a
+  // calculation rather than the guess a reactive heuristic has to make.
+  scan_readahead_size_ = ChooseScanReadaheadSize(
+      target_blocks_, bbt->get_rep()->table_options.max_auto_readahead_size);
 }
 
 // Build bitmap for a single SABICondition (leaf node in CNF)
@@ -451,6 +534,11 @@ void SABITableIterator::LoadNextBlock() {
 
 void SABITableIterator::GetReadaheadState(
     ReadaheadFileInfo* readahead_file_info) {
+  // Only the implicit ramp has state worth carrying. An explicit window was
+  // sized for this file's target layout, and handing it to the next file
+  // would seed that file's implicit ramp with a window its own layout never
+  // justified.
+  if (scan_readahead_size_ > 0) return;
   if (block_prefetcher_.prefetch_buffer() != nullptr) {
     block_prefetcher_.prefetch_buffer()->GetReadaheadState(
         &(readahead_file_info->data_block_readahead_info));

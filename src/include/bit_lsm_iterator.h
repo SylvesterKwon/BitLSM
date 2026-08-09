@@ -22,6 +22,13 @@ namespace bit_lsm {
 // SST tree can be newer than a memtable row except other memtable entries.
 inline constexpr int kMemtableSourceLevel = -1;
 
+// Readahead window for a SABI scan, chosen from the scan's complete list of
+// target blocks. Returns 0 to leave RocksDB's implicit adaptive readahead in
+// charge, which is also what a max_readahead_size of 0 forces.
+size_t ChooseScanReadaheadSize(
+    const std::vector<std::pair<uint32_t, rocksdb::BlockHandle>>& target_blocks,
+    size_t max_readahead_size);
+
 // Abstract class for internal iterator like SABITableIterator,
 // BitLSMMemTableIterator
 class SABIInternalIterator {
@@ -300,6 +307,11 @@ class SABITableIterator : public SABIInternalIterator {
   // is created lazily by PrefetchIfNeeded once the block access pattern turns
   // near-sequential, so sparse target sets never trigger readahead.
   rocksdb::BlockPrefetcher block_prefetcher_;
+  // Readahead window for this scan, chosen up front from the full target
+  // block list. Non-zero takes PrefetchIfNeeded's explicit branch, which
+  // merges reads across non-target blocks instead of requiring the exact
+  // adjacency the implicit ramp demands; 0 leaves the implicit ramp in place.
+  size_t scan_readahead_size_ = 0;
 
   // Internal status for iterating
   // The query bitmap is either borrowed from the SABIReader's frozen bitmaps
