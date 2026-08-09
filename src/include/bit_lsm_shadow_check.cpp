@@ -13,47 +13,54 @@ ShadowChecker::ShadowChecker(const ScanContext& scan_ctx,
                              SequenceNumber read_seqno)
     : scan_ctx_(scan_ctx), read_seqno_(read_seqno) {}
 
-ShadowChecker::~ShadowChecker() {
+ShadowChecker::~ShadowChecker() { ReleaseHandles(); }
+
+void ShadowChecker::ReleaseHandles() {
   TableCache::CacheInterface cache = scan_ctx_.tc->get_cache();
   for (auto& [num, handle] : handles_) cache.Release(handle);
+  handles_.clear();
 }
 
-bool ShadowChecker::MemtablesHaveNewer(const Slice& user_key,
+bool ShadowChecker::MemtablesHaveNewer(const LookupKey& lk,
                                        SequenceNumber cand_seqno) {
-  LookupKey lk(user_key, read_seqno_);
   std::string value;
   Status s;
   MergeContext mc;
   SequenceNumber mcts = 0;
   SequenceNumber seq = kMaxSequenceNumber;
-  ReadOptions ro;
-  // A hit of any kind (value or tombstone) newer than the candidate means
-  // the candidate is stale or shadowed and must go through MultiGet.
-  if (scan_ctx_.sv->mem->Get(lk, &value, /*columns=*/nullptr,
-                             /*timestamp=*/nullptr, &s, &mc, &mcts, &seq, ro,
-                             /*immutable_memtable=*/false) &&
-      seq > cand_seqno) {
-    return true;
-  }
+  // A hit of any kind (value or tombstone) newer than the candidate means the
+  // candidate is stale or shadowed and must go through MultiGet. A covering
+  // range tombstone counts too; it is reported through
+  // max_covering_tombstone_seq rather than as a point hit.
+  bool found =
+      scan_ctx_.sv->mem->Get(lk, &value, /*columns=*/nullptr,
+                             /*timestamp=*/nullptr, &s, &mc, &mcts, &seq,
+                             read_options_, /*immutable_memtable=*/false);
+  if (mcts > cand_seqno) return true;
+  if (found && seq > cand_seqno) return true;
+
   value.clear();
   mc.Clear();
   mcts = 0;
   seq = kMaxSequenceNumber;
   s = Status();
-  if (scan_ctx_.sv->imm->Get(lk, &value, /*columns=*/nullptr,
-                             /*timestamp=*/nullptr, &s, &mc, &mcts, &seq, ro) &&
-      seq > cand_seqno) {
-    return true;
-  }
-  return false;
+  found = scan_ctx_.sv->imm->Get(lk, &value, /*columns=*/nullptr,
+                                 /*timestamp=*/nullptr, &s, &mc, &mcts, &seq,
+                                 read_options_);
+  if (mcts > cand_seqno) return true;
+  return found && seq > cand_seqno;
 }
 
 bool ShadowChecker::FilterSaysNo(const FdWithKeyRange& f, const Slice& user_key,
                                  const Slice& internal_key) {
   auto it = handles_.find(f.fd.GetNumber());
   if (it == handles_.end()) {
+    // Keeping every probed reader pinned would make a wide, long-running scan
+    // hold the whole table cache; drop the set once it grows past what a
+    // single key's probe sequence needs.
+    if (handles_.size() >= kMaxPinnedHandles) ReleaseHandles();
     TableCache::TypedHandle* handle = nullptr;
-    Status s = scan_ctx_.tc->FindTable(ReadOptions(), scan_ctx_.file_opts,
+    Status s = scan_ctx_.tc->FindTable(read_options_, scan_ctx_.file_opts,
                                        *scan_ctx_.icmp, *f.file_metadata,
                                        &handle, scan_ctx_.cf_opts);
     if (!s.ok()) return false;  // cannot prove absence -> maybe
@@ -65,17 +72,17 @@ bool ShadowChecker::FilterSaysNo(const FdWithKeyRange& f, const Slice& user_key,
   if (rep->filter == nullptr || !rep->whole_key_filtering) return false;
   return !rep->filter->KeyMayMatch(user_key, &internal_key,
                                    /*get_context=*/nullptr,
-                                   /*lookup_context=*/nullptr, ReadOptions());
+                                   /*lookup_context=*/nullptr, read_options_);
 }
 
 bool ShadowChecker::MayHaveNewerVersion(const Slice& user_key,
                                         SequenceNumber cand_seqno,
                                         int src_level, uint64_t src_file_no) {
-  if (MemtablesHaveNewer(user_key, cand_seqno)) return true;
+  LookupKey lk(user_key, read_seqno_);
+  if (MemtablesHaveNewer(lk, cand_seqno)) return true;
   if (src_level == kMemtableSourceLevel) return false;  // nothing else above
 
   const VersionStorageInfo* vsi = scan_ctx_.storage_info;
-  LookupKey lk(user_key, read_seqno_);
   Slice ikey = lk.internal_key();
   const Comparator* ucmp = scan_ctx_.icmp->user_comparator();
 
@@ -89,6 +96,10 @@ bool ShadowChecker::MayHaveNewerVersion(const Slice& user_key,
         ucmp->Compare(user_key, ExtractUserKey(f.largest_key)) > 0) {
       continue;
     }
+    // A range tombstone can cover this key without any point entry for it,
+    // and the point-key bloom cannot see range deletions -- so a file that
+    // carries any is never provably clean.
+    if (f.file_metadata->num_range_deletions > 0) return true;
     if (FilterSaysNo(f, user_key, ikey)) continue;
     return true;
   }
@@ -107,6 +118,10 @@ bool ShadowChecker::MayHaveNewerVersion(const Slice& user_key,
     if (ucmp->Compare(user_key, ExtractUserKey(f.smallest_key)) < 0) continue;
     if (f.fd.largest_seqno <= cand_seqno) continue;
     if (f.fd.GetNumber() == src_file_no) continue;
+    // A range tombstone can cover this key without any point entry for it,
+    // and the point-key bloom cannot see range deletions -- so a file that
+    // carries any is never provably clean.
+    if (f.file_metadata->num_range_deletions > 0) return true;
     if (FilterSaysNo(f, user_key, ikey)) continue;
     return true;
   }

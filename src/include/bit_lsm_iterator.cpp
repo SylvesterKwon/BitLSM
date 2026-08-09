@@ -61,10 +61,12 @@ BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
   // 3. Save snapshot's seqno to SABIOption
   options_.read_seqno = snapshot_->GetSequenceNumber();
 
-  // 4. Authoritative-scan check, once per iterator (the SuperVersion is
-  // pinned, so this cannot change mid-scan). All four conditions together
-  // prove every candidate row the scan yields is the newest visible version
-  // of its key, making the MultiGet re-fetch redundant:
+  // 4. Authoritative-scan check, once per iterator. Later writes cannot
+  // invalidate it even though the active memtable keeps growing: the
+  // snapshot seqno was fixed above, so anything written after this point is
+  // invisible to the scan. All four conditions together prove every
+  // candidate row the scan yields is the newest visible version of its key,
+  // making the MultiGet re-fetch redundant:
   //  - empty active/immutable memtables and empty L0: nothing newer above
   //    the sorted run,
   //  - a single non-empty level: per-level key ranges are disjoint, so a key
@@ -72,7 +74,16 @@ BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
   //  - every file seqno-zeroed (largest_seqno == 0): RocksDB zeroes seqnos in
   //    bottommost compaction only when a single visible version remains, so
   //    a zeroed file cannot hide an in-file older/newer version pair.
-  if (result_mode_ == ResultMode::Verified) {
+  // Both skip paths hand back the raw bytes the scan read. That is only the
+  // answer for plain values: a merge operand still needs merging and a blob
+  // index is a pointer, not a value, and only MultiGet resolves either. Opt
+  // out wholesale rather than per row -- neither feature is used today, and
+  // this keeps the skip from silently constraining what the engine supports.
+  const bool skippable_value_format =
+      cfd_->ioptions().merge_operator == nullptr &&
+      !scan_ctx_.cf_opts.enable_blob_files;
+
+  if (result_mode_ == ResultMode::Verified && skippable_value_format) {
     const rocksdb::VersionStorageInfo* vsi = scan_ctx_.storage_info;
     bool above_empty = sv_->mem->NumEntries() == 0 &&
                        sv_->imm->NumNotFlushed() == 0 &&
@@ -100,7 +111,8 @@ BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
   // 5. Per-key shadow check (v2) covers the states the global condition
   // cannot: live multi-level trees. Candidates it proves newest keep their
   // scan row; the rest fall back to MultiGet.
-  if (result_mode_ == ResultMode::Verified && !authoritative_scan_) {
+  if (result_mode_ == ResultMode::Verified && skippable_value_format &&
+      !authoritative_scan_) {
     checker_ = std::make_unique<ShadowChecker>(scan_ctx_, options_.read_seqno);
     check_enabled_ = true;
     // The checker excludes a candidate's own source file, so the leaves must
