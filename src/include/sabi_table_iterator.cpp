@@ -40,6 +40,8 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
     out_keys.resize(indexes.size());
     out_values.resize(indexes.size());
   }
+  if (track_source_versions_ && shadowed_buffer_.size() < indexes.size())
+    shadowed_buffer_.resize(indexes.size());
   // Before the biter_ reset, which unpins the block out_values borrow from.
   buffer_count_ = 0;
 
@@ -78,7 +80,19 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
       biter_->Next();  // need to call Next once to access real data
     }
     uint32_t target_offset = indexes[i] % block_restart_interval_;
+    // Whether the walk below steps on the entry immediately preceding the
+    // target. It does not when the target is a restart point (or the first
+    // entry of the block), which is the only case left unknown.
+    bool prev_known = false;
     while (cur_offset < target_offset && biter_->Valid()) {
+      if (track_source_versions_ && cur_offset + 1 == target_offset) {
+        // The last hop before the target: keep this entry's user key. The
+        // key buffer is delta-decoded in place and the Next() below
+        // overwrites it, so this must be a copy.
+        Slice prev_user_key = ExtractUserKey(biter_->key());
+        prev_user_key_.assign(prev_user_key.data(), prev_user_key.size());
+        prev_known = true;
+      }
       biter_->Next();
       cur_offset++;
     }
@@ -87,8 +101,21 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
       // zero-copy it
       out_keys[i].PinSelf(biter_->key());
       out_values[i] = biter_->value();
+      if (track_source_versions_) {
+        // Internal keys sort by user key ascending and seqno descending, so
+        // entries for one user key are contiguous with the newest first: a
+        // preceding entry carrying the same user key means this row is an
+        // older in-file version. Unknown counts as shadowed -- the caller
+        // then re-fetches, which is always correct.
+        shadowed_buffer_[i] =
+            (!prev_known ||
+             ExtractUserKey(Slice(out_keys[i])) == Slice(prev_user_key_))
+                ? 1
+                : 0;
+      }
     } else {
       assert(false);
+      if (track_source_versions_) shadowed_buffer_[i] = 1;
     }
   }
   buffer_count_ = static_cast<int32_t>(indexes.size());
@@ -101,6 +128,7 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
       bbt_(bbt),
       query_(query_ctx.sabi_query),
       compiled_(query_ctx.compiled),
+      track_source_versions_(query_ctx.track_source_versions),
       source_level_(source_level),
       file_number_(file_number),
       block_prefetcher_(
@@ -406,6 +434,8 @@ void SABITableIterator::LoadNextBlock() {
           // next block.
           keys_buffer_[valid_cursor].PinSelf(keys_buffer_[i]);
           values_buffer_[valid_cursor] = values_buffer_[i];
+          if (track_source_versions_)
+            shadowed_buffer_[valid_cursor] = shadowed_buffer_[i];
         }
         valid_cursor++;
       }

@@ -144,9 +144,13 @@ TEST_F(BitLSMTestBase, MultiLevelCleanScanSkipsPerKey) {
   ASSERT_TRUE(it->status().ok());
   ASSERT_EQ(rows.size(), 2000u);
   EXPECT_EQ(it->TEST_SkippedBatches(), 0u);  // v1 path must NOT be active
-  EXPECT_EQ(it->TEST_SkippedKeys(), 2000u)
-      << "clean multi-level candidates still re-fetched";
   EXPECT_EQ(it->TEST_CheckedKeys(), 2000u);
+  // Not all 2000: a candidate that sits on a restart point has no preceding
+  // entry to compare against, so in-file shadowing cannot be ruled out and it
+  // falls back. With the default restart interval of 16 that is ~1/16 of the
+  // rows, so the skip rate should still clear 90%.
+  EXPECT_GT(it->TEST_SkippedKeys(), 1800u)
+      << "clean multi-level candidates still re-fetched";
 }
 
 // Workload: 1000 rows flushed, then 100 of them updated OUT of the query
@@ -176,6 +180,77 @@ TEST_F(BitLSMTestBase, UpdatedKeysFallBackToMultiGet) {
   EXPECT_GT(it->TEST_SkippedKeys(), 0u);  // untouched keys skip
   EXPECT_LT(it->TEST_SkippedKeys(), it->TEST_CheckedKeys());
   ASSERT_TRUE(db.VerifyQuery(q));
+}
+
+// Workload: 1000 rows, a snapshot opened, then 100 of them rewritten OUT of
+//           the query range, all flushed into ONE L0 file. The open snapshot
+//           makes the flush keep both versions of each rewritten key inside
+//           that single file.
+// Threat: the shadow check excludes the candidate's own source file, so an
+//         in-file newer version that fails the predicate never reaches the
+//         dedup step and the stale old version is served as authoritative.
+TEST_F(BitLSMTestBase, IntraFileNewerVersionIsNotSkipped) {
+  table_options_.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
+  BitLSMOptions opt = ContOpt();
+  BitLSM& db = OpenDB(opt);
+  FillRows(db, 1000, 0);
+
+  const rocksdb::Snapshot* snap = db.GetInternalDB()->GetSnapshot();
+  const std::string new_payload(16, 'u');
+  for (int i = 0; i < 100; ++i) {  // move out of the query's range
+    char key[16];
+    std::snprintf(key, sizeof(key), "k%05d", i * 10);
+    ASSERT_TRUE(db.Put(key, {5000.0}, new_payload).ok());
+  }
+  ASSERT_TRUE(db.Flush().ok());
+
+  BitLSMQuery q(
+      std::vector<QueryCondition>{{0, CompareOp::LESS_EQUAL, 1999.0}});
+  auto it = db.NewIterator(q);
+  uint64_t n = 0;
+  bool leaked = false;
+  for (it->SeekToFirst(); it->Valid(); it->Next()) {
+    if (it->key().ToString() == "k00000") leaked = true;
+    ++n;
+  }
+  ASSERT_TRUE(it->status().ok());
+  db.GetInternalDB()->ReleaseSnapshot(snap);
+  EXPECT_FALSE(leaked) << "stale in-file version served";
+  EXPECT_EQ(n, 900u) << "stale in-file versions leaked into the result";
+}
+
+// Workload: the same single-file shape, but the newer in-file version is a
+//           tombstone: 100 keys deleted while a snapshot is held.
+// Threat: the in-file tombstone is dropped by the leaf's tombstone filter
+//         before dedup, so skipping the re-fetch resurrects deleted rows —
+//         data loss as far as the application is concerned.
+TEST_F(BitLSMTestBase, IntraFileTombstoneIsNotSkipped) {
+  table_options_.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
+  BitLSMOptions opt = ContOpt();
+  BitLSM& db = OpenDB(opt);
+  FillRows(db, 1000, 0);
+
+  const rocksdb::Snapshot* snap = db.GetInternalDB()->GetSnapshot();
+  for (int i = 0; i < 100; ++i) {
+    char key[16];
+    std::snprintf(key, sizeof(key), "k%05d", i * 10);
+    ASSERT_TRUE(db.Delete(key).ok());
+  }
+  ASSERT_TRUE(db.Flush().ok());
+
+  BitLSMQuery q(
+      std::vector<QueryCondition>{{0, CompareOp::LESS_EQUAL, 1999.0}});
+  auto it = db.NewIterator(q);
+  uint64_t n = 0;
+  bool resurrected = false;
+  for (it->SeekToFirst(); it->Valid(); it->Next()) {
+    if (it->key().ToString() == "k00000") resurrected = true;
+    ++n;
+  }
+  ASSERT_TRUE(it->status().ok());
+  db.GetInternalDB()->ReleaseSnapshot(snap);
+  EXPECT_FALSE(resurrected) << "deleted key resurrected";
+  EXPECT_EQ(n, 900u) << "deleted rows resurfaced";
 }
 
 // Workload: every key rewritten OUT of the query's range in a second flush,

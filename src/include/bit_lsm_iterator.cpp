@@ -103,6 +103,9 @@ BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
   if (result_mode_ == ResultMode::Verified && !authoritative_scan_) {
     checker_ = std::make_unique<ShadowChecker>(scan_ctx_, options_.read_seqno);
     check_enabled_ = true;
+    // The checker excludes a candidate's own source file, so the leaves must
+    // report in-file shadowing themselves. Set before the leaves exist.
+    query_ctx_.track_source_versions = true;
   }
 
   // 6. Create merging iterator
@@ -151,6 +154,7 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
     candidate_seqnos_.clear();
     candidate_src_levels_.clear();
     candidate_src_files_.clear();
+    candidate_in_file_shadowed_.clear();
     if (authoritative_scan_ || check_enabled_)
       candidate_values_.reserve(batch_size);
 
@@ -173,6 +177,8 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
             candidate_seqnos_.push_back(ikey.sequence);
             candidate_src_levels_.push_back(smi_->SourceLevel());
             candidate_src_files_.push_back(smi_->SourceFileNumber());
+            candidate_in_file_shadowed_.push_back(
+                smi_->SourceHasNewerVersion() ? 1 : 0);
           }
         }
       }
@@ -214,7 +220,11 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
     dirty_idx_.clear();
     if (check_enabled_) {
       for (uint32_t i = 0; i < candidate_keys_.size(); ++i) {
-        if (checker_->MayHaveNewerVersion(
+        // The in-file flag covers the one blind spot of the checker (the
+        // candidate's own source file), so it is consulted first and short
+        // -circuits the probes.
+        if (candidate_in_file_shadowed_[i] ||
+            checker_->MayHaveNewerVersion(
                 Slice(candidate_keys_[i]), candidate_seqnos_[i],
                 candidate_src_levels_[i], candidate_src_files_[i])) {
           dirty_idx_.push_back(i);

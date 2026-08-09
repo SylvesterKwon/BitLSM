@@ -169,6 +169,10 @@ uint64_t BitLSMLevelIterator::SourceFileNumber() const {
   return cur_sti_ ? cur_sti_->SourceFileNumber() : 0;
 }
 
+bool BitLSMLevelIterator::SourceHasNewerVersion() const {
+  return cur_sti_ ? cur_sti_->SourceHasNewerVersion() : false;
+}
+
 Slice BitLSMLevelIterator::key() const {
   assert(Valid());
   return cur_sti_->key();

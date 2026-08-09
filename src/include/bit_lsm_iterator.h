@@ -46,6 +46,13 @@ class SABIInternalIterator {
   // this. Memtable children keep the defaults.
   virtual int SourceLevel() const { return kMemtableSourceLevel; }
   virtual uint64_t SourceFileNumber() const { return 0; }
+  // True when the current row may be shadowed by a newer version inside its
+  // own source file, which the shadow check cannot see (it excludes the
+  // source file, and the leaf's own filters drop the newer version before
+  // dedup can suppress this one). Memtable children return false: the check
+  // probes memtables with a real Get, which always reports the newest
+  // version.
+  virtual bool SourceHasNewerVersion() const { return false; }
 };
 
 class BitLSMIterator;
@@ -77,6 +84,9 @@ struct QueryContext {
   // Per-row verification; nullptr = yield every bitmap-phase candidate and
   // let the consumer re-verify. seqno/tombstone checks always stay on.
   const CompiledQuery* compiled;
+  // Whether leaves must compute SourceHasNewerVersion(). Only the per-key
+  // shadow-check path consumes it, so every other mode skips the work.
+  bool track_source_versions = false;
 };
 
 // "Where to read": the version/snapshot backdrop a scan runs against, derived
@@ -160,6 +170,9 @@ class BitLSMIterator : public SABIInternalIterator {
   std::vector<rocksdb::SequenceNumber> candidate_seqnos_;
   std::vector<int> candidate_src_levels_;
   std::vector<uint64_t> candidate_src_files_;
+  // Leaf-reported "an in-file newer version shadows this row", the one case
+  // the checker cannot see.
+  std::vector<uint8_t> candidate_in_file_shadowed_;
   std::vector<uint32_t> dirty_idx_;
   std::unique_ptr<ShadowChecker> checker_;
   bool check_enabled_ = false;
@@ -228,6 +241,9 @@ class BitLSMMergingIterator : public SABIInternalIterator {
   uint64_t SourceFileNumber() const override {
     return heap_.top()->SourceFileNumber();
   }
+  bool SourceHasNewerVersion() const override {
+    return heap_.top()->SourceHasNewerVersion();
+  }
   void TEST_DumpValue(rocksdb::Slice slice);  // Inspect Value for debug
 };
 
@@ -259,6 +275,7 @@ class BitLSMLevelIterator : public SABIInternalIterator {
   rocksdb::Slice value() const override;
   int SourceLevel() const override;  // delegates to cur_sti_
   uint64_t SourceFileNumber() const override;
+  bool SourceHasNewerVersion() const override;
   void TEST_DumpValue(rocksdb::Slice slice);  // Inspect Value for debug
 };
 
@@ -279,6 +296,8 @@ class SABITableIterator : public SABIInternalIterator {
       nullptr;  // points into udi_entry_; null on failure
   const SABIQuery& query_;
   const CompiledQuery* compiled_;  // nullptr = skip per-row Eval
+  // Whether to fill shadowed_buffer_ during the block walk.
+  bool track_source_versions_ = false;
   uint32_t block_restart_interval_ = 0;
   // Position of this iterator's SST in the LSM, reported through
   // SourceLevel()/SourceFileNumber() for the shadow check.
@@ -314,6 +333,13 @@ class SABITableIterator : public SABIInternalIterator {
   std::vector<rocksdb::PinnableSlice> keys_buffer_;
   // Borrowed from the block biter_ pins; valid until the next block load.
   std::vector<rocksdb::Slice> values_buffer_;
+  // Per-row "the entry just before this one in the block carries the same
+  // user key", i.e. this row is an older in-file version. Compacted
+  // alongside the buffers above; only filled when the query context asks for
+  // it. Unknown (block/restart-point first entry) is recorded as true.
+  std::vector<uint8_t> shadowed_buffer_;
+  // Reused across rows so the per-row capture is an assign, not an alloc.
+  std::string prev_user_key_;
   int32_t buffer_idx_ = 0;    // 버퍼 내 현재 커서
   int32_t buffer_count_ = 0;  // 버퍼 내 유효 엔트리 수
 
@@ -349,6 +375,9 @@ class SABITableIterator : public SABIInternalIterator {
   rocksdb::Slice value() const override;
   int SourceLevel() const override { return source_level_; }
   uint64_t SourceFileNumber() const override { return file_number_; }
+  bool SourceHasNewerVersion() const override {
+    return shadowed_buffer_[buffer_idx_] != 0;
+  }
   // Carry the adaptive-readahead ramp across the files of a level scan, the
   // way LevelIterator hands ReadaheadFileInfo between BlockBasedTableIterators
   // so a new file resumes at the ramped readahead size instead of 8K.
