@@ -80,15 +80,13 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
       biter_->Next();  // need to call Next once to access real data
     }
     uint32_t target_offset = indexes[i] % block_restart_interval_;
-    // Whether the walk below steps on the entry immediately preceding the
-    // target. It does not when the target is a restart point (or the first
-    // entry of the block), which is the only case left unknown.
+    // False when the target is a restart point: the walk below never steps
+    // on its predecessor.
     bool prev_known = false;
     while (cur_offset < target_offset && biter_->Valid()) {
       if (track_source_versions_ && cur_offset + 1 == target_offset) {
-        // The last hop before the target: keep this entry's user key. The
-        // key buffer is delta-decoded in place and the Next() below
-        // overwrites it, so this must be a copy.
+        // Last hop before the target. Copy, since the key buffer is
+        // delta-decoded in place and the Next() below overwrites it.
         Slice prev_user_key = ExtractUserKey(biter_->key());
         prev_user_key_.assign(prev_user_key.data(), prev_user_key.size());
         prev_known = true;
@@ -103,10 +101,10 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
       out_values[i] = biter_->value();
       if (track_source_versions_) {
         // Internal keys sort by user key ascending and seqno descending, so
-        // entries for one user key are contiguous with the newest first: a
-        // preceding entry carrying the same user key means this row is an
-        // older in-file version. Unknown counts as shadowed -- the caller
-        // then re-fetches, which is always correct.
+        // one key's entries are contiguous with the newest first: a
+        // preceding entry with the same user key means this row is an older
+        // in-file version. Unknown counts as shadowed, which only costs a
+        // re-fetch.
         shadowed_buffer_[i] =
             (!prev_known ||
              ExtractUserKey(Slice(out_keys[i])) == Slice(prev_user_key_))

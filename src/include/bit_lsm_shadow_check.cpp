@@ -28,9 +28,8 @@ bool ShadowChecker::MemtablesHaveNewer(const LookupKey& lk,
   MergeContext mc;
   SequenceNumber mcts = 0;
   SequenceNumber seq = kMaxSequenceNumber;
-  // A hit of any kind (value or tombstone) newer than the candidate means the
-  // candidate is stale or shadowed and must go through MultiGet. A covering
-  // range tombstone counts too; it is reported through
+  // Any hit newer than the candidate shadows it, value or tombstone alike.
+  // A covering range tombstone counts too, and arrives through
   // max_covering_tombstone_seq rather than as a point hit.
   bool found =
       scan_ctx_.sv->mem->Get(lk, &value, /*columns=*/nullptr,
@@ -55,9 +54,7 @@ bool ShadowChecker::FilterSaysNo(const FdWithKeyRange& f, const Slice& user_key,
                                  const Slice& internal_key) {
   auto it = handles_.find(f.fd.GetNumber());
   if (it == handles_.end()) {
-    // Keeping every probed reader pinned would make a wide, long-running scan
-    // hold the whole table cache; drop the set once it grows past what a
-    // single key's probe sequence needs.
+    // Bound how much of the table cache a long scan holds pinned.
     if (handles_.size() >= kMaxPinnedHandles) ReleaseHandles();
     TableCache::TypedHandle* handle = nullptr;
     Status s = scan_ctx_.tc->FindTable(read_options_, scan_ctx_.file_opts,
@@ -104,10 +101,8 @@ bool ShadowChecker::MayHaveNewerVersion(const Slice& user_key,
     return true;
   }
 
-  // L1..src_level: per-level files are disjoint, so at most one covers the
-  // key (binary search). Levels below src_level cannot hold a newer version
-  // (LSM invariant), and at src_level itself the covering file can only be
-  // the source file, which the file-number check excludes.
+  // L1..src_level: files within a level are disjoint, so a binary search
+  // finds the only candidate. Deeper levels cannot hold a newer version.
   for (int level = 1; level <= src_level && level < vsi->num_non_empty_levels();
        ++level) {
     const LevelFilesBrief& brief = vsi->LevelFilesBrief(level);

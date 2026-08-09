@@ -61,28 +61,18 @@ BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
   // 3. Save snapshot's seqno to SABIOption
   options_.read_seqno = snapshot_->GetSequenceNumber();
 
-  // 4. Authoritative-scan check, once per iterator. Later writes cannot
-  // invalidate it even though the active memtable keeps growing: the
-  // snapshot seqno was fixed above, so anything written after this point is
-  // invisible to the scan. All four conditions together prove every
-  // candidate row the scan yields is the newest visible version of its key,
-  // making the MultiGet re-fetch redundant:
-  //  - empty active/immutable memtables and empty L0: nothing newer above
-  //    the sorted run,
-  //  - a single non-empty level: per-level key ranges are disjoint, so a key
-  //    lives in exactly one file,
-  //  - every file seqno-zeroed (largest_seqno == 0): RocksDB zeroes seqnos in
-  //    bottommost compaction only when a single visible version remains, so
-  //    a zeroed file cannot hide an in-file older/newer version pair.
-  // Both skip paths hand back the raw bytes the scan read. That is only the
-  // answer for plain values: a merge operand still needs merging and a blob
-  // index is a pointer, not a value, and only MultiGet resolves either. Opt
-  // out wholesale rather than per row -- neither feature is used today, and
-  // this keeps the skip from silently constraining what the engine supports.
+  // Both skip paths return the raw bytes the scan read, which is the answer
+  // only for plain values: a merge operand still needs merging and a blob
+  // index is a pointer. Only MultiGet resolves either.
   const bool skippable_value_format =
       cfd_->ioptions().merge_operator == nullptr &&
       !scan_ctx_.cf_opts.enable_blob_files;
 
+  // 4. Whole-scan authority: with empty memtables and L0, a single non-empty
+  // level (disjoint key ranges) and every file seqno-zeroed (which RocksDB
+  // does only when one visible version remains), no candidate can have a
+  // newer version anywhere, so batches need no re-fetch at all. Writes
+  // arriving later are invisible -- the snapshot seqno is already fixed.
   if (result_mode_ == ResultMode::Verified && skippable_value_format) {
     const rocksdb::VersionStorageInfo* vsi = scan_ctx_.storage_info;
     bool above_empty = sv_->mem->NumEntries() == 0 &&
@@ -108,16 +98,13 @@ BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
     authoritative_scan_ = all_zeroed;
   }
 
-  // 5. Per-key shadow check (v2) covers the states the global condition
-  // cannot: live multi-level trees. Candidates it proves newest keep their
-  // scan row; the rest fall back to MultiGet.
+  // 5. Otherwise judge candidates one by one. The checker cannot see inside
+  // a candidate's own source file, so the leaves report that part.
   if (result_mode_ == ResultMode::Verified && skippable_value_format &&
       !authoritative_scan_) {
     checker_ = std::make_unique<ShadowChecker>(scan_ctx_, options_.read_seqno);
     check_enabled_ = true;
-    // The checker excludes a candidate's own source file, so the leaves must
-    // report in-file shadowing themselves. Set before the leaves exist.
-    query_ctx_.track_source_versions = true;
+    query_ctx_.track_source_versions = true;  // before the leaves exist
   }
 
   // 6. Create merging iterator
@@ -217,9 +204,9 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       continue;
     }
 
-    // Authoritative scan (see the constructor check): the rows the scan just
-    // yielded are the newest visible versions, and per-row verification
-    // already ran in the leaf iterators, so they are the answer as-is.
+    // Whole-scan authority (see the constructor): these rows are already the
+    // newest visible versions and the leaves verified them, so they are the
+    // answer as-is.
     if (authoritative_scan_) {
       batch_keys_.swap(candidate_keys_);
       batch_values_.swap(candidate_values_);
@@ -227,14 +214,12 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       continue;
     }
 
-    // 5. Decide which candidates still need the authoritative re-fetch.
-    // With the check off every candidate is dirty — the classic path.
+    // 5. Decide which candidates still need the authoritative re-fetch; with
+    // the check off, all of them do.
     dirty_idx_.clear();
     if (check_enabled_) {
       for (uint32_t i = 0; i < candidate_keys_.size(); ++i) {
-        // The in-file flag covers the one blind spot of the checker (the
-        // candidate's own source file), so it is consulted first and short
-        // -circuits the probes.
+        // In-file shadowing first: it short-circuits the probes.
         if (candidate_in_file_shadowed_[i] ||
             checker_->MayHaveNewerVersion(
                 Slice(candidate_keys_[i]), candidate_seqnos_[i],
@@ -244,9 +229,8 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       }
       checked_keys_ += candidate_keys_.size();
       skipped_keys_ += candidate_keys_.size() - dirty_idx_.size();
-      // Kill switch: with a low skip rate every key pays the probe AND the
-      // full MultiGet, so checking is pure overhead — stop for the rest of
-      // this iterator. Bounded loss: at most the first sample window.
+      // Below this skip rate the probes are pure overhead on top of a full
+      // MultiGet, so stop checking for the rest of this iterator.
       constexpr uint64_t kCheckSampleKeys = 4096;
       constexpr uint64_t kMinSkipRatePct = 25;
       if (checked_keys_ >= kCheckSampleKeys &&
@@ -274,9 +258,8 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
                     statuses.data(), true);
     }
 
-    // 7. Ordered merge: clean keys keep their scan row (per-row verification
-    // already ran in the leaf iterators), dirty keys take the MultiGet
-    // verdict.
+    // 7. Ordered merge: clean keys keep their scan row (the leaves already
+    // verified it), dirty keys take the MultiGet verdict.
     size_t d = 0;
     for (uint32_t i = 0; i < candidate_keys_.size(); ++i) {
       if (d >= dirty_idx_.size() || dirty_idx_[d] != i) {
@@ -285,11 +268,9 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
         continue;
       }
       const size_t j = d++;
-      // 7-1. Check the dirty candidate still exists. NotFound is expected:
-      // the candidate row was shadowed/deleted between the index read and
-      // this fetch. Any other non-OK status is a real MultiGet failure, so
-      // this batch is unverifiable -- drop it and report the failure the
-      // same way a mid-batch smi_ error does above.
+      // 7-1. NotFound is expected: the row was shadowed or deleted. Any
+      // other non-OK status makes this batch unverifiable -- drop it and
+      // report, the same way a mid-batch smi_ error does above.
       if (!statuses[j].ok()) {
         if (statuses[j].IsNotFound()) continue;
         status_ = statuses[j];

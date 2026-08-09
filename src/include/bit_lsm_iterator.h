@@ -46,12 +46,9 @@ class SABIInternalIterator {
   // this. Memtable children keep the defaults.
   virtual int SourceLevel() const { return kMemtableSourceLevel; }
   virtual uint64_t SourceFileNumber() const { return 0; }
-  // True when the current row may be shadowed by a newer version inside its
-  // own source file, which the shadow check cannot see (it excludes the
-  // source file, and the leaf's own filters drop the newer version before
-  // dedup can suppress this one). Memtable children return false: the check
-  // probes memtables with a real Get, which always reports the newest
-  // version.
+  // True when a newer version of the current row may live in its own source
+  // file, the one place ShadowChecker does not look. Memtable children
+  // return false: the check probes memtables with a real Get.
   virtual bool SourceHasNewerVersion() const { return false; }
 };
 
@@ -84,8 +81,8 @@ struct QueryContext {
   // Per-row verification; nullptr = yield every bitmap-phase candidate and
   // let the consumer re-verify. seqno/tombstone checks always stay on.
   const CompiledQuery* compiled;
-  // Whether leaves must compute SourceHasNewerVersion(). Only the per-key
-  // shadow-check path consumes it, so every other mode skips the work.
+  // Whether leaves must compute SourceHasNewerVersion(); only the per-key
+  // check consumes it.
   bool track_source_versions = false;
 };
 
@@ -150,28 +147,22 @@ class BitLSMIterator : public SABIInternalIterator {
   // Dedup scratch per batch; a member so the vector's buffer survives. Its
   // elements move out into batch_keys_, so the strings are not reused.
   std::vector<std::string> candidate_keys_;
-  // Scan-row values collected alongside candidate_keys_, only on the
-  // authoritative-scan path (copied immediately: the source Slice dies when
-  // the child iterator loads its next block).
+  // Scan-row values for candidates that may skip the re-fetch. Copied on
+  // collection: the source Slice dies when the child loads its next block.
   std::vector<std::string> candidate_values_;
 
   std::string latest_user_key_added;
 
-  // True when this scan's SuperVersion proves every candidate is already the
-  // newest visible version — empty memtables, empty L0, a single non-empty
-  // level, and every file seqno-zeroed (one version per key guaranteed) — so
-  // batches are answered from the scan rows and MultiGet is skipped.
+  // True when the LSM shape alone proves every candidate is the newest
+  // visible version of its key, so whole batches answer from the scan rows.
   bool authoritative_scan_ = false;
   uint64_t skipped_batches_ = 0;
 
-  // Per-key shadow check (v2): candidates proven newest by memtable/bloom
-  // probes keep their scan row; only the rest go through MultiGet. Aligned
-  // with candidate_keys_ by index; scratch buffers like candidate_keys_.
+  // Per-candidate inputs to the shadow check, indexed like candidate_keys_
+  // and reused across batches the same way.
   std::vector<rocksdb::SequenceNumber> candidate_seqnos_;
   std::vector<int> candidate_src_levels_;
   std::vector<uint64_t> candidate_src_files_;
-  // Leaf-reported "an in-file newer version shadows this row", the one case
-  // the checker cannot see.
   std::vector<uint8_t> candidate_in_file_shadowed_;
   std::vector<uint32_t> dirty_idx_;
   std::unique_ptr<ShadowChecker> checker_;
@@ -194,9 +185,8 @@ class BitLSMIterator : public SABIInternalIterator {
   void Next() override;
   rocksdb::Slice key() const override;
   rocksdb::Slice value() const override;
-  // Batches answered from the scan alone (authoritative-scan MultiGet skip).
+  // Skip telemetry: whole batches, then per-key.
   uint64_t TEST_SkippedBatches() const { return skipped_batches_; }
-  // Per-key shadow-check telemetry (v2).
   uint64_t TEST_SkippedKeys() const { return skipped_keys_; }
   uint64_t TEST_CheckedKeys() const { return checked_keys_; }
   bool TEST_CheckEnabled() const { return check_enabled_; }
@@ -299,8 +289,7 @@ class SABITableIterator : public SABIInternalIterator {
   // Whether to fill shadowed_buffer_ during the block walk.
   bool track_source_versions_ = false;
   uint32_t block_restart_interval_ = 0;
-  // Position of this iterator's SST in the LSM, reported through
-  // SourceLevel()/SourceFileNumber() for the shadow check.
+  // Position of this iterator's SST in the LSM.
   int source_level_ = 0;
   uint64_t file_number_ = 0;
   // Holds the current data block pinned in the Block Cache, so values can be
@@ -333,15 +322,13 @@ class SABITableIterator : public SABIInternalIterator {
   std::vector<rocksdb::PinnableSlice> keys_buffer_;
   // Borrowed from the block biter_ pins; valid until the next block load.
   std::vector<rocksdb::Slice> values_buffer_;
-  // Per-row "the entry just before this one in the block carries the same
-  // user key", i.e. this row is an older in-file version. Compacted
-  // alongside the buffers above; only filled when the query context asks for
-  // it. Unknown (block/restart-point first entry) is recorded as true.
+  // Per-row "the preceding block entry carries the same user key", i.e. this
+  // row is an older in-file version. Compacted alongside the buffers above;
+  // an entry with no observable predecessor is recorded as shadowed.
   std::vector<uint8_t> shadowed_buffer_;
-  // Reused across rows so the per-row capture is an assign, not an alloc.
-  std::string prev_user_key_;
-  int32_t buffer_idx_ = 0;    // 버퍼 내 현재 커서
-  int32_t buffer_count_ = 0;  // 버퍼 내 유효 엔트리 수
+  std::string prev_user_key_;  // reused so the capture is an assign
+  int32_t buffer_idx_ = 0;     // 버퍼 내 현재 커서
+  int32_t buffer_count_ = 0;   // 버퍼 내 유효 엔트리 수
 
   // Get all data entries by indexes from data block
   // indexes must be sorted and unique
