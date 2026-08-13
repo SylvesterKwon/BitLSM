@@ -24,7 +24,25 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
 
   BlockBasedTableOptions opts = table_options;
   opts.user_defined_index_factory = make_shared<SABIFactory>(bit_lsm_options_);
+  if (bit_lsm_options_.ondemand_index) {
+    // RocksDB reads and parses the blob once when it opens a table, and with
+    // cache_index_and_filter_blocks off it then pins that entry in the table
+    // reader for the file's lifetime -- every bin resident, which is exactly
+    // what reading bins on demand exists to avoid. Caching the entry instead
+    // lets it age out, after which nothing re-fetches it: scans go through the
+    // directory registry and the blob source.
+    opts.cache_index_and_filter_blocks = true;
+    // Directories and blob pages are keyed by file number, so an entry that
+    // outlived its file would serve another file's bytes.
+    rocksdb_options_.listeners.push_back(
+        make_shared<SABIRegistryCleaner>(&sabi_registry_));
+  }
   rocksdb_options_.table_factory.reset(NewBlockBasedTableFactory(opts));
+  // Read back what the factory settled on: with no explicit block_cache it
+  // creates one, and that is the cache the blob pages must share.
+  block_cache_ =
+      rocksdb_options_.table_factory->GetOptions<BlockBasedTableOptions>()
+          ->block_cache;
 
   // Registered before Open, armed only once the estimator exists.
   if (bit_lsm_options_.enable_estimator) {
@@ -127,9 +145,15 @@ unique_ptr<BitLSMIterator> BitLSM::NewIterator(BitLSMQuery& query,
               });
   }
 
+  SABIIndexContext index_ctx;
+  if (bit_lsm_options_.ondemand_index) {
+    index_ctx.registry = &sabi_registry_;
+    index_ctx.cache = block_cache_;
+  }
+
   return std::make_unique<BitLSMIterator>(
       db_, cfh != nullptr ? cfh : cf_handles_[0], bit_lsm_options_, query,
-      result_mode, snapshot);
+      result_mode, snapshot, std::move(index_ctx));
 }
 
 void BitLSM::Statistics() {

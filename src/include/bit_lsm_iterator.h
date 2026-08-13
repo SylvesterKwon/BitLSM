@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <deque>
 #include <queue>
+#include <unordered_map>
 
 #include "bit_lsm_option.h"
 #include "db/column_family.h"
@@ -13,6 +14,8 @@
 #include "file/readahead_file_info.h"
 #include "rocksdb/status.h"
 #include "sabi.h"
+#include "sabi_blob_source.h"
+#include "sabi_directory.h"
 #include "table/block_based/block_based_table_reader.h"
 #include "table/block_based/block_prefetcher.h"
 
@@ -84,6 +87,11 @@ struct QueryContext {
   // Whether leaves must compute SourceHasNewerVersion(); only the per-key
   // check consumes it.
   bool track_source_versions = false;
+  // How leaves reach index bytes. Null (the default) means the resident
+  // SABIReader; a context with a registry selects on-demand bitmap reads
+  // (sabi_directory.h). Threaded here because this is the per-query state
+  // every leaf already receives.
+  const SABIIndexContext* index_ctx = nullptr;
 };
 
 // "Where to read": the version/snapshot backdrop a scan runs against, derived
@@ -135,7 +143,9 @@ class BitLSMIterator : public SABIInternalIterator {
   // nullable signal is query_ctx_.compiled, so never take &compiled_
   // unconditionally.
   CompiledQuery compiled_;
-  SABIQuery sabi_query_;    // query_ encoded into the SABI domain
+  SABIQuery sabi_query_;  // query_ encoded into the SABI domain
+  // Held by value so query_ctx_.index_ctx can point at it for the whole scan.
+  SABIIndexContext index_ctx_;
   QueryContext query_ctx_;  // references the members above
   ScanContext scan_ctx_;    // version backdrop, derived from sv_
 
@@ -179,7 +189,8 @@ class BitLSMIterator : public SABIInternalIterator {
   BitLSMIterator(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* cfh,
                  const BitLSMOptions& options, const BitLSMQuery& query,
                  ResultMode result_mode = ResultMode::Verified,
-                 const rocksdb::Snapshot* snapshot = nullptr);
+                 const rocksdb::Snapshot* snapshot = nullptr,
+                 SABIIndexContext index_ctx = SABIIndexContext());
   ~BitLSMIterator() override;
   void SeekToFirst() override;
   void Next() override;
@@ -284,6 +295,19 @@ class SABITableIterator : public SABIInternalIterator {
   rocksdb::CachableEntry<rocksdb::Block_kUserDefinedIndex> udi_entry_;
   SABIReader* sabi_reader_ =
       nullptr;  // points into udi_entry_; null on failure
+  // On-demand mode (query_ctx.index_ctx set): the directory is owned by the
+  // registry and outlives every scan; the source reads this file's bitmaps as
+  // the query asks for them, and loaded_buffers_ keeps the aligned bytes alive
+  // for as long as the frozen views over them. Declared before bitmap_pool_
+  // and query_bitmap_, which point into those buffers.
+  const SABIDirectory* dir_ = nullptr;
+  std::unique_ptr<SABIBlobSource> src_;
+  std::vector<SABIBlobSource::AlignedPtr> loaded_buffers_;
+  // Deque, not vector: pointers handed out by Bin() must survive later loads.
+  std::deque<roaring::Roaring> loaded_bitmaps_;
+  // Bins already loaded for this scan, so a bin named twice by one query (or
+  // by two clauses) is read once.
+  std::unordered_map<uint32_t, const roaring::Roaring*> loaded_bins_;
   const SABIQuery& query_;
   const CompiledQuery* compiled_;  // nullptr = skip per-row Eval
   // Whether to fill shadowed_buffer_ during the block walk.
@@ -343,6 +367,27 @@ class SABITableIterator : public SABIInternalIterator {
     const roaring::Roaring* ptr;
     roaring::Roaring* owned;
   };
+  // Index access, resolved against whichever mode this iterator opened in.
+  bool IndexLoaded() const { return sabi_reader_ != nullptr || dir_ != nullptr; }
+  const SABISchema& Schema() const {
+    return dir_ ? dir_->schema : sabi_reader_->schema();
+  }
+  const BitmapIndex& BM() const {
+    return dir_ ? dir_->bitmap_index : sabi_reader_->bitmap_index;
+  }
+  const std::vector<uint32_t>& EntriesPsum() const {
+    return dir_ ? dir_->data_entries_cnt_psum
+                : sabi_reader_->data_entries_cnt_psum;
+  }
+  const std::vector<rocksdb::BlockHandle>& BlockHandles() const {
+    return dir_ ? dir_->block_handles : sabi_reader_->block_handles;
+  }
+  // Bin `flat_idx` in the flat bin numbering. Resident mode borrows the
+  // reader's bitmap; on-demand mode reads the bin's bytes and builds a frozen
+  // view over them, so only the bins a query touches are ever in memory.
+  const roaring::Roaring* Bin(uint32_t flat_idx);
+  const roaring::Roaring& Tombstone();
+
   // Get bitmap for a single SABICondition (leaf node in CNF)
   BitmapRef GetBitmapForSingleCondition(
       const SABICondition& cond, std::vector<const roaring::Roaring*>& buf);

@@ -75,6 +75,12 @@ class SABIUDIIterator;
 class SABIReader;
 class SABIFactory;
 
+// SST-level pruning: false only when the query is provably unsatisfiable
+// against these binning boundaries. Bitmaps are never consulted, so a caller
+// holding only a directory (the on-demand read path) can prune too.
+bool SABIQueryCanMatch(const SABISchema& schema, const BitmapIndex& bm,
+                       const SABIQuery& q);
+
 // Per-SST histogram of one ORDERED attribute, the raw material for DB-level
 // cardinality estimation: bin i covers okeys [boundaries[i], boundaries[i+1])
 // (the last bin also includes its upper edge), counts[i] is that bin's row

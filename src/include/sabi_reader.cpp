@@ -349,13 +349,20 @@ bool SABIReader::UnorderedValueCounts(uint32_t attr_idx,
 }
 
 bool SABIReader::QueryCanMatch(const SABIQuery& q) const {
+  return SABIQueryCanMatch(schema_, bitmap_index, q);
+}
+
+// Pruning needs only the binning boundaries, never a bitmap, so the on-demand
+// path (which has a directory but no materialised bitmaps) runs exactly this.
+bool SABIQueryCanMatch(const SABISchema& schema, const BitmapIndex& bm,
+                       const SABIQuery& q) {
   for (const auto& clause : q.clause_groups) {
     if (clause.empty()) continue;  // empty clause is trivially satisfiable
     // Clause (OR) is impossible iff every condition in it is individually
     // impossible against this SST's binning boundaries.
     bool clause_impossible = true;
     for (const auto& cond : clause) {
-      if (!ConditionImpossible(cond, schema_, bitmap_index)) {
+      if (!ConditionImpossible(cond, schema, bm)) {
         clause_impossible = false;
         break;
       }

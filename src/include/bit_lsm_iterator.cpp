@@ -31,7 +31,8 @@ DB* ValidateIteratorArgs(DB* db, ResultMode result_mode,
 BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
                                const BitLSMOptions& options,
                                const BitLSMQuery& query, ResultMode result_mode,
-                               const Snapshot* snapshot)
+                               const Snapshot* snapshot,
+                               SABIIndexContext index_ctx)
     : db_(ValidateIteratorArgs(db, result_mode, snapshot)),
       db_impl_(static_cast<DBImpl*>(db_)),
       cfh_(cfh),
@@ -54,8 +55,10 @@ BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
                     ? CompiledQuery()
                     : CompiledQuery(query, options)),
       sabi_query_(EncodeQuery(query_, options)),
+      index_ctx_(std::move(index_ctx)),
       query_ctx_{options_, sabi_query_,
-                 result_mode == ResultMode::Candidate ? nullptr : &compiled_},
+                 result_mode == ResultMode::Candidate ? nullptr : &compiled_,
+                 /*track_source_versions=*/false, &index_ctx_},
       scan_ctx_(sv_),
       latest_user_key_added("") {
   // 3. Save snapshot's seqno to SABIOption

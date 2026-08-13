@@ -136,29 +136,47 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
       query_bitmap_(&EmptyBitmap()),
       bitmap_iter_(query_bitmap_->begin()),
       bitmap_end_(query_bitmap_->end()) {
-  // 0. Holds the SABI entry for this iterator's lifetime: a block cache pin
-  // when cache_index_and_filter_blocks is on (evictable after release), or
-  // an unowned reference to the table-lifetime pin in Rep when off. Either
-  // way valid only while the table reader stays alive, which covers every
-  // bitmap borrowed from the reader below.
-  Status s = bbt_->GetUserDefinedIndexReader(ReadOptions(), &udi_entry_);
-  if (!s.ok()) {
-    // Every failure here is fatal for the scan, NotFound (an SST carrying no
-    // SABI block) included: the query path has no fallback scan, so skipping
-    // this file would silently drop every row it holds. Record the status so
-    // the parent iterators stop instead of reading it as "no matching rows".
-    cerr << "Failed to load SABI: " << s.ToString() << "\n";
-    status_ = s;
-    return;  // stays !Valid(); SeekToFirst is a no-op
+  if (query_ctx.index_ctx != nullptr && query_ctx.index_ctx->registry != nullptr) {
+    // 0a. On-demand: the directory lives in the registry for the DB's
+    // lifetime and this file's bitmaps stay on disk until a bin is asked for.
+    dir_ = query_ctx.index_ctx->registry->Get(file_number_, bbt_,
+                                              query_ctx.index_ctx->cache);
+    if (dir_ == nullptr) {
+      // Same rule as the resident path below: a file whose index will not load
+      // cannot be skipped silently.
+      cerr << "Failed to load SABI directory for file " << file_number_ << "\n";
+      status_ = Status::Corruption("SABI directory unavailable");
+      return;
+    }
+    src_ = std::make_unique<SABIBlobSource>(
+        bbt_->get_rep()->file.get(), dir_->blob_offset, dir_->blob_size,
+        file_number_, query_ctx.index_ctx->cache);
+  } else {
+    // 0b. Holds the SABI entry for this iterator's lifetime: a block cache pin
+    // when cache_index_and_filter_blocks is on (evictable after release), or
+    // an unowned reference to the table-lifetime pin in Rep when off. Either
+    // way valid only while the table reader stays alive, which covers every
+    // bitmap borrowed from the reader below.
+    Status s = bbt_->GetUserDefinedIndexReader(ReadOptions(), &udi_entry_);
+    if (!s.ok()) {
+      // Every failure here is fatal for the scan, NotFound (an SST carrying no
+      // SABI block) included: the query path has no fallback scan, so skipping
+      // this file would silently drop every row it holds. Record the status so
+      // the parent iterators stop instead of reading it as "no matching rows".
+      cerr << "Failed to load SABI: " << s.ToString() << "\n";
+      status_ = s;
+      return;  // stays !Valid(); SeekToFirst is a no-op
+    }
+    sabi_reader_ = static_cast<SABIReader*>(udi_entry_.GetValue()->reader());
   }
-  sabi_reader_ = static_cast<SABIReader*>(udi_entry_.GetValue()->reader());
 
   block_restart_interval_ =
       bbt->get_rep()->table_options.block_restart_interval;
 
   // Early exit: skip all bitmap work and block fetches if the query is
-  // provably unsatisfiable against this SSTable's min/max boundaries.
-  if (!sabi_reader_->QueryCanMatch(query_)) return;
+  // provably unsatisfiable against this SSTable's min/max boundaries. Pruning
+  // reads binning boundaries only, so it costs no bitmap in either mode.
+  if (!SABIQueryCanMatch(Schema(), BM(), query_)) return;
 
   // 1. Build query bitmap
   BuildQueryBitmap(query_);
@@ -167,19 +185,17 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
 
   // 2. Get target block handles (binary search)
   int64_t last_added_block_idx = -1;
-  auto psum_begin = sabi_reader_->data_entries_cnt_psum.begin();
-  auto psum_end = sabi_reader_->data_entries_cnt_psum.end();
+  auto psum_begin = EntriesPsum().begin();
+  auto psum_end = EntriesPsum().end();
   for (uint32_t target_idx : *query_bitmap_) {
     // cout << "target_idx: " << target_idx << "\n";
     // target_idx is 0-based index, psum array is 1-based count array
     // so upper_bound is always right
     auto it = std::upper_bound(psum_begin, psum_end, target_idx);
     if (it != psum_end) {
-      int64_t block_idx =
-          std::distance(sabi_reader_->data_entries_cnt_psum.begin(), it);
+      int64_t block_idx = std::distance(EntriesPsum().begin(), it);
       if (block_idx != last_added_block_idx) {
-        target_blocks_.push_back(
-            {block_idx, sabi_reader_->block_handles[block_idx]});
+        target_blocks_.push_back({block_idx, BlockHandles()[block_idx]});
         last_added_block_idx = block_idx;
         psum_begin = it;
       }
@@ -199,36 +215,73 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
   //      << ")\n";
 }
 
+// One bin's bitmap. Resident mode borrows the reader's frozen view; on-demand
+// mode reads that bin's bytes into an aligned buffer and builds the view here,
+// so a scan holds only the bins its query named. Corresponds to Cassandra
+// reading the postings a query needs rather than an SSTable's whole index.
+const roaring::Roaring* SABITableIterator::Bin(uint32_t flat_idx) {
+  if (dir_ == nullptr) {
+    return &sabi_reader_->bitmap_index.bitmaps[flat_idx];
+  }
+  auto it = loaded_bins_.find(flat_idx);
+  if (it != loaded_bins_.end()) return it->second;
+
+  if (flat_idx + 1 >= dir_->bitmap_offsets.size()) return &EmptyBitmap();
+  const uint32_t off = dir_->bitmap_offsets[flat_idx];
+  const uint32_t size = dir_->bitmap_offsets[flat_idx + 1] - off;
+  if (size == 0) return &EmptyBitmap();
+
+  SABIBlobSource::AlignedPtr buf = src_->ReadAligned(off, size);
+  if (buf == nullptr) {
+    // A bin that will not load would silently shrink the result, so fail the
+    // scan the way an unreadable blob does.
+    status_ = Status::Corruption("SABI bitmap read failed");
+    return &EmptyBitmap();
+  }
+  // frozenView aliases the buffer, so the buffer must outlive the view; both
+  // live until this iterator dies.
+  loaded_bitmaps_.push_back(Roaring::frozenView(buf.get(), size));
+  loaded_buffers_.push_back(std::move(buf));
+  const roaring::Roaring* view = &loaded_bitmaps_.back();
+  loaded_bins_.emplace(flat_idx, view);
+  return view;
+}
+
+const roaring::Roaring& SABITableIterator::Tombstone() {
+  if (dir_ == nullptr) return sabi_reader_->bitmap_index.tombstone_bitmap;
+  // The tombstone bitmap is the last one in the flat numbering.
+  return *Bin(dir_->TombstoneBinIndex());
+}
+
 // Build bitmap for a single SABICondition (leaf node in CNF)
 SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
     const SABICondition& cond, vector<const roaring::Roaring*>& buf) {
-  const AttrRole cur_attr_type = sabi_reader_->schema().roles[cond.attr_idx];
+  const AttrRole cur_attr_type = Schema().roles[cond.attr_idx];
 
   uint32_t bitmap_offset = 0;
   for (uint32_t i = 0; i < cond.attr_idx; ++i)
-    bitmap_offset += sabi_reader_->bitmap_index.bitmap_nums[i];
+    bitmap_offset += BM().bitmap_nums[i];
 
   if (cur_attr_type == AttrRole::UNORDERED) {
     if (cond.op != CompareOp::EQUAL) assert(false);
     const string& value = cond.bytes;
-    vector<pair<string, uint32_t>>& cur_attr_binning_policy =
+    const vector<pair<string, uint32_t>>& cur_attr_binning_policy =
         get<vector<pair<string, uint32_t>>>(
-            sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
+            BM().binning_policy[cond.attr_idx]);
     auto it = std::lower_bound(
         cur_attr_binning_policy.begin(), cur_attr_binning_policy.end(), value,
         [](const pair<string, uint32_t>& policy_entry, const string& val) {
           return policy_entry.first < val;
         });
     if (it != cur_attr_binning_policy.end() && it->first == value) {
-      return {&sabi_reader_->bitmap_index.bitmaps[bitmap_offset + it->second],
-              nullptr};
+      return {Bin(bitmap_offset + it->second), nullptr};
     }
     return {&EmptyBitmap(), nullptr};
   } else if (cur_attr_type == AttrRole::ORDERED) {
     uint64_t value = cond.okey;
-    const vector<uint64_t>& boundaries = std::get<vector<uint64_t>>(
-        sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
-    uint32_t num_bins = sabi_reader_->bitmap_index.bitmap_nums[cond.attr_idx];
+    const vector<uint64_t>& boundaries =
+        std::get<vector<uint64_t>>(BM().binning_policy[cond.attr_idx]);
+    uint32_t num_bins = BM().bitmap_nums[cond.attr_idx];
 
     // Find bin index by value
     // upper_bound: value보다 큰 첫 번째 경계값의 위치
@@ -278,15 +331,14 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
 
     if (start_bin > end_bin) return {&EmptyBitmap(), nullptr};
     if (start_bin == end_bin) {
-      return {&sabi_reader_->bitmap_index.bitmaps[bitmap_offset + start_bin],
-              nullptr};
+      return {Bin(bitmap_offset + start_bin), nullptr};
     }
 
     // Merge bitmap (OR)
     buf.clear();
     buf.reserve(end_bin - start_bin + 1);
     for (int32_t i = start_bin; i <= end_bin; ++i)
-      buf.push_back(&(sabi_reader_->bitmap_index.bitmaps[bitmap_offset + i]));
+      buf.push_back(Bin(bitmap_offset + i));
     bitmap_pool_.emplace_back(
         roaring::Roaring::fastunion(buf.size(), buf.data()));
     return {&bitmap_pool_.back(), &bitmap_pool_.back()};
@@ -298,14 +350,11 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
 // reader-owned bitmaps where possible and materializing into bitmap_pool_
 // only when a union/intersection/tombstone-filter result must be computed.
 void SABITableIterator::BuildQueryBitmap(const SABIQuery& query) {
-  const roaring::Roaring& tombstone =
-      sabi_reader_->bitmap_index.tombstone_bitmap;
+  const roaring::Roaring& tombstone = Tombstone();
 
   if (query.clause_groups.empty()) {
     // Empty query is treated as a full table scan.
-    uint32_t total = sabi_reader_->data_entries_cnt_psum.empty()
-                         ? 0
-                         : sabi_reader_->data_entries_cnt_psum.back();
+    uint32_t total = EntriesPsum().empty() ? 0 : EntriesPsum().back();
     bitmap_pool_.emplace_back();
     roaring::Roaring& result = bitmap_pool_.back();
     result.addRange(0, total);
@@ -382,8 +431,8 @@ void SABITableIterator::LoadNextBlock() {
     auto& [cur_bh_idx, cur_bh] = target_blocks_[cur_target_block_idx_];
     uint32_t global_start_idx =
         (cur_bh_idx == 0) ? 0
-                          : sabi_reader_->data_entries_cnt_psum[cur_bh_idx - 1];
-    uint32_t global_end_idx = sabi_reader_->data_entries_cnt_psum[cur_bh_idx];
+                          : EntriesPsum()[cur_bh_idx - 1];
+    uint32_t global_end_idx = EntriesPsum()[cur_bh_idx];
 
     local_indexes_.clear();
     while (bitmap_iter_ != bitmap_end_) {
@@ -477,7 +526,7 @@ void SABITableIterator::SeekToFirst() {
   }
 
   // The SABI block failed to load in the constructor: nothing to scan.
-  if (sabi_reader_ == nullptr) {
+  if (!IndexLoaded()) {
     valid_ = false;
     return;
   }

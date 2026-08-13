@@ -46,6 +46,12 @@ struct BitLSMOptions {
   rocksdb::SequenceNumber read_seqno;  // read sequence number
   double rho;  // proportion parameter that determines bitmap budget
 
+  // Read the SABI blob's bitmaps from the SST as a query names them, instead
+  // of materialising every bin when the table opens. Off by default: the
+  // resident path is faster whenever the index fits in memory, and this only
+  // changes read behaviour, never the SST format, so one DB serves both.
+  bool ondemand_index = false;
+
   // Cardinality estimator (read-side planning stats; bit_lsm_estimator.h).
   // Off by default; none of these knobs touch the SST format.
   bool enable_estimator = false;

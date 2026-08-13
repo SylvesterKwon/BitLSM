@@ -22,6 +22,11 @@ class BitLSM {
   ValueLayout layout_;
   std::unique_ptr<CardinalityEstimator> estimator_;
   std::shared_ptr<StatsRefreshListener> stats_listener_;
+  // Only used when BitLSMOptions::ondemand_index is set: per-SSTable
+  // directories that outlive block cache eviction, and the cache the blob
+  // pages share with the data blocks.
+  SABIDirectoryRegistry sabi_registry_;
+  std::shared_ptr<rocksdb::Cache> block_cache_;
 
   // Helper functions
 
@@ -49,6 +54,14 @@ class BitLSM {
 
   // To use RocksDB API
   rocksdb::DB* GetInternalDB() { return db_; }
+
+  // Resident bytes the on-demand directory registry holds outside the block
+  // cache budget, so a run can report the figure rather than assume it is
+  // negligible. Zero unless BitLSMOptions::ondemand_index is set.
+  size_t IndexRegistryMemoryUsage() const {
+    return sabi_registry_.ApproximateMemoryUsage();
+  }
+  size_t IndexRegistrySize() const { return sabi_registry_.Size(); }
 
   // Live-set cardinality statistics for planning (see bit_lsm_estimator.h).
   // nullptr unless BitLSMOptions::enable_estimator is set.
