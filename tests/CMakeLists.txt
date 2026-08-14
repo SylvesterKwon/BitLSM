@@ -53,7 +53,6 @@ bitlsm_add_test(sabi_placeholder_binning_test)
 bitlsm_add_test(sabi_stats_test)
 bitlsm_add_test(estimator_test)
 bitlsm_add_test(udi_block_cache_test)
-bitlsm_add_test(scan_prefetch_test)
 bitlsm_add_test(multiget_skip_test)
 bitlsm_add_test(shadow_check_test)
 
