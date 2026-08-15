@@ -115,6 +115,21 @@ TEST_F(BitLSMTestBase, StrictLessThanExcludesTheBinItsBoundStartsAt) {
   // `<= 1.0` must still take the whole table; the two operators are no longer
   // handled by the same branch, so this is the guard on the other side.
   EXPECT_EQ(CountCandidates(db, less_equal), static_cast<size_t>(kLow + kHigh));
+
+  // The upper half of the same story, recorded because it does not come out
+  // symmetric. Bins are half-open [lo, hi), so a bin's lower edge is a stored
+  // threshold and its upper edge is only the next bin's lower edge. `>= 1.0`
+  // therefore starts exactly at the 1.0 bin and is tight, while `> 0.0` has to
+  // keep the bin that 0.0 sits in -- proving that bin holds nothing above 0.0
+  // would need its contents, not its thresholds. Tightening that is what a
+  // per-bin min/max would buy.
+  const BitLSMQuery greater_equal(
+      std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 1.0}});
+  const BitLSMQuery greater(
+      std::vector<QueryCondition>{{0, CompareOp::GREATER, 0.0}});
+  EXPECT_EQ(CountCandidates(db, greater_equal), static_cast<size_t>(kHigh));
+  EXPECT_EQ(CountCandidates(db, greater), static_cast<size_t>(kLow + kHigh))
+      << "strict > got tighter than the thresholds can justify";
 }
 
 // Workload: an ORDERED double attribute carrying integers 0..6 in the skewed
