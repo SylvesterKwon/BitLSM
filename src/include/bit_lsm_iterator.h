@@ -7,6 +7,7 @@
 #include <queue>
 
 #include "bit_lsm_option.h"
+#include "block_prefetch_queue.h"
 #include "db/column_family.h"
 #include "db/db_impl/db_impl.h"
 #include "db/version_set.h"
@@ -298,8 +299,12 @@ class SABITableIterator : public SABIInternalIterator {
   // RocksDB's standard adaptive readahead for this scan's data block reads,
   // the same mechanism BlockBasedTableIterator uses. Its FilePrefetchBuffer
   // is created lazily by PrefetchIfNeeded once the block access pattern turns
-  // near-sequential, so sparse target sets never trigger readahead.
+  // near-sequential, so sparse target sets never trigger readahead. Handles
+  // whatever prefetch_queue_ did not prefetch.
   rocksdb::BlockPrefetcher block_prefetcher_;
+  // Target-block reads kept in flight (block_prefetch_queue.h). Borrows bbt_,
+  // so declared after it.
+  BlockPrefetchQueue prefetch_queue_;
 
   // Internal status for iterating
   // The query bitmap is either borrowed from the SABIReader's frozen bitmaps

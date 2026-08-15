@@ -47,19 +47,24 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
   // Before the biter_ reset, which unpins the block out_values borrow from.
   buffer_count_ = 0;
 
-  // Readahead is RocksDB's own: the implicit ramp engages once reads look
-  // sequential and resets when they do not.
   ReadOptions read_options;
-  block_prefetcher_.PrefetchIfNeeded(
-      bbt_->get_rep(), bh, read_options.readahead_size,
-      /*is_for_compaction=*/false, /*no_sequential_checking=*/false,
-      read_options, /*readaheadsize_cb=*/nullptr,
-      /*is_async_io_prefetch=*/false);
+  // Prefetched by the queue, or else RocksDB's implicit ramp, which engages
+  // once reads look sequential and resets when they do not.
+  FilePrefetchBuffer* prefetch_buffer =
+      prefetch_queue_.BufferFor(static_cast<size_t>(cur_target_block_idx_));
+  if (prefetch_buffer == nullptr) {
+    block_prefetcher_.PrefetchIfNeeded(
+        bbt_->get_rep(), bh, read_options.readahead_size,
+        /*is_for_compaction=*/false, /*no_sequential_checking=*/false,
+        read_options, /*readaheadsize_cb=*/nullptr,
+        /*is_async_io_prefetch=*/false);
+    prefetch_buffer = block_prefetcher_.prefetch_buffer();
+  }
 
   // Delete previous block iterator to unpin previous block value
   DataBlockIter* new_biter = bbt_->NewDataBlockIterator<DataBlockIter>(
       read_options, bh, nullptr, BlockType::kData, nullptr, nullptr,
-      block_prefetcher_.prefetch_buffer(), false, false, s, true);
+      prefetch_buffer, false, false, s, true);
   biter_.reset(new_biter);
   if (!s.ok()) {
     // The block the bitmap pointed at is unreadable. Its rows cannot be
@@ -133,6 +138,7 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
       block_prefetcher_(
           /*compaction_readahead_size=*/0,
           bbt->get_rep()->table_options.initial_auto_readahead_size),
+      prefetch_queue_(bbt, query_ctx.options.scan_prefetch_depth),
       query_bitmap_(&EmptyBitmap()),
       bitmap_iter_(query_bitmap_->begin()),
       bitmap_end_(query_bitmap_->end()) {
@@ -187,6 +193,10 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
       assert(false);
     }
   }
+
+  // 3. The whole target list is known now, so start reading ahead.
+  prefetch_queue_.Prepare(&target_blocks_);
+
   // Debug block hit ratio
   // sabi_reader_->Dump();
   // cout << "\n";

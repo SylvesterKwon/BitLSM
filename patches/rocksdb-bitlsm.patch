@@ -12,6 +12,25 @@ index eb42e1c72..5498ca8b3 100644
   private:
    friend class MemTableList;
  
+diff --git a/env/io_posix.h b/env/io_posix.h
+index ca33b8e3e..48081d99d 100644
+--- a/env/io_posix.h
++++ b/env/io_posix.h
+@@ -310,6 +310,14 @@ inline void DeleteIOUring(void* p) {
+ inline struct io_uring* CreateIOUring(unsigned int flags = 0) {
+   struct io_uring* new_io_uring = new struct io_uring;
+   int ret = io_uring_queue_init(kIoUringDepth, new_io_uring, flags);
++  // SABI: IORING_SETUP_SINGLE_ISSUER (Linux 6.0) and IORING_SETUP_DEFER_TASKRUN
++  // (6.1) are throughput hints, but an older kernel rejects the whole ring with
++  // EINVAL rather than ignoring them. Without this retry ReadAsync and the
++  // io_uring MultiRead path are unavailable on every pre-6.0 kernel, which
++  // silently turns batched block reads back into one synchronous read apiece.
++  if (ret == -EINVAL && flags != 0) {
++    ret = io_uring_queue_init(kIoUringDepth, new_io_uring, 0);
++  }
+   if (ret) {
+     delete new_io_uring;
+     new_io_uring = nullptr;
 diff --git a/include/rocksdb/user_defined_index.h b/include/rocksdb/user_defined_index.h
 index 395f9fbf3..777546567 100644
 --- a/include/rocksdb/user_defined_index.h

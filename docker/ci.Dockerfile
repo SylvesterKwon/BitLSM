@@ -12,9 +12,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Toolchain + the system libraries RocksDB links. The set mirrors the root
 # CMakeLists, which enables WITH_SNAPPY/LZ4/ZSTD/JEMALLOC and leaves
 # zlib/bz2/gflags OFF, so those dev packages are intentionally absent.
+# liburing-dev is what makes RocksDB define ROCKSDB_IOURING_PRESENT; without it
+# the scan block pipeline (sabi_block_pipeline.h) has no async read to submit
+# and its test skips instead of covering anything.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential cmake ninja-build ccache git ca-certificates \
-      libsnappy-dev liblz4-dev libzstd-dev libjemalloc-dev \
+      libsnappy-dev liblz4-dev libzstd-dev libjemalloc-dev liburing-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # ccache wrappers on PATH so the PR build auto-caches; the workflow caches CCACHE_DIR.
