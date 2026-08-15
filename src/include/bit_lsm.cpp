@@ -7,6 +7,7 @@
 #include "bit_lsm_iterator.h"
 #include "bit_lsm_option.h"
 #include "bit_lsm_utils.h"
+#include "block_prefetch_queue.h"
 #include "rocksdb/options.h"
 #include "sabi.h"
 
@@ -21,6 +22,11 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
       bit_lsm_options_(bit_lsm_options),
       layout_(bit_lsm_options) {
   rocksdb_options_ = rocksdb_options;
+
+  // Before Open: RocksDB decides whether a file gets io_uring rings when the
+  // file is opened, so the prefetch queue's async reads have to be opted into
+  // now or never (block_prefetch_queue.h).
+  EnableRocksDbIOUring(bit_lsm_options_.scan_prefetch_depth > 0);
 
   BlockBasedTableOptions opts = table_options;
   opts.user_defined_index_factory = make_shared<SABIFactory>(bit_lsm_options_);

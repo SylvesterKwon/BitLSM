@@ -46,6 +46,12 @@ struct BitLSMOptions {
   rocksdb::SequenceNumber read_seqno;  // read sequence number
   double rho;  // proportion parameter that determines bitmap budget
 
+  // Scan data-block reads kept in flight (block_prefetch_queue.h); 0 = one at a
+  // time, the pre-existing behaviour. Costs one block-sized buffer per
+  // outstanding read per live table iterator, so depth * block_size * levels.
+  // Silently does nothing unless the build found liburing.
+  uint32_t scan_prefetch_depth = 0;
+
   // Cardinality estimator (read-side planning stats; bit_lsm_estimator.h).
   // Off by default; none of these knobs touch the SST format.
   bool enable_estimator = false;
