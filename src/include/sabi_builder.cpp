@@ -253,11 +253,11 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
   // floor (sparse integer domains smear point mass into value holes). A
   // sorted copy costs O(n log n) at flush, same order as the t-digest merge
   // above; no extra hash table peak.
-  {
-    vector<uint64_t> uniq(v);
-    std::sort(uniq.begin(), uniq.end());
-    distinct_cnts_[i] = std::unique(uniq.begin(), uniq.end()) - uniq.begin();
-  }
+  // Kept past the count: the thresholds below snap onto it.
+  vector<uint64_t> uniq(v);
+  std::sort(uniq.begin(), uniq.end());
+  uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+  distinct_cnts_[i] = uniq.size();
 
   // N+1 okey boundary thresholds.
   vector<uint64_t> boundaries(bitmap_index_.bitmap_nums[i] + 1);
@@ -265,6 +265,21 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
     double quantile = (double)j / (double)bitmap_index_.bitmap_nums[i];
     boundaries[j] =
         TDigestBoundaryToOkey(digest.estimateQuantile(quantile), min_okey);
+  }
+
+  // Snap every threshold onto a value that actually occurs. The t-digest round
+  // trip lands them a ULP or so off the nearest value, which is invisible on a
+  // continuous attribute and decisive on an integer one: a threshold sitting
+  // just below a heavy value drops that value's whole bin inside a strict
+  // `< value` range, where it can contribute nothing but candidates. Snapping
+  // upward leaves the half-open [b_j, b_j+1) partition untouched, since no
+  // value lies between a threshold and the next value at or above it, and it
+  // preserves monotonicity because lower_bound is monotone.
+  if (!uniq.empty()) {
+    for (uint64_t& b : boundaries) {
+      auto it = std::lower_bound(uniq.begin(), uniq.end(), b);
+      b = (it == uniq.end()) ? uniq.back() : *it;
+    }
   }
 
   // Pin the outer thresholds to the exact data bounds: min/max pruning and
