@@ -244,6 +244,8 @@ struct SABIPinnedBin {
     if (cache != nullptr && handle != nullptr) cache->Release(handle);
     cache = nullptr;
     handle = nullptr;
+    view = nullptr;
+    owned.reset();
   }
 };
 
@@ -360,7 +362,11 @@ class SABIFactory : public rocksdb::UserDefinedIndexFactory {
  private:
   SABISchema schema_;
   ExtractorFactory extractor_factory_;
-  BitLSMOptions options_;
+  // Value-init: attr_num/rho/read_seqno have no in-class default member
+  // initializers, so `{}` is what keeps them zero (rather than
+  // indeterminate) for the schema-less/schema-bound constructors that never
+  // assign options_.
+  BitLSMOptions options_{};
 };
 
 }  // namespace bit_lsm
