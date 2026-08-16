@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 
 #include "table/format.h"
@@ -211,9 +212,10 @@ SABIReader::SABIReader(Slice& index_block) {
 
     // 32 bytes alignment
     void* aligned_ptr = nullptr;
-    if (posix_memalign(&aligned_ptr, 32, size) != 0) {
-      assert(false);
-      continue;
+    if (posix_memalign(&aligned_ptr, 32, size == 0 ? 32 : size) != 0) {
+      // No status channel here, and a silently-empty bin would under-return
+      // rows; treat allocation failure as fatal rather than degrade quietly.
+      std::abort();
     }
     AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr), std::free);
     memcpy(managed_aligned_ptr.get(), raw_ptr, size);
