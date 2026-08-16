@@ -35,9 +35,13 @@ UserDefinedIndexBuilder* SABIFactory::NewBuilder() const {
 
 unique_ptr<UserDefinedIndexReader> SABIFactory::NewReader(
     Slice& index_block_) const {
-  return unique_ptr<SABIReader>(new SABIReader(
-      index_block_, options_.ondemand_index ? SABIReaderMode::kMetadata
-                                            : SABIReaderMode::kResident));
+  // Ungated public entry point (part of the base UserDefinedIndexFactory
+  // interface): always kResident. Only the validating overload below -- the
+  // path RocksDB actually calls to open an SST -- may mint a kMetadata
+  // reader, because the v7 gate lives there. This keeps "kMetadata reader
+  // over a v5/v6 blob with empty bin_cardinalities" unrepresentable.
+  return unique_ptr<SABIReader>(
+      new SABIReader(index_block_, SABIReaderMode::kResident));
 }
 
 bool SABIFactory::ProducesMetadataOnlyReaders() const {
@@ -104,7 +108,12 @@ Status SABIFactory::NewReader(
                               RolesToString(schema_.roles) +
                               "; rebuild the DB or fix the schema");
   }
-  reader = NewReader(index_block);
+  // Mode selection happens here, after the v7 gate above, not in the
+  // ungated single-arg NewReader(): a kMetadata reader can only be minted
+  // once this method has confirmed the blob is v7.
+  reader = std::make_unique<SABIReader>(
+      index_block, options_.ondemand_index ? SABIReaderMode::kMetadata
+                                           : SABIReaderMode::kResident);
   return Status::OK();
 }
 
