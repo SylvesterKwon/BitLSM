@@ -347,7 +347,7 @@ bool SABIReader::OrderedHistogram(uint32_t attr_idx,
   std::vector<uint64_t> counts(bins);
   uint64_t total = 0;
   for (uint32_t b = 0; b < bins; ++b) {
-    counts[b] = bitmap_index.bitmaps[bin_offset + b].cardinality();
+    counts[b] = BinCardinality(bin_offset + b);
     total += counts[b];
   }
   // Zero binned rows (e.g. every row NULL): the stored boundaries come from
@@ -380,7 +380,7 @@ bool SABIReader::UnorderedValueCounts(uint32_t attr_idx,
   std::vector<uint64_t> bin_card(bins);
   uint64_t total = 0;
   for (uint32_t b = 0; b < bins; ++b) {
-    bin_card[b] = bitmap_index.bitmaps[bin_offset + b].cardinality();
+    bin_card[b] = BinCardinality(bin_offset + b);
     total += bin_card[b];
   }
   if (total == 0) return false;

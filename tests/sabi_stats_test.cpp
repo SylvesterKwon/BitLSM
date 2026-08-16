@@ -350,3 +350,21 @@ TEST(SabiValueCounts, AllNullAttrHasNoCounts) {
   UnorderedAttrValueCounts c;
   EXPECT_FALSE(built.reader->UnorderedValueCounts(0, &c));
 }
+
+TEST(SabiHistogram, V7CountsComeFromDirectoryNotBitmaps) {
+  std::vector<std::vector<Attr>> rows;
+  std::vector<int64_t> values;
+  for (int64_t i = 0; i < 1000; ++i) {
+    rows.push_back({i});
+    values.push_back(i);
+  }
+  auto built = BuildIndex(I64Options(), rows);
+  // v7 blobs persist counts; the histogram must equal the decoded truth.
+  ASSERT_FALSE(built.reader->bin_cardinalities.empty());
+  OrderedAttrHistogram h;
+  ASSERT_TRUE(built.reader->OrderedHistogram(0, &h));
+  uint32_t off = 0;  // attr 0 → flat offset 0
+  for (size_t b = 0; b < h.counts.size(); ++b)
+    EXPECT_EQ(h.counts[b],
+              built.reader->bitmap_index.bitmaps[off + b].cardinality());
+}
