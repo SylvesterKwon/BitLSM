@@ -203,32 +203,53 @@ SABIReader::SABIReader(Slice& index_block) {
     }
   }
 
-  // 4. Read frozen bitmaps
-  bitmap_index.bitmaps.resize(bitmaps_cnt -
-                              1);  // the last bitmap is for tombstone
-  for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
-    uint32_t size = bitmap_sizes_[i];
-    const char* raw_ptr = index_block.data() + bitmap_offsets_[i];
-
-    // 32 bytes alignment
-    void* aligned_ptr = nullptr;
-    if (posix_memalign(&aligned_ptr, 32, size == 0 ? 32 : size) != 0) {
+  // 4. Materialize frozen bitmap views (resident mode).
+  bitmap_index.bitmaps.resize(bitmaps_cnt - 1);  // tombstone kept separately
+  if (version >= 7) {
+    // v7 starts are 32B-aligned blob-relative, so one 32B-aligned copy of
+    // the whole region backs every view zero-copy: N allocs+copies -> 1.
+    const uint32_t region_off = bitmap_offsets_[0];
+    const uint32_t region_len = bitmap_offsets_[bitmaps_cnt] - region_off;
+    void* arena = nullptr;
+    if (posix_memalign(&arena, 32, region_len == 0 ? 32 : region_len) != 0) {
       // No status channel here, and a silently-empty bin would under-return
       // rows; treat allocation failure as fatal rather than degrade quietly.
       std::abort();
     }
-    AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr), std::free);
-    memcpy(managed_aligned_ptr.get(), raw_ptr, size);
-    if (i < bitmaps_cnt - 1) {
-      bitmap_index.bitmaps[i] = Roaring::frozenView(
-          reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
-    } else {
-      // The last bitmap is the tombstone bitmap
-      bitmap_index.tombstone_bitmap = Roaring::frozenView(
-          reinterpret_cast<const char*>(managed_aligned_ptr.get()), size);
+    AlignedPtr owned(static_cast<char*>(arena), std::free);
+    memcpy(owned.get(), index_block.data() + region_off, region_len);
+    for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
+      const char* p = owned.get() + (bitmap_offsets_[i] - region_off);
+      if (i < bitmaps_cnt - 1) {
+        bitmap_index.bitmaps[i] = Roaring::frozenView(p, bitmap_sizes_[i]);
+      } else {
+        bitmap_index.tombstone_bitmap =
+            Roaring::frozenView(p, bitmap_sizes_[i]);
+      }
     }
-    managed_buffers_.push_back(
-        std::move(managed_aligned_ptr));  // move pointer ownership
+    managed_buffers_.push_back(std::move(owned));
+  } else {
+    for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
+      const uint32_t size = bitmap_sizes_[i];
+      const char* raw_ptr = index_block.data() + bitmap_offsets_[i];
+      void* aligned_ptr = nullptr;
+      if (posix_memalign(&aligned_ptr, 32, size == 0 ? 32 : size) != 0) {
+        // No status channel here, and a silently-empty bin would under-return
+        // rows; treat allocation failure as fatal rather than degrade quietly.
+        std::abort();
+      }
+      AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr),
+                                     std::free);
+      memcpy(managed_aligned_ptr.get(), raw_ptr, size);
+      if (i < bitmaps_cnt - 1) {
+        bitmap_index.bitmaps[i] =
+            Roaring::frozenView(managed_aligned_ptr.get(), size);
+      } else {
+        bitmap_index.tombstone_bitmap =
+            Roaring::frozenView(managed_aligned_ptr.get(), size);
+      }
+      managed_buffers_.push_back(std::move(managed_aligned_ptr));
+    }
   }
 
   // 5. Read index block related information
