@@ -81,8 +81,6 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(croaring)
 set(CROARING_SOURCE_DIR ${croaring_SOURCE_DIR})
 
-# folly TDigest (vendored; replaces the full Folly dependency)
-add_subdirectory(third_party/folly-tdigest)
 
 find_package(Threads REQUIRED)
 find_library(JEMALLOC_LIB jemalloc REQUIRED)
@@ -105,7 +103,6 @@ target_include_directories(project_base_lib PUBLIC
 target_link_libraries(project_base_lib PUBLIC
     roaring
     rocksdb
-    folly_tdigest
 )
 
 # 별칭 타겟 (외부 프로젝트에서 bitlsm::bitlsm으로 참조)

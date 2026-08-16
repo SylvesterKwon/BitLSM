@@ -274,9 +274,20 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
         end_bin = static_cast<int32_t>(num_bins) - 1;
         break;
       case CompareOp::LESS_EQUAL:  // <= value
-      case CompareOp::LESS:        // < value
         start_bin = 0;
         end_bin = target_bin_idx;
+        break;
+      case CompareOp::LESS:  // < value
+        start_bin = 0;
+        // A bin whose lower threshold is the comparand itself holds only
+        // values >= it, so a strict < matches nothing there. Thresholds sit on
+        // values that occur (SetOrderedPropertyBinningPolicy snaps them),
+        // which is what makes this equality fire rather than miss by a ULP.
+        // On a blob built before that snapping it simply never fires, leaving
+        // the old, wider range.
+        end_bin = (target_bin_idx >= 0 && boundaries[target_bin_idx] == value)
+                      ? target_bin_idx - 1
+                      : target_bin_idx;
         break;
       default:
         assert(false);

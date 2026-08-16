@@ -1,5 +1,3 @@
-#include <folly/Range.h>
-#include <folly/stats/TDigest.h>
 #include <sabi.h>
 #include <sys/types.h>
 
@@ -230,57 +228,90 @@ void SABIBuilder::SetUnorderedPropertyBinningPolicy(uint32_t i) {
   distinct_cnts_[i] = cat.value_by_id.size();
 }
 
+// Bin thresholds for one ORDERED attribute: cut the sorted values into
+// `bitmap_nums[i]` runs of as near equal row mass as the values allow.
+//
+// Equal mass is what minimises expected candidate waste. A range query reads a
+// contiguous run of bins, and only the two end bins can contribute rows the
+// predicate rejects -- everything between them is fully inside the range. If
+// query endpoints follow the data, the endpoint lands in bin j with probability
+// proportional to its mass and wastes about half of it, so expected waste goes
+// as sum(mass^2), minimised when the masses are level.
+//
+// The cut points are gaps between adjacent values, never values themselves.
+// That is the whole difference from asking a t-digest for quantiles: a digest
+// answers with interpolated positions, which land beside a value rather than on
+// it and repeat on a heavy one. Both hurt. A threshold beside a value puts a
+// strict `< value` comparand inside the bin holding every row with that value
+// instead of on its edge, so the bin cannot be skipped; a repeated threshold
+// spends budget on a bin that can never hold anything. Cutting between values
+// makes both impossible by construction, and it is cheaper: the sort is already
+// paid for by the distinct count, leaving one linear pass.
 void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
-  folly::TDigest digest(bitmap_index_.bitmap_nums[i] * 5);
-
-  // The buffer is dense (data rows only), so the bounds and quantiles are
-  // plain scans. Exact data bounds first: the t-digest projection is shifted
-  // by min_okey so the double mantissa covers the okey span, not the
-  // absolute magnitude (see OkeyToTDigest).
+  const uint32_t bins = bitmap_index_.bitmap_nums[i];
   const auto& v = get<vector<uint64_t>>(attr_buf_[i]);
-  uint64_t min_okey = UINT64_MAX, max_okey = 0;
-  for (uint64_t okey : v) {
-    min_okey = std::min(min_okey, okey);
-    max_okey = std::max(max_okey, okey);
+
+  vector<uint64_t> boundaries;
+  boundaries.reserve(bins + 1);
+
+  if (v.empty()) {
+    distinct_cnts_[i] = 0;
+    bitmap_index_.binning_policy[i].emplace<vector<uint64_t>>(bins + 1, 0);
+    return;
   }
 
-  vector<double> proj;
-  proj.reserve(v.size());
-  for (uint64_t okey : v) proj.push_back(OkeyToTDigest(okey, min_okey));
-  digest = digest.merge(folly::Range<const double*>(proj.data(), proj.size()));
+  // The distinct count (v6 directory field) needs this sorted anyway, and the
+  // sweep below reads the same array as (value, run length) pairs.
+  vector<uint64_t> sorted(v);
+  std::sort(sorted.begin(), sorted.end());
 
-  // v6 directory field: exact distinct okeys, for the estimator's equality
-  // floor (sparse integer domains smear point mass into value holes). A
-  // sorted copy costs O(n log n) at flush, same order as the t-digest merge
-  // above; no extra hash table peak.
-  {
-    vector<uint64_t> uniq(v);
-    std::sort(uniq.begin(), uniq.end());
-    distinct_cnts_[i] = std::unique(uniq.begin(), uniq.end()) - uniq.begin();
-  }
+  uint64_t distinct = 0;
+  uint64_t remaining_mass = sorted.size();
+  uint32_t remaining_bins = bins;
+  uint64_t cur = 0;  // mass accumulated into the bin being built
+  boundaries.push_back(sorted.front());
 
-  // N+1 okey boundary thresholds.
-  vector<uint64_t> boundaries(bitmap_index_.bitmap_nums[i] + 1);
-  for (uint32_t j = 0; j <= bitmap_index_.bitmap_nums[i]; ++j) {
-    double quantile = (double)j / (double)bitmap_index_.bitmap_nums[i];
-    boundaries[j] =
-        TDigestBoundaryToOkey(digest.estimateQuantile(quantile), min_okey);
-  }
+  for (size_t a = 0; a < sorted.size();) {
+    size_t b = a;
+    while (b < sorted.size() && sorted[b] == sorted[a]) ++b;
+    const uint64_t run = b - a;
+    ++distinct;
 
-  // Pin the outer thresholds to the exact data bounds: min/max pruning and
-  // the virtual-bin -1 path treat them as [min, max] of the data, and for
-  // spans >= 2^53 the shifted round trip can still round past the true
-  // bounds, turning EQ(min)/EQ(max) into false negatives. Interior
-  // boundaries are shared thresholds, so their rounding is harmless; clamp
-  // into the pinned range and keep them monotone.
-  if (!proj.empty()) {
-    boundaries.front() = min_okey;
-    boundaries.back() = max_okey;
+    // The target is re-derived from what is left, so closing a bin light or
+    // heavy is absorbed by the bins after it instead of accumulating.
+    if (cur > 0 && remaining_bins > 1) {
+      const double target =
+          static_cast<double>(remaining_mass) / remaining_bins;
+      // Close ahead of a value heavy enough to fill a bin by itself, so it
+      // does not drag its lighter neighbour along; otherwise close on
+      // whichever side of the target leaves this bin nearer to it.
+      const bool own_bin = static_cast<double>(run) >= target;
+      const bool nearer_before =
+          std::abs(static_cast<double>(cur) - target) <=
+          std::abs(static_cast<double>(cur + run) - target);
+      if (own_bin || nearer_before) {
+        boundaries.push_back(sorted[a]);
+        remaining_mass -= cur;
+        --remaining_bins;
+        cur = 0;
+      }
+    }
+    cur += run;
+    a = b;
   }
-  for (uint32_t j = 1; j < boundaries.size(); ++j) {
-    boundaries[j] = std::min(boundaries[j], boundaries.back());
-    if (boundaries[j] < boundaries[j - 1]) boundaries[j] = boundaries[j - 1];
-  }
+  distinct_cnts_[i] = distinct;
+
+  // Fewer distinct values than bins leaves thresholds over. Repeat the maximum:
+  // CalculateBitmapIndex clamps a row past the last threshold into the final
+  // bin and SABITableIterator's case B resolves a lookup there the same way, so
+  // the spare bins sit empty between them rather than swallowing the maximum.
+  // Pinning the ends to the exact data bounds also keeps min/max pruning and
+  // the virtual-bin -1 path exact.
+  while (boundaries.size() < static_cast<size_t>(bins) + 1)
+    boundaries.push_back(sorted.back());
+  boundaries.front() = sorted.front();
+  boundaries.back() = sorted.back();
+
   bitmap_index_.binning_policy[i] = std::move(boundaries);
 }
 
