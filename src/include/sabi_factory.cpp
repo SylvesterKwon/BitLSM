@@ -35,7 +35,13 @@ UserDefinedIndexBuilder* SABIFactory::NewBuilder() const {
 
 unique_ptr<UserDefinedIndexReader> SABIFactory::NewReader(
     Slice& index_block_) const {
-  return unique_ptr<SABIReader>(new SABIReader(index_block_));
+  return unique_ptr<SABIReader>(new SABIReader(
+      index_block_, options_.ondemand_index ? SABIReaderMode::kMetadata
+                                            : SABIReaderMode::kResident));
+}
+
+bool SABIFactory::ProducesMetadataOnlyReaders() const {
+  return options_.ondemand_index;
 }
 
 Status SABIFactory::NewReader(
@@ -56,6 +62,11 @@ Status SABIFactory::NewReader(
                               to_string(version) + " (this build reads v" +
                               to_string(kBitLSMMinReadFormatVersion) + "..v" +
                               to_string(kBitLSMFormatVersion) + ")");
+  }
+  if (options_.ondemand_index && version < 7) {
+    return Status::Corruption(
+        "ondemand_index requires BitLSM format v7 blobs (found v" +
+        to_string(version) + "); rebuild the DB");
   }
 
   // Validate the directory prefix (attr_num + roles) this method interprets;

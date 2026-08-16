@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <string>
@@ -15,6 +16,7 @@
 #include "bit_lsm_query.h"
 #include "bit_lsm_utils.h"
 #include "roaring.hh"
+#include "rocksdb/advanced_cache.h"  // full rocksdb::Cache / Cache::Handle
 #include "rocksdb/options.h"
 #include "rocksdb/user_defined_index.h"
 #include "table/format.h"
@@ -202,18 +204,75 @@ class SABIUDIIterator : public rocksdb::UserDefinedIndexIterator {
   rocksdb::UserDefinedIndexBuilder::BlockHandle value();
 };
 
+enum class SABIReaderMode { kResident, kMetadata };
+
+// One decoded bin as a block-cache entry: the 32B-aligned bytes and the
+// frozen view over them, built once on a miss and shared by every query
+// while cached. buf is declared before view so the view dies first.
+struct SABICachedBin {
+  std::unique_ptr<char[], void (*)(void*)> buf{nullptr, std::free};
+  roaring::Roaring view;
+  size_t charge = 0;
+};
+
+// RAII pin: keeps one cached bin alive for as long as a scan borrows its
+// view. `owned` is the fallback when a cache insert is refused (strict
+// capacity): the bin then lives exactly as long as the pin.
+struct SABIPinnedBin {
+  rocksdb::Cache* cache = nullptr;
+  rocksdb::Cache::Handle* handle = nullptr;
+  std::unique_ptr<SABICachedBin> owned;
+  const roaring::Roaring* view = nullptr;
+
+  SABIPinnedBin() = default;
+  SABIPinnedBin(SABIPinnedBin&& o) noexcept { *this = std::move(o); }
+  SABIPinnedBin& operator=(SABIPinnedBin&& o) noexcept {
+    Release();
+    cache = o.cache;
+    handle = o.handle;
+    owned = std::move(o.owned);
+    view = o.view;
+    o.cache = nullptr;
+    o.handle = nullptr;
+    o.view = nullptr;
+    return *this;
+  }
+  SABIPinnedBin(const SABIPinnedBin&) = delete;
+  SABIPinnedBin& operator=(const SABIPinnedBin&) = delete;
+  ~SABIPinnedBin() { Release(); }
+  void Release() {
+    if (cache != nullptr && handle != nullptr) cache->Release(handle);
+    cache = nullptr;
+    handle = nullptr;
+  }
+};
+
+// Process-wide totals for the on-demand bin cache; counted here because
+// these reads bypass BlockBasedTable, so RocksDB's tickers never see them.
+struct SABIBinCacheStats {
+  uint64_t hits = 0;
+  uint64_t misses = 0;
+  uint64_t bytes_read = 0;      // bytes pulled off disk
+  uint64_t bitmaps_loaded = 0;  // read + decode events (the #45 smoking gun)
+};
+SABIBinCacheStats GetSABIBinCacheStats();
+void ResetSABIBinCacheStats();
+
 class SABIReader : public rocksdb::UserDefinedIndexReader {
  private:
   SABISchema schema_;
   using AlignedPtr = std::unique_ptr<char[], void (*)(void*)>;
   std::vector<AlignedPtr> managed_buffers_;
+  SABIReaderMode mode_ = SABIReaderMode::kResident;
+  const rocksdb::BlockBasedTable* table_ = nullptr;
   // First index of attr_idx's bin range in the flat bitmap array.
   uint32_t AttrBinOffset(uint32_t attr_idx) const;
 
  public:
   // Self-describing: the schema residue (attr roles) is parsed from the
   // blob's directory, so no schema binding is needed to open an SST.
-  explicit SABIReader(rocksdb::Slice& index_block);
+  explicit SABIReader(rocksdb::Slice& index_block);  // = kResident
+  SABIReader(rocksdb::Slice& index_block, SABIReaderMode mode);
   const SABISchema& schema() const { return schema_; }
   BitmapIndex bitmap_index;
   std::vector<uint32_t> data_entries_cnt_psum;
@@ -233,6 +292,16 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   std::unique_ptr<rocksdb::UserDefinedIndexIterator> NewIterator(
       const rocksdb::ReadOptions& read_options);
   size_t ApproximateMemoryUsage() const;
+  bool RetainsIndexContents() const override {
+    return mode_ == SABIReaderMode::kResident;
+  }
+  void SetTable(const rocksdb::BlockBasedTable* table) override {
+    table_ = table;
+  }
+  // Resident: a direct pointer, pin untouched. Metadata: cache lookup or
+  // read+decode+insert; *pin keeps the bin alive; nullptr on I/O failure.
+  // flat_idx == TotalBins() is the tombstone.
+  const roaring::Roaring* Bin(uint32_t flat_idx, SABIPinnedBin* pin);
   // Returns false only when the query is provably unsatisfiable in this SST
   // (safe to skip all bitmap work and block fetches). Never returns false
   // for a query that could actually match a row.
@@ -262,11 +331,15 @@ class SABIFactory : public rocksdb::UserDefinedIndexFactory {
       : schema_(std::move(schema)),
         extractor_factory_(std::move(extractor_factory)) {}
   // Standalone convenience: derives the schema residue and wires the default
-  // v3-layout extractor.
+  // v3-layout extractor. The only constructor that carries `options` itself
+  // (ondemand_index gates the reader mode below); the other constructors
+  // leave options_ default (ondemand_index == false).
   explicit SABIFactory(const BitLSMOptions& options)
       : SABIFactory(SABISchema::FromOptions(options), [options] {
           return std::make_unique<ValueLayoutExtractor>(options);
-        }) {}
+        }) {
+    options_ = options;
+  }
   const char* Name() const override;
   rocksdb::UserDefinedIndexBuilder* NewBuilder() const override;
   std::unique_ptr<rocksdb::UserDefinedIndexReader> NewReader(
@@ -279,10 +352,15 @@ class SABIFactory : public rocksdb::UserDefinedIndexFactory {
       const rocksdb::UserDefinedIndexOption& option,
       rocksdb::Slice& index_block,
       std::unique_ptr<rocksdb::UserDefinedIndexReader>& reader) const override;
+  // True exactly when options_.ondemand_index: every reader this factory
+  // produces then has RetainsIndexContents() == false, so the open path can
+  // skip caching the raw block it is about to discard.
+  bool ProducesMetadataOnlyReaders() const override;
 
  private:
   SABISchema schema_;
   ExtractorFactory extractor_factory_;
+  BitLSMOptions options_;
 };
 
 }  // namespace bit_lsm

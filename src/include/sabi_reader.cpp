@@ -3,10 +3,15 @@
 #include <sys/types.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 
+#include "cache/cache_key.h"
+#include "rocksdb/cache.h"
+#include "table/block_based/block_based_table_reader.h"
 #include "table/format.h"
 #include "util/coding.h"
 #include "util/coding_lean.h"
@@ -64,9 +69,44 @@ bool ConditionImpossible(const bit_lsm::SABICondition& cond,
   return false;
 }
 
+void DeleteSABICachedBin(rocksdb::Cache::ObjectPtr obj,
+                         rocksdb::MemoryAllocator* /*allocator*/) {
+  delete static_cast<bit_lsm::SABICachedBin*>(obj);
+}
+
+const rocksdb::Cache::CacheItemHelper* SABICachedBinHelper() {
+  static const rocksdb::Cache::CacheItemHelper helper(
+      rocksdb::CacheEntryRole::kIndexBlock, &DeleteSABICachedBin);
+  return &helper;
+}
+
 }  // namespace
 
 namespace bit_lsm {
+
+namespace {
+// Process-wide totals for the on-demand bin cache (see block_prefetch_queue.
+// cpp for the same pattern): these reads bypass BlockBasedTable, so RocksDB's
+// tickers never see them.
+std::atomic<uint64_t> g_bin_hits{0};
+std::atomic<uint64_t> g_bin_misses{0};
+std::atomic<uint64_t> g_bytes_read{0};
+std::atomic<uint64_t> g_bitmaps_loaded{0};
+}  // namespace
+
+SABIBinCacheStats GetSABIBinCacheStats() {
+  return {g_bin_hits.load(memory_order_relaxed),
+          g_bin_misses.load(memory_order_relaxed),
+          g_bytes_read.load(memory_order_relaxed),
+          g_bitmaps_loaded.load(memory_order_relaxed)};
+}
+
+void ResetSABIBinCacheStats() {
+  g_bin_hits.store(0, memory_order_relaxed);
+  g_bin_misses.store(0, memory_order_relaxed);
+  g_bytes_read.store(0, memory_order_relaxed);
+  g_bitmaps_loaded.store(0, memory_order_relaxed);
+}
 
 // ========================================================================
 // SABIUDIIterator Implementation
@@ -94,7 +134,10 @@ UserDefinedIndexBuilder::BlockHandle SABIUDIIterator::value() {
 // SABIReader Implementation
 // ========================================================================
 
-SABIReader::SABIReader(Slice& index_block) {
+SABIReader::SABIReader(Slice& index_block)
+    : SABIReader(index_block, SABIReaderMode::kResident) {}
+
+SABIReader::SABIReader(Slice& index_block, SABIReaderMode mode) : mode_(mode) {
   // 1. Read footer: [directory_off u32][version u32][magic u32]
   // (magic/version/directory bounds already validated by
   // SABIFactory::NewReader)
@@ -203,52 +246,61 @@ SABIReader::SABIReader(Slice& index_block) {
     }
   }
 
-  // 4. Materialize frozen bitmap views (resident mode).
-  bitmap_index.bitmaps.resize(bitmaps_cnt - 1);  // tombstone kept separately
-  if (version >= 7) {
-    // v7 starts are 32B-aligned blob-relative, so one 32B-aligned copy of
-    // the whole region backs every view zero-copy: N allocs+copies -> 1.
-    const uint32_t region_off = bitmap_offsets_[0];
-    const uint32_t region_len = bitmap_offsets_[bitmaps_cnt] - region_off;
-    void* arena = nullptr;
-    if (posix_memalign(&arena, 32, region_len == 0 ? 32 : region_len) != 0) {
-      // No status channel here, and a silently-empty bin would under-return
-      // rows; treat allocation failure as fatal rather than degrade quietly.
-      std::abort();
-    }
-    AlignedPtr owned(static_cast<char*>(arena), std::free);
-    memcpy(owned.get(), index_block.data() + region_off, region_len);
-    for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
-      const char* p = owned.get() + (bitmap_offsets_[i] - region_off);
-      if (i < bitmaps_cnt - 1) {
-        bitmap_index.bitmaps[i] = Roaring::frozenView(p, bitmap_sizes_[i]);
-      } else {
-        bitmap_index.tombstone_bitmap =
-            Roaring::frozenView(p, bitmap_sizes_[i]);
-      }
-    }
-    managed_buffers_.push_back(std::move(owned));
-  } else {
-    for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
-      const uint32_t size = bitmap_sizes_[i];
-      const char* raw_ptr = index_block.data() + bitmap_offsets_[i];
-      void* aligned_ptr = nullptr;
-      if (posix_memalign(&aligned_ptr, 32, size == 0 ? 32 : size) != 0) {
+  // 4. Materialize frozen bitmap views. Metadata mode skips this entirely:
+  // bitmap_index.bitmaps and tombstone_bitmap stay default-constructed
+  // (empty), and no aligned copy of the bitmap region is made. Everything a
+  // metadata-only reader needs (bitmap_offsets_, bitmap_sizes_,
+  // bin_cardinalities, binning policies, psum, handles) is already copied
+  // out above and below, so nothing references index_block afterwards --
+  // which is what RetainsIndexContents() == false promises.
+  if (mode_ == SABIReaderMode::kResident) {
+    bitmap_index.bitmaps.resize(bitmaps_cnt - 1);  // tombstone kept separately
+    if (version >= 7) {
+      // v7 starts are 32B-aligned blob-relative, so one 32B-aligned copy of
+      // the whole region backs every view zero-copy: N allocs+copies -> 1.
+      const uint32_t region_off = bitmap_offsets_[0];
+      const uint32_t region_len = bitmap_offsets_[bitmaps_cnt] - region_off;
+      void* arena = nullptr;
+      if (posix_memalign(&arena, 32, region_len == 0 ? 32 : region_len) != 0) {
         // No status channel here, and a silently-empty bin would under-return
         // rows; treat allocation failure as fatal rather than degrade quietly.
         std::abort();
       }
-      AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr),
-                                     std::free);
-      memcpy(managed_aligned_ptr.get(), raw_ptr, size);
-      if (i < bitmaps_cnt - 1) {
-        bitmap_index.bitmaps[i] =
-            Roaring::frozenView(managed_aligned_ptr.get(), size);
-      } else {
-        bitmap_index.tombstone_bitmap =
-            Roaring::frozenView(managed_aligned_ptr.get(), size);
+      AlignedPtr owned(static_cast<char*>(arena), std::free);
+      memcpy(owned.get(), index_block.data() + region_off, region_len);
+      for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
+        const char* p = owned.get() + (bitmap_offsets_[i] - region_off);
+        if (i < bitmaps_cnt - 1) {
+          bitmap_index.bitmaps[i] = Roaring::frozenView(p, bitmap_sizes_[i]);
+        } else {
+          bitmap_index.tombstone_bitmap =
+              Roaring::frozenView(p, bitmap_sizes_[i]);
+        }
       }
-      managed_buffers_.push_back(std::move(managed_aligned_ptr));
+      managed_buffers_.push_back(std::move(owned));
+    } else {
+      for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
+        const uint32_t size = bitmap_sizes_[i];
+        const char* raw_ptr = index_block.data() + bitmap_offsets_[i];
+        void* aligned_ptr = nullptr;
+        if (posix_memalign(&aligned_ptr, 32, size == 0 ? 32 : size) != 0) {
+          // No status channel here, and a silently-empty bin would under-return
+          // rows; treat allocation failure as fatal rather than degrade
+          // quietly.
+          std::abort();
+        }
+        AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr),
+                                       std::free);
+        memcpy(managed_aligned_ptr.get(), raw_ptr, size);
+        if (i < bitmaps_cnt - 1) {
+          bitmap_index.bitmaps[i] =
+              Roaring::frozenView(managed_aligned_ptr.get(), size);
+        } else {
+          bitmap_index.tombstone_bitmap =
+              Roaring::frozenView(managed_aligned_ptr.get(), size);
+        }
+        managed_buffers_.push_back(std::move(managed_aligned_ptr));
+      }
     }
   }
 
@@ -286,6 +338,65 @@ uint64_t SABIReader::BinCardinality(uint32_t flat_idx) const {
 
 uint64_t SABIReader::TombstoneCardinality() const {
   return BinCardinality(TotalBins());
+}
+
+const roaring::Roaring* SABIReader::Bin(uint32_t flat_idx, SABIPinnedBin* pin) {
+  if (mode_ == SABIReaderMode::kResident) {
+    return flat_idx == TotalBins() ? &bitmap_index.tombstone_bitmap
+                                   : &bitmap_index.bitmaps[flat_idx];
+  }
+  assert(table_ != nullptr && pin != nullptr);
+  const auto* rep = table_->get_rep();
+  const uint64_t file_off =
+      rep->udi_handle.offset() + bitmap_offsets_[flat_idx];
+  const uint32_t size = bitmap_sizes_[flat_idx];
+  Cache* cache = rep->table_options.block_cache.get();
+  const CacheKey key = rep->base_cache_key.WithOffset(file_off >> 2);
+
+  if (Cache::Handle* h = cache->BasicLookup(key.AsSlice(), /*stats=*/nullptr)) {
+    auto* bin = static_cast<SABICachedBin*>(cache->Value(h));
+    g_bin_hits.fetch_add(1, memory_order_relaxed);
+    pin->cache = cache;
+    pin->handle = h;
+    pin->view = &bin->view;
+    return pin->view;
+  }
+
+  auto bin = make_unique<SABICachedBin>();
+  void* raw = nullptr;
+  if (posix_memalign(&raw, 32, size == 0 ? 32 : size) != 0) return nullptr;
+  bin->buf.reset(static_cast<char*>(raw));
+  Slice result;
+  // One read of the bin's exact extent at its absolute file offset; the
+  // reader realigns for direct I/O itself, so a bin never becomes N
+  // straddling page reads (the #45 blob-relative-grid mistake).
+  IOStatus s = rep->file->Read(IOOptions(), file_off, size, &result,
+                               bin->buf.get(), /*aligned_buf=*/nullptr);
+  if (!s.ok() || result.size() < size) return nullptr;
+  if (result.data() != bin->buf.get()) {
+    memcpy(bin->buf.get(), result.data(), size);
+  }
+  bin->view = Roaring::frozenView(bin->buf.get(), size);
+  bin->charge = sizeof(SABICachedBin) + malloc_usable_size(bin->buf.get());
+  g_bin_misses.fetch_add(1, memory_order_relaxed);
+  g_bytes_read.fetch_add(size, memory_order_relaxed);
+  g_bitmaps_loaded.fetch_add(1, memory_order_relaxed);
+
+  Cache::Handle* h = nullptr;
+  Status is = cache->Insert(key.AsSlice(), bin.get(), SABICachedBinHelper(),
+                            bin->charge, &h);
+  pin->cache = cache;
+  if (is.ok()) {
+    SABICachedBin* entered = bin.release();  // cache owns it now
+    pin->handle = h;
+    pin->view = &entered->view;
+  } else {
+    // Refused insert (strict capacity): the pin owns the bin instead.
+    pin->handle = nullptr;
+    pin->owned = std::move(bin);
+    pin->view = &pin->owned->view;
+  }
+  return pin->view;
 }
 
 // The memory usage of the index, including the size of the raw contents and
