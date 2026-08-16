@@ -56,6 +56,7 @@ bitlsm_add_test(multiget_skip_test)
 bitlsm_add_test(shadow_check_test)
 bitlsm_add_test(scan_prefetch_diff_test)
 bitlsm_add_test(binning_partition_test)
+bitlsm_add_test(ondemand_index_diff_test)
 
 # ondemand_bin_cache_test is intentionally red until Task 7 wires the scan
 # path to SABIReader::Bin(); label it so CI/local runs can exclude it the

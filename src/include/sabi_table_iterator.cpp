@@ -209,6 +209,21 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
   //      << ")\n";
 }
 
+const roaring::Roaring* SABITableIterator::Bin(uint32_t flat_idx) {
+  SABIPinnedBin pin;
+  const roaring::Roaring* view = sabi_reader_->Bin(flat_idx, &pin);
+  if (view == nullptr) {
+    status_ = rocksdb::Status::Corruption("SABI bin read failed");
+    return &EmptyBitmap();
+  }
+  if (pin.view != nullptr) pinned_bins_.push_back(std::move(pin));
+  return view;
+}
+
+const roaring::Roaring& SABITableIterator::Tombstone() {
+  return *Bin(sabi_reader_->TotalBins());
+}
+
 // Build bitmap for a single SABICondition (leaf node in CNF)
 SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
     const SABICondition& cond, vector<const roaring::Roaring*>& buf) {
@@ -230,8 +245,7 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
           return policy_entry.first < val;
         });
     if (it != cur_attr_binning_policy.end() && it->first == value) {
-      return {&sabi_reader_->bitmap_index.bitmaps[bitmap_offset + it->second],
-              nullptr};
+      return {Bin(bitmap_offset + it->second), nullptr};
     }
     return {&EmptyBitmap(), nullptr};
   } else if (cur_attr_type == AttrRole::ORDERED) {
@@ -299,15 +313,14 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
 
     if (start_bin > end_bin) return {&EmptyBitmap(), nullptr};
     if (start_bin == end_bin) {
-      return {&sabi_reader_->bitmap_index.bitmaps[bitmap_offset + start_bin],
-              nullptr};
+      return {Bin(bitmap_offset + start_bin), nullptr};
     }
 
     // Merge bitmap (OR)
     buf.clear();
     buf.reserve(end_bin - start_bin + 1);
     for (int32_t i = start_bin; i <= end_bin; ++i)
-      buf.push_back(&(sabi_reader_->bitmap_index.bitmaps[bitmap_offset + i]));
+      buf.push_back(Bin(bitmap_offset + i));
     bitmap_pool_.emplace_back(
         roaring::Roaring::fastunion(buf.size(), buf.data()));
     return {&bitmap_pool_.back(), &bitmap_pool_.back()};
@@ -319,8 +332,7 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
 // reader-owned bitmaps where possible and materializing into bitmap_pool_
 // only when a union/intersection/tombstone-filter result must be computed.
 void SABITableIterator::BuildQueryBitmap(const SABIQuery& query) {
-  const roaring::Roaring& tombstone =
-      sabi_reader_->bitmap_index.tombstone_bitmap;
+  const roaring::Roaring& tombstone = Tombstone();
 
   if (query.clause_groups.empty()) {
     // Empty query is treated as a full table scan.

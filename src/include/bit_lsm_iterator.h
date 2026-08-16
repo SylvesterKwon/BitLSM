@@ -307,6 +307,10 @@ class SABITableIterator : public SABIInternalIterator {
   BlockPrefetchQueue prefetch_queue_;
 
   // Internal status for iterating
+  // Cached-bin pins for this scan; views borrowed via Bin() stay valid
+  // until these release. Declared before bitmap_pool_/query_bitmap_ so it
+  // is destroyed after them.
+  std::vector<SABIPinnedBin> pinned_bins_;
   // The query bitmap is either borrowed from the SABIReader's frozen bitmaps
   // (the reader outlives this iterator: udi_entry_ holds either a block
   // cache pin or an unowned reference to the table-lifetime pin in Rep) or
@@ -354,6 +358,11 @@ class SABITableIterator : public SABIInternalIterator {
   // Build bitmap for a full query (CNF: AND of OR clauses) into
   // query_bitmap_ (borrowing reader bitmaps where possible)
   void BuildQueryBitmap(const SABIQuery& query);
+  // One bin's bitmap through the mode-resolving reader path; on failure
+  // sets status_ and returns the empty bitmap so the scan fails loudly
+  // rather than shrinking the result.
+  const roaring::Roaring* Bin(uint32_t flat_idx);
+  const roaring::Roaring& Tombstone();
   // Fill buffer by loading next data block
   void LoadNextBlock();
 
