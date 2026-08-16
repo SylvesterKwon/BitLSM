@@ -12,6 +12,7 @@
 #include "bit_lsm_utils.h"
 #include "sabi.h"
 #include "test_util/status_matchers.h"
+#include "util/coding.h"
 
 using namespace bit_lsm;
 using UDIB = rocksdb::UserDefinedIndexBuilder;
@@ -179,4 +180,104 @@ TEST(SabiBlobRoundTrip, V7PadsBitmapsAndPersistsSizesAndCardinalities) {
   for (uint32_t i = 0; i < total_bins; ++i)
     EXPECT_EQ(reader.BinCardinality(i),
               reader.bitmap_index.bitmaps[i].cardinality());
+}
+
+// Workload: a minimal v6 blob, hand-serialized field-by-field (NOT produced
+//           by the current v7 builder) — one ORDERED attr, 2 bins, unpadded
+//           butt-joined bitmap offsets, no per-bin cardinality/size arrays —
+//           parsed by the current (v7-aware) SABIReader.
+// Threat: every other test in this file builds its blob with today's (v7)
+//         builder, so none of them actually exercises a genuine pre-v7
+//         directory shape. v7's reader changes (the two new directory
+//         arrays, the bitmap_offsets_/bitmap_sizes_ split) must not disturb
+//         parsing of the already-flushed v5/v6 SSTs that lack them.
+TEST(SabiBlobRoundTrip, ParsesGenuineV6Blob) {
+  using roaring::Roaring;
+
+  // 1 ORDERED attr, 2 bins. Rows 0,1 -> bin0; row 2 -> bin1; row 3 ->
+  // tombstone. Cardinalities are chosen by hand, not by the builder's binning
+  // math.
+  Roaring bin0, bin1, tombstone;
+  bin0.add(0);
+  bin0.add(1);
+  bin1.add(2);
+  tombstone.add(3);
+  std::vector<Roaring*> bitmaps = {&bin0, &bin1, &tombstone};
+  for (Roaring* r : bitmaps) r->runOptimize();
+
+  std::string blob;
+
+  // Section A (index entries): one AddIndexEntry-equivalent record:
+  // [row-count psum u32][bh.offset u32][bh.size u32].
+  rocksdb::PutFixed32(&blob, 4);    // psum: 4 rows seen so far
+  rocksdb::PutFixed32(&blob, 7);    // bh.offset
+  rocksdb::PutFixed32(&blob, 999);  // bh.size
+
+  // Frozen bitmaps, tombstone last, butt-joined (v6 has no padding between
+  // them — offsets are exactly consecutive getFrozenSizeInBytes() sums).
+  std::vector<uint32_t> bitmap_sizes(bitmaps.size());
+  for (size_t i = 0; i < bitmaps.size(); ++i)
+    bitmap_sizes[i] = static_cast<uint32_t>(bitmaps[i]->getFrozenSizeInBytes());
+  std::vector<uint32_t> bitmap_offsets(bitmaps.size() + 1);
+  bitmap_offsets[0] = static_cast<uint32_t>(blob.size());
+  for (size_t i = 0; i < bitmaps.size(); ++i)
+    bitmap_offsets[i + 1] = bitmap_offsets[i] + bitmap_sizes[i];
+  blob.resize(bitmap_offsets.back());
+  for (size_t i = 0; i < bitmaps.size(); ++i)
+    bitmaps[i]->writeFrozen(blob.data() + bitmap_offsets[i]);
+
+  // Binning policy: the ORDERED attr's body is headerless -- bin_count+1
+  // okey thresholds, chosen by hand (2 bins -> 3 boundaries).
+  uint32_t policy_off_start = static_cast<uint32_t>(blob.size());
+  for (uint64_t boundary : {uint64_t{0}, uint64_t{10}, uint64_t{20}})
+    rocksdb::PutFixed64(&blob, boundary);
+  uint32_t policy_off_end = static_cast<uint32_t>(blob.size());
+
+  // Directory: [attr_num][role][bin_count][index_entries_cnt]
+  //            [distinct_cnt u64 x attr_num]  (v6+)
+  //            [policy offsets][bitmap offsets]
+  // -- no bin_cardinality/bitmap_size arrays; those are v7+ only.
+  uint32_t directory_off = static_cast<uint32_t>(blob.size());
+  rocksdb::PutFixed32(&blob, 1);                         // attr_num
+  blob.push_back(static_cast<char>(AttrRole::ORDERED));  // role
+  rocksdb::PutFixed32(&blob, 2);                         // bin_count
+  rocksdb::PutFixed32(&blob, 1);                         // index_entries_cnt
+  rocksdb::PutFixed64(&blob, 3);                         // v6 distinct_cnt
+  rocksdb::PutFixed32(&blob, policy_off_start);
+  rocksdb::PutFixed32(&blob, policy_off_end);
+  for (uint32_t off : bitmap_offsets) rocksdb::PutFixed32(&blob, off);
+
+  // Footer: [directory_off][version=6][magic].
+  rocksdb::PutFixed32(&blob, directory_off);
+  rocksdb::PutFixed32(&blob, 6);
+  rocksdb::PutFixed32(&blob, kSABIFooterMagic);
+
+  rocksdb::Slice slice(blob);
+  SABIReader reader(slice);
+
+  // Roles / bin counts round-trip.
+  ASSERT_EQ(reader.schema().attr_num(), 1u);
+  EXPECT_EQ(reader.schema().roles[0], AttrRole::ORDERED);
+  ASSERT_EQ(reader.bitmap_index.bitmap_nums.size(), 1u);
+  EXPECT_EQ(reader.bitmap_index.bitmap_nums[0], 2u);
+  EXPECT_EQ(reader.TotalBins(), 2u);
+
+  // v6: no persisted per-bin cardinalities.
+  EXPECT_TRUE(reader.bin_cardinalities.empty());
+
+  // v6: sizes derived from offset differences (no padding to correct for).
+  ASSERT_EQ(reader.bitmap_sizes_.size(), 3u);
+  for (uint32_t i = 0; i < 3; ++i)
+    EXPECT_EQ(reader.bitmap_sizes_[i],
+              reader.bitmap_offsets_[i + 1] - reader.bitmap_offsets_[i]);
+
+  // Decoded bitmaps match what was hand-written, and BinCardinality /
+  // TombstoneCardinality fall back to the decoded cardinality.
+  ASSERT_EQ(reader.bitmap_index.bitmaps.size(), 2u);
+  EXPECT_EQ(reader.bitmap_index.bitmaps[0].cardinality(), 2u);
+  EXPECT_EQ(reader.bitmap_index.bitmaps[1].cardinality(), 1u);
+  EXPECT_EQ(reader.BinCardinality(0), 2u);
+  EXPECT_EQ(reader.BinCardinality(1), 1u);
+  EXPECT_EQ(reader.bitmap_index.tombstone_bitmap.cardinality(), 1u);
+  EXPECT_EQ(reader.TombstoneCardinality(), 1u);
 }
