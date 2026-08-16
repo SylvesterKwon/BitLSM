@@ -71,7 +71,8 @@ class BitLSMTestBase : public ::testing::Test {
   }
 
   // Same as OpenDB(), but installs custom BlockBasedTableOptions first (e.g.
-  // a caller-supplied block cache). Follows udi_block_cache_test.cpp's
+  // a caller-supplied block cache), and leaves them installed for subsequent
+  // OpenDB() calls in the same test. Follows udi_block_cache_test.cpp's
   // recipe of assigning table_options_ before opening.
   BitLSM& OpenDBWithTableOptions(
       const BitLSMOptions& bitlsm_options,

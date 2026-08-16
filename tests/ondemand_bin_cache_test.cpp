@@ -2,6 +2,10 @@
 #include <rocksdb/cache.h>
 #include <rocksdb/table.h>
 
+#include <random>
+#include <string>
+#include <vector>
+
 #include "test_util/bitlsm_test_base.h"
 #include "test_util/checked_bitlsm.h"
 #include "test_util/generators.h"
@@ -79,9 +83,34 @@ TEST_F(BitLSMTestBase, EstimatorRebuildLoadsNoBitmaps) {
                        "p" + std::to_string(i)));
   }
   ASSERT_TRUE(db.Flush());
+  // Drain the flush-completion listener's own rebuild first. Without this,
+  // the measured TEST_Refresh() below races that background pass: if it
+  // already ran, Reconcile() sees fresh_enough == true and skips Rebuild()
+  // entirely, and bitmaps_loaded == 0 would prove nothing (no rebuild ran at
+  // all, let alone one that avoided decoding).
+  engine.Estimator()->TEST_Refresh();
+
+  // A second, independent batch guarantees the *next* pass is stale: 1000
+  // new rows is >10% drift against the 5000-row baseline just built
+  // (CardinalityEstimator::kStaleRowFraction == 0.1), so the measured
+  // Reconcile() below cannot skip Rebuild() as fresh_enough either.
+  for (int i = 5000; i < 6000; ++i) {
+    ASSERT_TRUE(db.Put("k" + std::to_string(i),
+                       GenerateAttrs(rng, schema, workload, db.reference()),
+                       "p" + std::to_string(i)));
+  }
+  ASSERT_TRUE(db.Flush());
 
   ResetSABIBinCacheStats();
+  std::shared_ptr<const GlobalStats> before = engine.Estimator()->Stats();
   engine.Estimator()->TEST_Refresh();  // full stats rebuild over every SST
+  // Positive control: a changed snapshot pointer proves a real Rebuild() ran
+  // in the measured window (Reconcile() only republishes cached_ when it
+  // does not skip as fresh_enough), so the bitmaps_loaded assertion below
+  // means what it says instead of passing vacuously on a skipped rebuild.
+  EXPECT_NE(before.get(), engine.Estimator()->Stats().get())
+      << "stats snapshot didn't change -- TEST_Refresh() skipped the "
+         "rebuild (fresh_enough), so bitmaps_loaded == 0 would prove nothing";
   SABIBinCacheStats after = GetSABIBinCacheStats();
   EXPECT_EQ(after.bitmaps_loaded, 0u)
       << "stats rebuild decoded bitmaps; use the persisted cardinalities";
@@ -100,7 +129,14 @@ TEST_F(BitLSMTestBase, EstimatorRebuildLoadsNoBitmaps) {
 // fail for a reason that has nothing to do with the on-demand bin cache.
 // Measured empirically (see task-8-report.md): the two floors don't move
 // together, so a schema engineered to make ONE bin large relative to what a
-// single-row-match query needs to verify opens a wide, reliable window.
+// single-row-match query needs to verify opens a wide, reliable window. The
+// query survives not because "only a handful of data blocks are needed" is
+// inherently safe at this capacity, but because of how strict-capacity LRU
+// decides refusal: an insert is refused only when it still doesn't fit after
+// evicting everything currently unpinned. The ~4 KB data blocks touched to
+// verify the one match fit individually and evict each other as the scan
+// moves on, so they always succeed regardless of how many are touched in
+// sequence; the ~28 KB bin can never fit under any eviction, full stop.
 // 200,000 rows on one ORDERED attr at the coarsest rho (0.5, few/big bins)
 // puts one outlier value in a large bin (~28 KB observed) while an EQUAL
 // query on that value only verifies a handful of data blocks (succeeds down
@@ -140,4 +176,18 @@ TEST_F(BitLSMTestBase, TinyCacheStaysCorrect) {
   cond.value = kOutlierValue;
   BitLSMQuery one_match(std::vector<QueryCondition>{cond});
   ASSERT_TRUE(db.VerifyQuery(one_match));
+
+  // Refusal proof: this is the inverse of SecondQueryServesBinsFromCache. If
+  // the bin had actually entered the cache, this identical repeat would hit
+  // the cache and decode nothing. It has to decode again every time instead,
+  // which is only possible if the insert above was genuinely refused -- so
+  // this is proof the owned-fallback path (not a lucky cache hit) is what
+  // VerifyQuery just exercised. A future change that shrinks the bin below
+  // 16 KB would make this assertion fail loudly instead of the test quietly
+  // stopping to exercise the fallback at all.
+  ResetSABIBinCacheStats();
+  ASSERT_TRUE(db.VerifyQuery(one_match));
+  EXPECT_GT(GetSABIBinCacheStats().bitmaps_loaded, 0u)
+      << "repeat query decoded nothing -- the bin fit in the cache after "
+         "all, so this test no longer exercises the refused-insert fallback";
 }
