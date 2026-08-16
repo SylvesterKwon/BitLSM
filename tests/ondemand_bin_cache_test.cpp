@@ -30,12 +30,12 @@ rocksdb::BlockBasedTableOptions TinyStrictCacheOptions() {
 }  // namespace
 
 // Threat: the point of the redesign is that a bigger budget buys fewer
-// decodes. If the decoded-bin cache is bypassed (as PR #45's raw-page cache
-// was), the second identical query re-loads every bin and this fails.
+// decodes. If the decoded-bin cache is bypassed (as the v1 design's raw-page
+// cache was), the second identical query re-loads every bin and this fails.
 TEST_F(BitLSMTestBase, SecondQueryServesBinsFromCache) {
   // Seed 1 verified to draw a non-empty-clause query (below) for both q1 and
   // q2: the query touches real bins, so bitmaps_loaded > 0 cold is meant to
-  // be deterministic once the scan path is wired to Bin() (Task 7).
+  // be deterministic because the scan path resolves bins through Bin().
   Rng rng(1);
   BitLSMOptions schema = GenerateSchema(rng);
   schema.ondemand_index = true;
@@ -127,20 +127,20 @@ TEST_F(BitLSMTestBase, EstimatorRebuildLoadsNoBitmaps) {
 // failure is a hard iterator error upstream (RocksDB itself, unpatched --
 // see PutDataBlockToCache in block_based_table_reader.cc): the test would
 // fail for a reason that has nothing to do with the on-demand bin cache.
-// Measured empirically (see task-8-report.md): the two floors don't move
-// together, so a schema engineered to make ONE bin large relative to what a
-// single-row-match query needs to verify opens a wide, reliable window. The
-// query survives not because "only a handful of data blocks are needed" is
-// inherently safe at this capacity, but because of how strict-capacity LRU
-// decides refusal: an insert is refused only when it still doesn't fit after
-// evicting everything currently unpinned. The ~4 KB data blocks touched to
-// verify the one match fit individually and evict each other as the scan
-// moves on, so they always succeed regardless of how many are touched in
-// sequence; the ~28 KB bin can never fit under any eviction, full stop.
+// Measured empirically: the two floors don't move together, so a schema
+// engineered to make ONE bin large relative to what a single-row-match query
+// needs to verify opens a wide, reliable window. The query survives not
+// because "only a handful of data blocks are needed" is inherently safe at
+// this capacity, but because of how strict-capacity LRU decides refusal: an
+// insert is refused only when it still doesn't fit after evicting everything
+// currently unpinned. The ~4 KB data blocks touched to verify the one match
+// fit individually and evict each other as the scan moves on, so they always
+// succeed regardless of how many are touched in sequence; the ~28 KB bin can
+// never fit under any eviction, full stop.
 // 200,000 rows on one ORDERED attr at the coarsest rho (0.5, few/big bins)
 // puts one outlier value in a large bin (~28 KB observed) while an EQUAL
-// query on that value only verifies a handful of data blocks (succeeds down
-// to ~9 KB observed); 16 KB sits in the middle of that window. Full-scan
+// query on that value verifies on the order of 100+ data blocks (succeeds
+// down to ~9 KB observed); 16 KB sits in the middle of that window. Full-scan
 // verification is deliberately not exercised here: an unconditioned scan
 // touches every data block regardless of bin size, so its cache floor scales
 // with row count independent of anything under test, and VerifyFullScan
@@ -169,7 +169,7 @@ TEST_F(BitLSMTestBase, TinyCacheStaysCorrect) {
 
   // Matches exactly the outlier row: the bin covering it is refused (too big
   // for the tiny cache), so the fallback view has to be right, not just the
-  // handful of data blocks fetched to confirm the one match.
+  // 100+ data blocks fetched to confirm the one match.
   QueryCondition cond;
   cond.attr_idx = 0;
   cond.op = CompareOp::EQUAL;
@@ -177,17 +177,18 @@ TEST_F(BitLSMTestBase, TinyCacheStaysCorrect) {
   BitLSMQuery one_match(std::vector<QueryCondition>{cond});
   ASSERT_TRUE(db.VerifyQuery(one_match));
 
-  // Refusal proof: this is the inverse of SecondQueryServesBinsFromCache. If
-  // the bin had actually entered the cache, this identical repeat would hit
-  // the cache and decode nothing. It has to decode again every time instead,
-  // which is only possible if the insert above was genuinely refused -- so
-  // this is proof the owned-fallback path (not a lucky cache hit) is what
-  // VerifyQuery just exercised. A future change that shrinks the bin below
-  // 16 KB would make this assertion fail loudly instead of the test quietly
-  // stopping to exercise the fallback at all.
+  // Decode-on-repeat alone doesn't prove refusal: an inserted-then-evicted
+  // bin (evicted by later data-block inserts during the scan) would also
+  // re-decode on an identical repeat. inserts_refused > 0 is the actual
+  // refusal proof; the repeat-query decode check instead proves the
+  // on-demand path stays live -- Bin() keeps re-reading and re-decoding on
+  // the owned-fallback path rather than quietly going stale.
   ResetSABIBinCacheStats();
   ASSERT_TRUE(db.VerifyQuery(one_match));
-  EXPECT_GT(GetSABIBinCacheStats().bitmaps_loaded, 0u)
-      << "repeat query decoded nothing -- the bin fit in the cache after "
-         "all, so this test no longer exercises the refused-insert fallback";
+  SABIBinCacheStats repeat = GetSABIBinCacheStats();
+  EXPECT_GT(repeat.inserts_refused, 0u)
+      << "no insert was refused -- the bin fit in the cache after all, so "
+         "this test no longer exercises the refused-insert fallback";
+  EXPECT_GT(repeat.bitmaps_loaded, 0u)
+      << "repeat query decoded nothing -- the on-demand path went stale";
 }

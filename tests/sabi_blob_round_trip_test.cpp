@@ -30,8 +30,12 @@ BitLSMOptions MakeOptions() {
 
 // Shared fixture: 4 rows over {ORDERED, UNORDERED} and one AddIndexEntry.
 // Returns an owned copy of the blob since the builder (owner of the Slice
-// memory Finish() points into) goes out of scope on return.
-std::string BuildTestBlob() {
+// memory Finish() points into) goes out of scope on return. When
+// out_bitmap_sizes is non-null, filled with the builder's own
+// TEST_LastFinishBitmapSizes() (tombstone last) -- ground truth captured
+// before serialization, independent of anything a reader later derives from
+// the blob's persisted bytes.
+std::string BuildTestBlob(std::vector<uint32_t>* out_bitmap_sizes = nullptr) {
   BitLSMOptions options = MakeOptions();
   SABIBuilder builder(SABISchema::FromOptions(options),
                       std::make_unique<ValueLayoutExtractor>(options));
@@ -62,6 +66,8 @@ std::string BuildTestBlob() {
 
   rocksdb::Slice blob;
   EXPECT_TRUE(builder.Finish(&blob).ok());
+  if (out_bitmap_sizes != nullptr)
+    *out_bitmap_sizes = builder.TEST_LastFinishBitmapSizes();
   return std::string(blob.data(), blob.size());
 }
 }  // namespace
@@ -155,7 +161,9 @@ TEST(SabiBlobRoundTrip, RejectsUnversionedAndUnknownVersions) {
 //         the exact frozen length); missing/misaligned cardinalities would
 //         force a metadata-only reader to decode bitmaps just to count rows.
 TEST(SabiBlobRoundTrip, V7PadsBitmapsAndPersistsSizesAndCardinalities) {
-  std::string blob = BuildTestBlob();  // same fixture body as BuildsAndParses
+  std::vector<uint32_t> ground_truth_sizes;
+  // same fixture body as BuildsAndParses
+  std::string blob = BuildTestBlob(&ground_truth_sizes);
   rocksdb::Slice slice(blob);
   bit_lsm::SABIReader reader(slice);
 
@@ -171,6 +179,12 @@ TEST(SabiBlobRoundTrip, V7PadsBitmapsAndPersistsSizesAndCardinalities) {
   // Exact sizes recover the frozen views (frozenView demands exact length),
   // and persisted cardinalities match the decoded bitmaps.
   ASSERT_EQ(reader.bitmap_sizes_.size(), total_bins + 1u);
+  ASSERT_EQ(ground_truth_sizes.size(), total_bins + 1u);
+  for (uint32_t i = 0; i <= total_bins; ++i)
+    EXPECT_EQ(reader.bitmap_sizes_[i], ground_truth_sizes[i])
+        << "bin " << i
+        << " (persisted size vs. the builder's own pre-serialization "
+           "getFrozenSizeInBytes())";
   ASSERT_EQ(reader.bin_cardinalities.size(), total_bins + 1u);
   for (uint32_t i = 0; i < total_bins; ++i)
     EXPECT_EQ(reader.bin_cardinalities[i],

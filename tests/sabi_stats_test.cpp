@@ -353,11 +353,7 @@ TEST(SabiValueCounts, AllNullAttrHasNoCounts) {
 
 TEST(SabiHistogram, V7CountsComeFromDirectoryNotBitmaps) {
   std::vector<std::vector<Attr>> rows;
-  std::vector<int64_t> values;
-  for (int64_t i = 0; i < 1000; ++i) {
-    rows.push_back({i});
-    values.push_back(i);
-  }
+  for (int64_t i = 0; i < 1000; ++i) rows.push_back({i});
   auto built = BuildIndex(I64Options(), rows);
   // v7 blobs persist counts; the histogram must equal the decoded truth.
   ASSERT_FALSE(built.reader->bin_cardinalities.empty());
