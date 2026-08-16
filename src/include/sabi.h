@@ -174,6 +174,10 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
   // Index blob
   std::string index_blob_;
 
+  // Captured by Finish() for tests only: each bin's (tombstone last)
+  // getFrozenSizeInBytes(), read right before writeFrozen() serializes it.
+  std::vector<uint32_t> last_finish_bitmap_sizes_;
+
   // Helper methods
   void SetBinningPolicy();
   void SetUnorderedPropertyBinningPolicy(uint32_t i);
@@ -190,6 +194,13 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
   void OnKeyAdded(const rocksdb::Slice& key, ValueType type,
                   const rocksdb::Slice& value);
   rocksdb::Status Finish(rocksdb::Slice* index_contents);
+  // Test-only: exact per-bin (tombstone last) frozen sizes as measured by
+  // Finish() immediately before writeFrozen() -- ground truth independent of
+  // anything a reader later derives from the persisted blob. Valid after
+  // Finish() returns.
+  const std::vector<uint32_t>& TEST_LastFinishBitmapSizes() const {
+    return last_finish_bitmap_sizes_;
+  }
   void Dump();
 };
 
@@ -254,8 +265,12 @@ struct SABIPinnedBin {
 struct SABIBinCacheStats {
   uint64_t hits = 0;
   uint64_t misses = 0;
-  uint64_t bytes_read = 0;      // bytes pulled off disk
-  uint64_t bitmaps_loaded = 0;  // read + decode events (the #45 smoking gun)
+  uint64_t bytes_read = 0;  // bytes pulled off disk
+  // read + decode events (the v1 design's smoking gun)
+  uint64_t bitmaps_loaded = 0;
+  // A strict/undersized cache refused a decoded-bin insert; the bin lived
+  // only as long as its pin.
+  uint64_t inserts_refused = 0;
 };
 SABIBinCacheStats GetSABIBinCacheStats();
 void ResetSABIBinCacheStats();

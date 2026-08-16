@@ -93,13 +93,15 @@ std::atomic<uint64_t> g_bin_hits{0};
 std::atomic<uint64_t> g_bin_misses{0};
 std::atomic<uint64_t> g_bytes_read{0};
 std::atomic<uint64_t> g_bitmaps_loaded{0};
+std::atomic<uint64_t> g_bin_inserts_refused{0};
 }  // namespace
 
 SABIBinCacheStats GetSABIBinCacheStats() {
   return {g_bin_hits.load(memory_order_relaxed),
           g_bin_misses.load(memory_order_relaxed),
           g_bytes_read.load(memory_order_relaxed),
-          g_bitmaps_loaded.load(memory_order_relaxed)};
+          g_bitmaps_loaded.load(memory_order_relaxed),
+          g_bin_inserts_refused.load(memory_order_relaxed)};
 }
 
 void ResetSABIBinCacheStats() {
@@ -107,6 +109,7 @@ void ResetSABIBinCacheStats() {
   g_bin_misses.store(0, memory_order_relaxed);
   g_bytes_read.store(0, memory_order_relaxed);
   g_bitmaps_loaded.store(0, memory_order_relaxed);
+  g_bin_inserts_refused.store(0, memory_order_relaxed);
 }
 
 // ========================================================================
@@ -332,6 +335,7 @@ uint32_t SABIReader::TotalBins() const {
 }
 
 uint64_t SABIReader::BinCardinality(uint32_t flat_idx) const {
+  assert(flat_idx <= TotalBins());
   if (!bin_cardinalities.empty()) return bin_cardinalities[flat_idx];
   return flat_idx == TotalBins() ? bitmap_index.tombstone_bitmap.cardinality()
                                  : bitmap_index.bitmaps[flat_idx].cardinality();
@@ -378,7 +382,7 @@ const roaring::Roaring* SABIReader::Bin(uint32_t flat_idx, SABIPinnedBin* pin) {
   Slice result;
   // One read of the bin's exact extent at its absolute file offset; the
   // reader realigns for direct I/O itself, so a bin never becomes N
-  // straddling page reads (the #45 blob-relative-grid mistake).
+  // straddling page reads (the v1 design's blob-relative-grid mistake).
   IOStatus s = rep->file->Read(IOOptions(), file_off, size, &result,
                                bin->buf.get(), /*aligned_buf=*/nullptr);
   if (!s.ok() || result.size() < size) return nullptr;
@@ -416,6 +420,7 @@ const roaring::Roaring* SABIReader::Bin(uint32_t flat_idx, SABIPinnedBin* pin) {
     pin->view = &entered->view;
   } else {
     // Refused insert (strict capacity): the pin owns the bin instead.
+    g_bin_inserts_refused.fetch_add(1, memory_order_relaxed);
     pin->handle = nullptr;
     pin->owned = std::move(bin);
     pin->view = &pin->owned->view;

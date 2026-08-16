@@ -65,6 +65,10 @@ struct BitLSMOptions {
   // own per-file cache key. Requires format v7 blobs (opening older SSTs
   // fails with Corruption naming the rebuild). Off by default: the resident
   // path stays the fastest while the index fits in memory.
+  // The version-naming Corruption lands in the RocksDB LOG; the surfaced
+  // Status is a generic UDI-reader Corruption for the file. On-demand bin
+  // reads bypass block checksums -- a corrupted bin aborts (CRoaring
+  // frozen-view validation) rather than returning a Status.
   bool ondemand_index = false;
 };
 }  // namespace bit_lsm

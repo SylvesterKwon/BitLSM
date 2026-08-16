@@ -396,6 +396,7 @@ Status SABIBuilder::Finish(Slice* index_contents) {
     bin_cardinalities[i] = static_cast<uint32_t>(r.cardinality());
     bitmap_offsets.push_back(align32(bitmap_offsets.back() + bitmap_sizes[i]));
   }
+  last_finish_bitmap_sizes_ = bitmap_sizes;  // test-only ground truth
   index_blob_.resize(bitmap_offsets.back());
   for (uint32_t i = 0; i < bitmap_index_.bitmaps.size(); ++i) {
     Roaring& r = bitmap_index_.bitmaps[i];
