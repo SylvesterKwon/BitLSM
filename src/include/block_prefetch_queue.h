@@ -39,7 +39,13 @@ void ResetBlockPrefetchQueueStats();
 // application must define (env/fs_posix.cc:78); undefined, every
 // PosixRandomAccessFile gets null ring pointers and ReadAsync answers
 // NotSupported. Call before opening a DB -- the choice is made per file open.
-void EnableRocksDbIOUring(bool enable);
+//
+// Process-wide and one-way: it enables, never disables. Whether a machine can
+// issue asynchronous reads is not a property of one DB, and MultiGet's batched
+// block read uses the same rings, so a second DB opened without the prefetch
+// queue must not take them away from the first -- or from whatever else in the
+// process was relying on them.
+void EnableRocksDbIOUring();
 
 class BlockPrefetchQueue {
  public:

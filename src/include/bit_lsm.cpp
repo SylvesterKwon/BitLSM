@@ -26,7 +26,7 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
   // Before Open: RocksDB decides whether a file gets io_uring rings when the
   // file is opened, so the prefetch queue's async reads have to be opted into
   // now or never (block_prefetch_queue.h).
-  EnableRocksDbIOUring(bit_lsm_options_.scan_prefetch_depth > 0);
+  if (bit_lsm_options_.scan_prefetch_depth > 0) EnableRocksDbIOUring();
 
   BlockBasedTableOptions opts = table_options;
   opts.user_defined_index_factory = make_shared<SABIFactory>(bit_lsm_options_);

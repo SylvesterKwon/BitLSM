@@ -17,8 +17,8 @@ std::atomic<bool> g_async_unavailable{false};
 // Read by RocksDbIOUringEnable below, from any thread that opens a file.
 std::atomic<bool> g_rocksdb_io_uring{false};
 
-void EnableRocksDbIOUring(bool enable) {
-  g_rocksdb_io_uring.store(enable, std::memory_order_relaxed);
+void EnableRocksDbIOUring() {
+  g_rocksdb_io_uring.store(true, std::memory_order_relaxed);
 }
 
 BlockPrefetchQueueStats GetBlockPrefetchQueueStats() {
