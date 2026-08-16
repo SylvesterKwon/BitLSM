@@ -26,11 +26,11 @@ BitLSMOptions MakeOptions() {
   options.rho = 0.5;  // 전체 bin 예산 = attr_num/rho = 4 (속성별 할당은 동적)
   return options;
 }
-}  // namespace
 
-// SABIBuilder 에 값들을 먹이고 Finish 로 블롭을 만든 뒤 SABIReader 로 다시
-// 파싱했을 때 블록 핸들/카운트/비닝 정책/비트맵 개수가 일관적인지.
-TEST(SabiBlobRoundTrip, BuildsAndParses) {
+// Shared fixture: 4 rows over {ORDERED, UNORDERED} and one AddIndexEntry.
+// Returns an owned copy of the blob since the builder (owner of the Slice
+// memory Finish() points into) goes out of scope on return.
+std::string BuildTestBlob() {
   BitLSMOptions options = MakeOptions();
   SABIBuilder builder(SABISchema::FromOptions(options),
                       std::make_unique<ValueLayoutExtractor>(options));
@@ -60,9 +60,18 @@ TEST(SabiBlobRoundTrip, BuildsAndParses) {
                         &scratch);
 
   rocksdb::Slice blob;
-  BITLSM_ASSERT_OK(builder.Finish(&blob));
+  EXPECT_TRUE(builder.Finish(&blob).ok());
+  return std::string(blob.data(), blob.size());
+}
+}  // namespace
 
-  // 블롭 메모리는 builder 가 소유하므로 builder 가 스코프에 살아있는 동안 파싱.
+// SABIBuilder 에 값들을 먹이고 Finish 로 블롭을 만든 뒤 SABIReader 로 다시
+// 파싱했을 때 블록 핸들/카운트/비닝 정책/비트맵 개수가 일관적인지.
+TEST(SabiBlobRoundTrip, BuildsAndParses) {
+  BitLSMOptions options = MakeOptions();
+  std::string blob_owner = BuildTestBlob();
+  rocksdb::Slice blob(blob_owner);
+
   // v5: 리더는 스키마 주입 없이 블롭의 directory 에서 self-describe 한다.
   SABIReader reader(blob);
 
@@ -135,4 +144,39 @@ TEST(SabiBlobRoundTrip, RejectsUnversionedAndUnknownVersions) {
   reader.reset();
   EXPECT_TRUE(
       factory.NewReader(udi_option, bumped_slice, reader).IsCorruption());
+}
+
+// Workload: the same 4-row/2-attr fixture, inspected for v7's on-disk
+//           contract: every bitmap start is 32B-aligned, exact frozen sizes
+//           are persisted alongside padded offsets, and per-bin/tombstone
+//           cardinalities round-trip against the decoded bitmaps.
+// Threat: padding without persisted exact sizes breaks frozenView (it demands
+//         the exact frozen length); missing/misaligned cardinalities would
+//         force a metadata-only reader to decode bitmaps just to count rows.
+TEST(SabiBlobRoundTrip, V7PadsBitmapsAndPersistsSizesAndCardinalities) {
+  std::string blob = BuildTestBlob();  // same fixture body as BuildsAndParses
+  rocksdb::Slice slice(blob);
+  bit_lsm::SABIReader reader(slice);
+
+  uint32_t total_bins = 0;
+  for (uint32_t n : reader.bitmap_index.bitmap_nums) total_bins += n;
+  ASSERT_EQ(reader.TotalBins(), total_bins);
+
+  // v7: every bitmap start (tombstone included) is 32B-aligned in the blob.
+  ASSERT_EQ(reader.bitmap_offsets_.size(), total_bins + 2u);
+  for (uint32_t i = 0; i <= total_bins; ++i)
+    EXPECT_EQ(reader.bitmap_offsets_[i] % 32u, 0u) << "bin " << i;
+
+  // Exact sizes recover the frozen views (frozenView demands exact length),
+  // and persisted cardinalities match the decoded bitmaps.
+  ASSERT_EQ(reader.bitmap_sizes_.size(), total_bins + 1u);
+  ASSERT_EQ(reader.bin_cardinalities.size(), total_bins + 1u);
+  for (uint32_t i = 0; i < total_bins; ++i)
+    EXPECT_EQ(reader.bin_cardinalities[i],
+              reader.bitmap_index.bitmaps[i].cardinality());
+  EXPECT_EQ(reader.TombstoneCardinality(),
+            reader.bitmap_index.tombstone_bitmap.cardinality());
+  for (uint32_t i = 0; i < total_bins; ++i)
+    EXPECT_EQ(reader.BinCardinality(i),
+              reader.bitmap_index.bitmaps[i].cardinality());
 }

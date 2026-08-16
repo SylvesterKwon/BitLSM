@@ -379,15 +379,22 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   // 2. Calculate bitmap index by buffered attr data & binning policy
   CalculateBitmapIndex();
 
-  // 3. Make final index blob (v5 layout; see sabi.h)
-  // 3-1. Add frozen bitmaps, tombstone bitmap last
+  // 3. Make final index blob (v7 layout; see sabi.h)
+  // 3-1. Add frozen bitmaps, tombstone bitmap last. v7: pad every start to a
+  // 32-byte boundary (resize() zero-fills the gaps) and record exact sizes
+  // and cardinalities for the directory.
   bitmap_index_.bitmaps.push_back(bitmap_index_.tombstone_bitmap);
+  const auto align32 = [](uint32_t off) { return (off + 31u) & ~31u; };
   vector<uint32_t> bitmap_offsets;
-  bitmap_offsets.push_back(index_blob_.size());
+  vector<uint32_t> bitmap_sizes(bitmap_index_.bitmaps.size());
+  vector<uint32_t> bin_cardinalities(bitmap_index_.bitmaps.size());
+  bitmap_offsets.push_back(align32(index_blob_.size()));
   for (uint32_t i = 0; i < bitmap_index_.bitmaps.size(); ++i) {
     Roaring& r = bitmap_index_.bitmaps[i];
     r.runOptimize();
-    bitmap_offsets.push_back(bitmap_offsets.back() + r.getFrozenSizeInBytes());
+    bitmap_sizes[i] = r.getFrozenSizeInBytes();
+    bin_cardinalities[i] = static_cast<uint32_t>(r.cardinality());
+    bitmap_offsets.push_back(align32(bitmap_offsets.back() + bitmap_sizes[i]));
   }
   index_blob_.resize(bitmap_offsets.back());
   for (uint32_t i = 0; i < bitmap_index_.bitmaps.size(); ++i) {
@@ -432,6 +439,10 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   PutFixed32(&index_blob_, index_entries_cnt_);
   // v6: per-attr exact distinct counts (see the format comment in sabi.h).
   for (uint64_t d : distinct_cnts_) PutFixed64(&index_blob_, d);
+  // v7: per-bin cardinalities (tombstone last) and exact frozen sizes; the
+  // padded offsets below no longer encode sizes by difference.
+  for (uint32_t c : bin_cardinalities) PutFixed32(&index_blob_, c);
+  for (uint32_t sz : bitmap_sizes) PutFixed32(&index_blob_, sz);
   for (uint32_t& oi : policy_offsets) PutFixed32(&index_blob_, oi);
   for (uint32_t& oi : bitmap_offsets) PutFixed32(&index_blob_, oi);
 

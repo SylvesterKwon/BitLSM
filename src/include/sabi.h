@@ -29,20 +29,25 @@ namespace bit_lsm {
 //     Corruption detection is RocksDB's block checksum, verified before the
 //     blob reaches the factory; the blob carries no checksum of its own.
 //
-// SABI index blob wire layout (v5), as written by SABIBuilder::Finish:
+// SABI index blob wire layout (v7), as written by SABIBuilder::Finish:
 //   [index entries]     per block: [row-count psum u32][bh.offset u32]
 //                       [bh.size u32]
 //   [frozen bitmaps]    per-attr value bins in attr order, tombstone bitmap
-//                       last
+//                       last. v7+: every bitmap starts on a 32-byte boundary
+//                       (blob-relative, first included); gap bytes are zero.
+//                       A 32B-aligned copy of the whole region can therefore
+//                       back every frozenView in place.
 //   [binning policies]  per attr:
 //                       ORDERED:   okey threshold u64 x (bin_count+1)
 //                       UNORDERED: [entry_count u32] then
 //                                  {varint-len string, bin u32} x entry_count
 //   [directory]         [attr_num u32][role u8 x attr_num]
 //                       [bin_count u32 x attr_num][index_entries_cnt u32]
-//                       [distinct_cnt u64 x attr_num]        (v6+)
+//                       [distinct_cnt u64 x attr_num]              (v6+)
+//                       [bin_cardinality u32 x (total_bins+1)]     (v7+)
+//                       [bitmap_size u32 x (total_bins+1)]         (v7+)
 //                       [policy offset u32 x (attr_num+1)]
-//                       [bitmap offset u32 x (sum(bin_count)+2)]
+//                       [bitmap offset u32 x (total_bins+2)]
 //   [footer]            [directory_off u32][version u32][magic u32]
 //
 // v6 adds per-attr exact distinct-value counts (NULL/tombstone rows excluded)
@@ -50,7 +55,13 @@ namespace bit_lsm {
 // least physical/NDV -- sparse integer domains like yyyymm otherwise smear
 // point mass into value holes). Readers accept v5 blobs; their distinct
 // counts read as 0 = unknown, which disables the floor for that SST.
-inline constexpr uint32_t kBitLSMFormatVersion = 6;
+//
+// v7 adds the padded bitmap layout plus two per-bin arrays: exact frozen
+// sizes (padded offsets no longer encode sizes by difference) and
+// cardinalities (tombstone last), so the estimator and any metadata-only
+// reader never decode a bitmap to count rows. Readers accept v5/v6; their
+// bin_cardinalities read as empty = derive from the decoded bitmaps.
+inline constexpr uint32_t kBitLSMFormatVersion = 7;
 // Oldest on-disk version this build still reads (v5 = pre-NDV directory).
 inline constexpr uint32_t kBitLSMMinReadFormatVersion = 5;
 // Trailing magic of the SABI blob footer
@@ -209,6 +220,16 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   std::vector<rocksdb::BlockHandle> block_handles;
   // Per-attr exact distinct values (v6 blobs; all-zero for v5 = unknown).
   std::vector<uint64_t> distinct_cnts;
+  // v7 blobs: per-bin cardinalities, tombstone last; empty on v5/v6.
+  std::vector<uint32_t> bin_cardinalities;
+  uint32_t TotalBins() const;
+  // Persisted on v7; derived from the decoded bitmap on older blobs.
+  uint64_t BinCardinality(uint32_t flat_idx) const;
+  uint64_t TombstoneCardinality() const;
+  // Bitmap extents: padded start offsets (total_bins+2) and exact frozen
+  // sizes (total_bins+1; derived from offset differences on v5/v6).
+  std::vector<uint32_t> bitmap_offsets_;
+  std::vector<uint32_t> bitmap_sizes_;
   std::unique_ptr<rocksdb::UserDefinedIndexIterator> NewIterator(
       const rocksdb::ReadOptions& read_options);
   size_t ApproximateMemoryUsage() const;

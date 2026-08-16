@@ -132,16 +132,38 @@ SABIReader::SABIReader(Slice& index_block) {
       dir += sizeof(uint64_t);
     }
   }
+  // v7+: per-bin cardinalities (tombstone last) and exact frozen sizes. A
+  // v5/v6 blob has neither; bin_cardinalities stays empty (= unknown, derive
+  // from decoded bitmaps) and bitmap_sizes_ is derived below from offsets.
+  bin_cardinalities.clear();
+  if (version >= 7) {
+    bin_cardinalities.resize(total_bins + 1);
+    for (uint32_t i = 0; i <= total_bins; ++i) {
+      bin_cardinalities[i] = DecodeFixed32(dir);
+      dir += sizeof(uint32_t);
+    }
+    bitmap_sizes_.resize(total_bins + 1);
+    for (uint32_t i = 0; i <= total_bins; ++i) {
+      bitmap_sizes_[i] = DecodeFixed32(dir);
+      dir += sizeof(uint32_t);
+    }
+  }
   vector<uint32_t> policy_offsets(attr_num + 1);
   for (uint32_t i = 0; i <= attr_num; ++i) {
     policy_offsets[i] = DecodeFixed32(dir);
     dir += sizeof(uint32_t);
   }
   uint32_t bitmaps_cnt = total_bins + 1;  // + tombstone bitmap
-  vector<uint32_t> bitmap_offsets(bitmaps_cnt + 1);
+  bitmap_offsets_.resize(bitmaps_cnt + 1);
   for (uint32_t i = 0; i <= bitmaps_cnt; ++i) {
-    bitmap_offsets[i] = DecodeFixed32(dir);
+    bitmap_offsets_[i] = DecodeFixed32(dir);
     dir += sizeof(uint32_t);
+  }
+  if (version < 7) {
+    // Pre-padding blobs: sizes are exactly the offset differences.
+    bitmap_sizes_.resize(bitmaps_cnt);
+    for (uint32_t i = 0; i < bitmaps_cnt; ++i)
+      bitmap_sizes_[i] = bitmap_offsets_[i + 1] - bitmap_offsets_[i];
   }
 
   data_entries_cnt_psum.resize(index_entries_cnt_);
@@ -184,12 +206,15 @@ SABIReader::SABIReader(Slice& index_block) {
   bitmap_index.bitmaps.resize(bitmaps_cnt -
                               1);  // the last bitmap is for tombstone
   for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
-    uint32_t size = bitmap_offsets[i + 1] - bitmap_offsets[i];
-    const char* raw_ptr = index_block.data() + bitmap_offsets[i];
+    uint32_t size = bitmap_sizes_[i];
+    const char* raw_ptr = index_block.data() + bitmap_offsets_[i];
 
     // 32 bytes alignment
     void* aligned_ptr = nullptr;
-    posix_memalign(&aligned_ptr, 32, size);
+    if (posix_memalign(&aligned_ptr, 32, size) != 0) {
+      assert(false);
+      continue;
+    }
     AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr), std::free);
     memcpy(managed_aligned_ptr.get(), raw_ptr, size);
     if (i < bitmaps_cnt - 1) {
@@ -223,6 +248,22 @@ unique_ptr<UserDefinedIndexIterator> SABIReader::NewIterator(
     const ReadOptions& read_options) {
   return make_unique<SABIUDIIterator>(this);
 };
+
+uint32_t SABIReader::TotalBins() const {
+  return bitmap_offsets_.empty()
+             ? 0
+             : static_cast<uint32_t>(bitmap_offsets_.size() - 2);
+}
+
+uint64_t SABIReader::BinCardinality(uint32_t flat_idx) const {
+  if (!bin_cardinalities.empty()) return bin_cardinalities[flat_idx];
+  return flat_idx == TotalBins() ? bitmap_index.tombstone_bitmap.cardinality()
+                                 : bitmap_index.bitmaps[flat_idx].cardinality();
+}
+
+uint64_t SABIReader::TombstoneCardinality() const {
+  return BinCardinality(TotalBins());
+}
 
 // The memory usage of the index, including the size of the raw contents and
 // any other heap data structures allocated by the reader
@@ -259,6 +300,9 @@ size_t SABIReader::ApproximateMemoryUsage() const {
   usage += data_entries_cnt_psum.capacity() * sizeof(uint32_t);
   usage += block_handles.capacity() * sizeof(BlockHandle);
   usage += distinct_cnts.capacity() * sizeof(uint64_t);
+  usage += bin_cardinalities.capacity() * sizeof(uint32_t);
+  usage += bitmap_offsets_.capacity() * sizeof(uint32_t);
+  usage += bitmap_sizes_.capacity() * sizeof(uint32_t);
 
   // Frozen views allocate a separate metadata arena (the bitmap struct plus
   // the container pointer array); the keys, typecodes and the container
