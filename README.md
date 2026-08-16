@@ -24,13 +24,25 @@ sudo apt-get update && sudo apt-get install -y \
     libsnappy-dev \
     liblz4-dev \
     libzstd-dev \
-    libjemalloc-dev
+    libjemalloc-dev \
+    liburing-dev
+```
+
+`liburing-dev` enables RocksDB's async read path, which
+`BitLSMOptions::scan_prefetch_depth` requires. Without it the option is accepted
+but has no effect. Needs Linux 5.1 or newer.
+
+If your distribution has no such package, build it:
+
+```bash
+git clone --depth 1 --branch liburing-2.5 https://github.com/axboe/liburing
+cd liburing && ./configure --prefix="$HOME/.local" && make && make install
 ```
 
 ### 3. Build the Project
 
 ```bash
-cmake -B build
+cmake -B build -DCMAKE_PREFIX_PATH="$HOME/.local"   # prefix only if liburing was built by hand
 ninja -C build -j$(nproc)
 ```
 
