@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <type_traits>
 
 #include "cache/cache_key.h"
 #include "rocksdb/cache.h"
@@ -350,16 +351,24 @@ const roaring::Roaring* SABIReader::Bin(uint32_t flat_idx, SABIPinnedBin* pin) {
   const uint64_t file_off =
       rep->udi_handle.offset() + bitmap_offsets_[flat_idx];
   const uint32_t size = bitmap_sizes_[flat_idx];
+  // no_block_cache=true (or a caller-supplied null block_cache) leaves this
+  // null; BitLSM's ctor takes caller-supplied table options, so it's
+  // reachable (see block_prefetch_queue.cpp's InBlockCache for the same
+  // guard). Skip the lookup/insert entirely below and hand the decoded bin
+  // to the pin instead.
   Cache* cache = rep->table_options.block_cache.get();
   const CacheKey key = rep->base_cache_key.WithOffset(file_off >> 2);
 
-  if (Cache::Handle* h = cache->BasicLookup(key.AsSlice(), /*stats=*/nullptr)) {
-    auto* bin = static_cast<SABICachedBin*>(cache->Value(h));
-    g_bin_hits.fetch_add(1, memory_order_relaxed);
-    pin->cache = cache;
-    pin->handle = h;
-    pin->view = &bin->view;
-    return pin->view;
+  if (cache != nullptr) {
+    if (Cache::Handle* h =
+            cache->BasicLookup(key.AsSlice(), /*stats=*/nullptr)) {
+      auto* bin = static_cast<SABICachedBin*>(cache->Value(h));
+      g_bin_hits.fetch_add(1, memory_order_relaxed);
+      pin->cache = cache;
+      pin->handle = h;
+      pin->view = &bin->view;
+      return pin->view;
+    }
   }
 
   auto bin = make_unique<SABICachedBin>();
@@ -376,11 +385,26 @@ const roaring::Roaring* SABIReader::Bin(uint32_t flat_idx, SABIPinnedBin* pin) {
   if (result.data() != bin->buf.get()) {
     memcpy(bin->buf.get(), result.data(), size);
   }
+  // v4.7.0 frozenView returns non-const Roaring: this move-assigns, so the
+  // view aliases buf (no clone).
+  static_assert(
+      std::is_same_v<decltype(roaring::Roaring::frozenView(nullptr, 0)),
+                     roaring::Roaring>,
+      "frozenView must return non-const Roaring; a const return would "
+      "copy-assign and clone");
   bin->view = Roaring::frozenView(bin->buf.get(), size);
   bin->charge = sizeof(SABICachedBin) + malloc_usable_size(bin->buf.get());
   g_bin_misses.fetch_add(1, memory_order_relaxed);
   g_bytes_read.fetch_add(size, memory_order_relaxed);
   g_bitmaps_loaded.fetch_add(1, memory_order_relaxed);
+
+  if (cache == nullptr) {
+    pin->cache = nullptr;
+    pin->handle = nullptr;
+    pin->owned = std::move(bin);
+    pin->view = &pin->owned->view;
+    return pin->view;
+  }
 
   Cache::Handle* h = nullptr;
   Status is = cache->Insert(key.AsSlice(), bin.get(), SABICachedBinHelper(),
