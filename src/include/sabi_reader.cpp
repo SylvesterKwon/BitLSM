@@ -437,8 +437,11 @@ bool SABIReader::LoadRun(uint32_t a, uint32_t b, Cache* cache,
     const CacheKey key =
         rep->base_cache_key.WithOffset((udi_off + bitmap_offsets_[i]) >> 2);
     Cache::Handle* h = nullptr;
+    // HIGH: same convention as RocksDB's own
+    // cache_index_and_filter_blocks_with_high_priority, so data-block churn
+    // stops evicting the bins that gate it.
     Status is = cache->Insert(key.AsSlice(), bin.get(), SABICachedBinHelper(),
-                              bin->charge, &h);
+                              bin->charge, &h, Cache::Priority::HIGH);
     slot->cache = cache;
     if (is.ok()) {
       SABICachedBin* entered = bin.release();  // cache owns it now
