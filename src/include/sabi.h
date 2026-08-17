@@ -15,11 +15,16 @@
 #include "bit_lsm_option.h"
 #include "bit_lsm_query.h"
 #include "bit_lsm_utils.h"
+#include "cache/cache_key.h"
 #include "roaring.hh"
 #include "rocksdb/advanced_cache.h"  // full rocksdb::Cache / Cache::Handle
 #include "rocksdb/options.h"
 #include "rocksdb/user_defined_index.h"
 #include "table/format.h"
+
+namespace rocksdb {
+class FilePrefetchBuffer;  // held by SABISpanPrefetch through unique_ptr only
+}  // namespace rocksdb
 
 namespace bit_lsm {
 
@@ -87,6 +92,16 @@ class SABIBuilder;
 class SABIUDIIterator;
 class SABIReader;
 class SABIFactory;
+class SABISpanPrefetch;
+
+// One condition's flat-bin extent, [first, last] both inclusive; the
+// tombstone is the single bin {TotalBins(), TotalBins()}. Produced by
+// SABIReader::SelectBins, consumed by the bin loaders and the span-prefetch
+// plan alike, so the two can never disagree about which bins a query needs.
+struct BinSelection {
+  uint32_t first;
+  uint32_t last;
+};
 
 // Per-SST histogram of one ORDERED attribute, the raw material for DB-level
 // cardinality estimation: bin i covers okeys [boundaries[i], boundaries[i+1])
@@ -281,6 +296,14 @@ struct SABIBinCacheStats {
   // A strict/undersized cache refused a decoded-bin insert; the bin lived
   // only as long as its pin.
   uint64_t inserts_refused = 0;
+  // Cache-missing runs the span-prefetch plan computed, counted only when
+  // the machinery engaged (>= 2 runs; see SABISpanPrefetch) -- so a build
+  // with no liburing still shows the path ran before its submits were
+  // refused.
+  uint64_t spans_planned = 0;
+  // Miss runs served out of a span-prefetch buffer instead of a fresh
+  // pread; such a run adds bytes_read but no reads.
+  uint64_t spans_prefetched = 0;
 };
 SABIBinCacheStats GetSABIBinCacheStats();
 void ResetSABIBinCacheStats();
@@ -297,16 +320,21 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   // The table's block cache; null when caller-supplied table options disable
   // it (the probe/load paths then hand decoded bins straight to their pins).
   rocksdb::Cache* BinCache() const;
+  // The block-cache key of flat_idx's decoded bin, derived from the file's
+  // base key and the bin's absolute file offset; the single definition the
+  // probe, load and peek paths all share.
+  rocksdb::CacheKey BinCacheKey(uint32_t flat_idx) const;
   // Cache probe for one bin; on a hit fills *slot (pinning the entry) and
   // returns true. slot->view stays null on a miss.
   bool ProbeBin(rocksdb::Cache* cache, uint32_t flat_idx, SABIPinnedBin* slot);
-  // Loads missed bins [a, b] (contiguous in the blob) with ONE file read
+  // Loads missed bins [a, b] (contiguous in the blob) with ONE file read --
+  // or a copy out of `prefetch`'s buffers when they already hold the run --
   // into one shared 32B-aligned arena, freezes each bin's view in place,
   // inserts each into `cache` (pin owns the bin on refusal or null cache;
   // the arena stays shared either way) and fills slots[i - a]. Returns false
   // on allocation or I/O failure; nothing is cached or filled then.
   bool LoadRun(uint32_t a, uint32_t b, rocksdb::Cache* cache,
-               SABIPinnedBin* slots);
+               SABIPinnedBin* slots, SABISpanPrefetch* prefetch);
 
  public:
   // Self-describing: the schema residue (attr roles) is parsed from the
@@ -340,17 +368,32 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   }
   // Resident: a direct pointer, pin untouched. Metadata: cache lookup or
   // read+decode+insert; *pin keeps the bin alive; nullptr on I/O failure.
-  // flat_idx == TotalBins() is the tombstone.
-  const roaring::Roaring* Bin(uint32_t flat_idx, SABIPinnedBin* pin);
+  // flat_idx == TotalBins() is the tombstone. A non-null `prefetch` lets a
+  // cold load copy out of an already-submitted span read instead of issuing
+  // its own pread (SABISpanPrefetch).
+  const roaring::Roaring* Bin(uint32_t flat_idx, SABIPinnedBin* pin,
+                              SABISpanPrefetch* prefetch = nullptr);
+  // Computes cond's flat-bin extent without loading anything: the single bin
+  // an UNORDERED equality maps to, or the clamped [first, last] range an
+  // ORDERED comparison covers. Returns false when the condition matches no
+  // bin (the empty result). The one source of truth for bin selection: the
+  // iterator's materialization and the span-prefetch plan both consume it.
+  bool SelectBins(const SABICondition& cond, BinSelection* out) const;
+  // True when flat_idx's decoded bin is in the block cache right now; takes
+  // no pin and counts no hit/miss stats (the span-prefetch plan peeks ahead
+  // of the real probes).
+  bool BinCached(uint32_t flat_idx) const;
   // Span loader for one attr's contiguous bins [first_flat, last_flat]
   // (inclusive): probes the cache per bin, then coalesces each maximal run
   // of misses into ONE file read backing one shared arena. Views append to
   // *out_views in flat-idx order; *out_pins keeps them alive. Resident mode
   // appends direct pointers, pins untouched. Returns false on I/O failure
-  // (treat like Bin() returning nullptr); appends nothing then.
+  // (treat like Bin() returning nullptr); appends nothing then. `prefetch`
+  // as in Bin().
   bool BinRange(uint32_t first_flat, uint32_t last_flat,
                 std::vector<const roaring::Roaring*>* out_views,
-                std::vector<SABIPinnedBin>* out_pins);
+                std::vector<SABIPinnedBin>* out_pins,
+                SABISpanPrefetch* prefetch = nullptr);
   // Returns false only when the query is provably unsatisfiable in this SST
   // (safe to skip all bitmap work and block fetches). Never returns false
   // for a query that could actually match a row.
@@ -365,6 +408,69 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   bool UnorderedValueCounts(uint32_t attr_idx,
                             UnorderedAttrValueCounts* out) const;
   void Dump();
+};
+
+// Overlaps one query's cold bin reads on one SST (metadata mode only). Span
+// coalescing already turns a range predicate's contiguous misses into one
+// pread, but the k conditions' runs live in different attr regions of the
+// blob -- far apart -- plus the tombstone, and BuildQueryBitmap would issue
+// those (k+1) preads one at a time. This plans the cache-missing byte runs
+// up front, submits each as one async read (block_prefetch_queue.h's
+// per-slot FilePrefetchBuffer pattern), and lets LoadRun copy out of the
+// buffers as it walks the conditions: cold-path latency drops from the sum
+// of the run reads toward their max.
+//
+// Per-scan lifetime: created by the owning SABITableIterator and destroyed
+// with it, after every consumption. On any unavailability -- no liburing
+// (the shared process-wide flag in block_prefetch_queue.h), a refused
+// submit, a short buffer -- consumers silently read the ordinary way:
+// results identical, speed unchanged.
+class SABISpanPrefetch {
+ public:
+  // `reader` must be a metadata-mode reader of `table`; both must outlive
+  // this object (the iterator's table pin covers that).
+  SABISpanPrefetch(SABIReader* reader, const rocksdb::BlockBasedTable* table);
+  // Out-of-line so FilePrefetchBuffer stays forward-declared here;
+  // destruction aborts any read nobody consumed.
+  ~SABISpanPrefetch();
+
+  // Probes the cache over the selections' union, coalesces the missing bins
+  // into maximal byte-contiguous runs (extents meeting at a shared bin
+  // boundary merge, whatever attr they belong to; a gap of even one
+  // unwanted bin keeps runs separate, so no dead bytes ride along), and
+  // submits one async read per run -- only when there are at least two,
+  // since a lone run gains nothing over the sync read LoadRun issues
+  // anyway.
+  void PlanAndSubmit(const std::vector<BinSelection>& selections);
+
+  // Copies file bytes [offset, offset + len) into dst if one submitted run
+  // fully holds them: the first touch of a run polls its read at the run's
+  // own offset (the only offset an explicit async submit answers to);
+  // sub-ranges then serve from the populated buffer with no further I/O.
+  // False = read the file the ordinary way; a failed or short buffer kills
+  // its whole run, never serving part of it.
+  bool TryConsume(uint64_t offset, size_t len, char* dst);
+
+ private:
+  enum class SlotState { kSubmitted, kPopulated, kDead };
+  // One in-flight run. Unlike BlockPrefetchQueue's fixed reused window,
+  // slots are per-query and never reused: a query has at most
+  // (conditions + 1) runs, so unbounded allocation is bounded by the query.
+  struct Slot {
+    std::unique_ptr<rocksdb::FilePrefetchBuffer> buf;
+    uint64_t offset = 0;  // absolute file offset of the run
+    size_t len = 0;
+    SlotState state = SlotState::kDead;
+    // Valid once kPopulated: the run's bytes inside buf, stable afterwards
+    // because nothing touches buf again.
+    rocksdb::Slice data;
+  };
+
+  void Submit(uint32_t a, uint32_t b);  // flat-bin miss run [a, b] inclusive
+
+  SABIReader* reader_;
+  const rocksdb::BlockBasedTable* table_;
+  std::vector<Slot> slots_;
 };
 
 class SABIFactory : public rocksdb::UserDefinedIndexFactory {

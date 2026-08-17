@@ -305,6 +305,12 @@ class SABITableIterator : public SABIInternalIterator {
   // Target-block reads kept in flight (block_prefetch_queue.h). Borrows bbt_,
   // so declared after it.
   BlockPrefetchQueue prefetch_queue_;
+  // Overlaps this query's cold bin-run reads in metadata mode (sabi.h);
+  // null in resident mode and once async reads are known unavailable,
+  // slotless (inert) when the query has fewer than two miss runs. Borrows
+  // sabi_reader_ and bbt_; its buffers live until this iterator dies, past
+  // every LoadRun consumption.
+  std::unique_ptr<SABISpanPrefetch> span_prefetch_;
 
   // Internal status for iterating
   // Cached-bin pins for this scan; views borrowed via Bin() stay valid

@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "block_prefetch_queue.h"
 #include "test_util/bitlsm_test_base.h"
 #include "test_util/checked_bitlsm.h"
 #include "test_util/generators.h"
@@ -111,6 +112,82 @@ TEST_F(BitLSMTestBase, RangeQueryCoalescesBinReads) {
       << "warm repeat issued new file reads instead of hitting the cache";
   EXPECT_EQ(warm.bitmaps_loaded, cold.bitmaps_loaded)
       << "warm repeat re-decoded bins";
+  EXPECT_GT(warm.hits, cold.hits);
+}
+
+// Threat: a multi-condition query's cold runs live in different attr regions
+// of the blob (plus the tombstone), so span coalescing cannot merge them and
+// BuildQueryBitmap would pread them one at a time, serially. The span
+// prefetch must engage on such a query (plan >= 2 miss runs and submit
+// them), replace preads one-for-one when async reads work, and stay
+// behavior-identical when they don't -- this suite also runs on builds with
+// no liburing, where every submit is refused and every run falls back to
+// its own sync pread.
+TEST_F(BitLSMTestBase, MultiAttrColdRunsPlanSpanPrefetch) {
+  Rng rng(4);
+  BitLSMOptions schema;
+  schema.attr_num = 2;
+  schema.attr_specs = {AttrSpec{AttrRole::ORDERED},
+                       AttrSpec{AttrRole::ORDERED}};
+  schema.rho = 0.05;  // finest binning tier: ~20 bins per attr
+  schema.read_seqno = 0;
+  schema.ondemand_index = true;
+  CheckedBitLSM db(&OpenDB(schema), schema);
+  for (int i = 0; i < 5000; ++i) {
+    double v0 = std::uniform_real_distribution<double>(0.0, 100.0)(rng);
+    double v1 = std::uniform_real_distribution<double>(0.0, 100.0)(rng);
+    ASSERT_TRUE(db.Put("k" + std::to_string(i), std::vector<Attr>{v0, v1},
+                       "p" + std::to_string(i)));
+  }
+  ASSERT_TRUE(db.Flush());
+
+  // Two range predicates whose bin runs sit far apart in the flat bitmap
+  // region: attr 0's run ends at attr 0's last bin, attr 1's starts around
+  // its middle, so a gap of unwanted bins separates them and no
+  // byte-contiguous merge is possible between the conditions.
+  QueryCondition c0, c1;
+  c0.attr_idx = 0;
+  c0.op = CompareOp::GREATER_EQUAL;
+  c0.value = 10.0;
+  c1.attr_idx = 1;
+  c1.op = CompareOp::GREATER_EQUAL;
+  c1.value = 50.0;
+  BitLSMQuery query(std::vector<QueryCondition>{c0, c1});
+
+  ResetSABIBinCacheStats();
+  // Clears the process-wide one-way async-unavailable flag another test may
+  // have tripped, so the plan phase runs here whatever the test order.
+  ResetBlockPrefetchQueueStats();
+  ASSERT_TRUE(db.VerifyQuery(query));  // the actual correctness bar
+  SABIBinCacheStats cold = GetSABIBinCacheStats();
+  // The plan/submit path engaged on every build: at least attr 0's run and
+  // attr 1's (the latter possibly merged with the adjacent tombstone bin)
+  // were computed and handed to submission.
+  EXPECT_GE(cold.spans_planned, 2u)
+      << "multi-attr cold query did not engage the span-prefetch plan";
+  // Behavior-identical across builds: each of the three cold loads
+  // (tombstone + one coalesced run per condition) happens exactly once, by
+  // pread or out of a prefetch buffer -- never both, never neither.
+  EXPECT_EQ(cold.reads + cold.spans_prefetched, 3u);
+  if (GetBlockPrefetchQueueStats().async_unavailable) {
+    // No liburing: every submit was refused, every run took the sync pread
+    // fallback.
+    EXPECT_EQ(cold.spans_prefetched, 0u);
+  } else {
+    EXPECT_GT(cold.spans_prefetched, 0u)
+        << "async reads available but no run was served from a buffer";
+  }
+
+  // Warm repeat: every bin is cached, so the plan finds no miss runs (no
+  // new engagement) and nothing is read again on either path.
+  ASSERT_TRUE(db.VerifyQuery(query));
+  SABIBinCacheStats warm = GetSABIBinCacheStats();
+  EXPECT_EQ(warm.reads, cold.reads) << "warm repeat issued new file reads";
+  EXPECT_EQ(warm.bitmaps_loaded, cold.bitmaps_loaded)
+      << "warm repeat re-decoded bins";
+  EXPECT_EQ(warm.spans_planned, cold.spans_planned)
+      << "warm repeat re-planned runs that are already cached";
+  EXPECT_EQ(warm.spans_prefetched, cold.spans_prefetched);
   EXPECT_GT(warm.hits, cold.hits);
 }
 
