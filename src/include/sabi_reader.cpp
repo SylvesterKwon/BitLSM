@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <type_traits>
 
 #include "block_prefetch_queue.h"  // shared async-unavailable flag
@@ -99,6 +100,7 @@ std::atomic<uint64_t> g_bitmaps_loaded{0};
 std::atomic<uint64_t> g_bin_inserts_refused{0};
 std::atomic<uint64_t> g_spans_planned{0};
 std::atomic<uint64_t> g_spans_prefetched{0};
+std::atomic<uint64_t> g_spans_dropped{0};
 }  // namespace
 
 SABIBinCacheStats GetSABIBinCacheStats() {
@@ -109,7 +111,8 @@ SABIBinCacheStats GetSABIBinCacheStats() {
           g_bitmaps_loaded.load(memory_order_relaxed),
           g_bin_inserts_refused.load(memory_order_relaxed),
           g_spans_planned.load(memory_order_relaxed),
-          g_spans_prefetched.load(memory_order_relaxed)};
+          g_spans_prefetched.load(memory_order_relaxed),
+          g_spans_dropped.load(memory_order_relaxed)};
 }
 
 void ResetSABIBinCacheStats() {
@@ -121,6 +124,7 @@ void ResetSABIBinCacheStats() {
   g_bin_inserts_refused.store(0, memory_order_relaxed);
   g_spans_planned.store(0, memory_order_relaxed);
   g_spans_prefetched.store(0, memory_order_relaxed);
+  g_spans_dropped.store(0, memory_order_relaxed);
 }
 
 // ========================================================================
@@ -809,16 +813,23 @@ void SABISpanPrefetch::PlanAndSubmit(
   // Coalesce each interval's cache-missing bins into maximal contiguous
   // runs -- the same grouping BinRange rediscovers when it loads, as long
   // as the cache does not change in between (and when it does, consumers
-  // just fall back to their own pread).
+  // just fall back to their own pread). One cache peek per bin: a run ends
+  // on the same lookup that shows the next bin cached.
   std::vector<BinSelection> runs;
+  constexpr uint32_t kNoRun = std::numeric_limits<uint32_t>::max();
   for (const BinSelection& iv : intervals) {
+    uint32_t run_start = kNoRun;
     for (uint32_t i = iv.first; i <= iv.last; ++i) {
-      if (reader_->BinCached(i)) continue;
-      uint32_t j = i;
-      while (j + 1 <= iv.last && !reader_->BinCached(j + 1)) ++j;
-      runs.push_back({i, j});
-      i = j;
+      if (reader_->BinCached(i)) {
+        if (run_start != kNoRun) {
+          runs.push_back({run_start, i - 1});
+          run_start = kNoRun;
+        }
+      } else if (run_start == kNoRun) {
+        run_start = i;
+      }
     }
+    if (run_start != kNoRun) runs.push_back({run_start, iv.last});
   }
 
   // A lone run overlaps nothing: the sync pread LoadRun issues anyway is
@@ -826,16 +837,22 @@ void SABISpanPrefetch::PlanAndSubmit(
   if (runs.size() < 2) return;
   g_spans_planned.fetch_add(runs.size(), memory_order_relaxed);
 
-  slots_.reserve(runs.size());
-  for (const BinSelection& run : runs) {
-    // The first NotSupported stops the remaining submits, like
-    // BlockPrefetchQueue::Submit.
-    if (AsyncReadUnavailable()) return;
-    Submit(run.first, run.last);
+  // Submit in plan order up to the slot cap. Every planned run that ends
+  // up with no slot -- beyond the cap, async known unavailable (the first
+  // NotSupported stops the rest, like BlockPrefetchQueue::Submit), or a
+  // failed submit -- is dropped: its loads stay synchronous.
+  slots_.reserve(std::min(runs.size(), kMaxSlots));
+  uint64_t dropped = 0;
+  for (size_t r = 0; r < runs.size(); ++r) {
+    if (r >= kMaxSlots || AsyncReadUnavailable() ||
+        !Submit(runs[r].first, runs[r].last)) {
+      ++dropped;
+    }
   }
+  if (dropped > 0) g_spans_dropped.fetch_add(dropped, memory_order_relaxed);
 }
 
-void SABISpanPrefetch::Submit(uint32_t a, uint32_t b) {
+bool SABISpanPrefetch::Submit(uint32_t a, uint32_t b) {
   const BlockBasedTable::Rep* rep = table_->get_rep();
   // The exact byte extent LoadRun computes for [a, b]: padded start of a to
   // the exact end of b.
@@ -857,7 +874,7 @@ void SABISpanPrefetch::Submit(uint32_t a, uint32_t b) {
   IOOptions opts;
   IODebugContext dbg;
   const ReadOptions read_options;
-  if (!rep->file->PrepareIOOptions(read_options, opts, &dbg).ok()) return;
+  if (!rep->file->PrepareIOOptions(read_options, opts, &dbg).ok()) return false;
 
   Slice result;
   // TryAgain = submitted and in flight; OK = the buffer already held it.
@@ -865,6 +882,7 @@ void SABISpanPrefetch::Submit(uint32_t a, uint32_t b) {
       slot.buf->PrefetchAsync(opts, rep->file.get(), offset, len, &result);
   slot.offset = offset;
   slot.len = len;
+  slot.remaining = len;
   if (s.IsTryAgain()) {
     slot.state = SlotState::kSubmitted;
   } else if (s.ok() && result.size() >= len) {
@@ -872,9 +890,10 @@ void SABISpanPrefetch::Submit(uint32_t a, uint32_t b) {
     slot.state = SlotState::kPopulated;
   } else {
     if (s.IsNotSupported()) NoteAsyncReadUnavailable();
-    return;  // dropped slot: LoadRun preads as if the run was never planned
+    return false;  // dropped: LoadRun preads as if the run was never planned
   }
   slots_.push_back(std::move(slot));
+  return true;
 }
 
 bool SABISpanPrefetch::TryConsume(uint64_t offset, size_t len, char* dst) {
@@ -900,9 +919,11 @@ bool SABISpanPrefetch::TryConsume(uint64_t offset, size_t len, char* dst) {
                                      slot.len, &result, &status) &&
           status.ok() && result.size() >= slot.len;
       if (!ok) {
-        // Failed or short: kill the whole run, never serve part of it. The
-        // consumer preads instead -- results identical.
+        // Failed or short: kill the whole run (and free its buffer now),
+        // never serve part of it. The consumer preads instead -- results
+        // identical.
         slot.state = SlotState::kDead;
+        slot.buf.reset();
         return false;
       }
       slot.data = result;
@@ -910,6 +931,17 @@ bool SABISpanPrefetch::TryConsume(uint64_t offset, size_t len, char* dst) {
     }
     memcpy(dst, slot.data.data() + (offset - slot.offset), len);
     g_spans_prefetched.fetch_add(1, memory_order_relaxed);
+    // Clamped: with no bin cache the consumed sub-ranges can overlap
+    // (nothing records the first load), and over-subtracting would only
+    // free early -- later overlaps then pread.
+    slot.remaining -= std::min(len, slot.remaining);
+    if (slot.remaining == 0) {
+      // The whole run has been copied out: free the buffer now instead of
+      // holding every run's bytes until the scan ends.
+      slot.data = Slice();
+      slot.buf.reset();
+      slot.state = SlotState::kDead;
+    }
     return true;
   }
   return false;

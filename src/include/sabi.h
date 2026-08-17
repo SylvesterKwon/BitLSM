@@ -288,7 +288,10 @@ struct SABIBinCacheStats {
   uint64_t hits = 0;
   uint64_t misses = 0;
   // File reads issued: one per coalesced run of missed bins, so a cold range
-  // predicate costs reads << bitmaps_loaded.
+  // predicate costs reads << bitmaps_loaded. Synchronous preads only:
+  // async-served runs appear in spans_prefetched instead, and a
+  // submitted-but-unconsumed span read appears in neither -- take device
+  // bytes from OS counters, not bytes_read.
   uint64_t reads = 0;
   uint64_t bytes_read = 0;  // bytes pulled off disk
   // read + decode events (the v1 design's smoking gun)
@@ -304,6 +307,11 @@ struct SABIBinCacheStats {
   // Miss runs served out of a span-prefetch buffer instead of a fresh
   // pread; such a run adds bytes_read but no reads.
   uint64_t spans_prefetched = 0;
+  // Planned runs the submit phase did not put in flight -- async reads
+  // unavailable, the per-query slot cap, or a refused submit -- so their
+  // loads take the sync pread path (visible in `reads`). Silent async
+  // disablement shows up here as spans_dropped == spans_planned.
+  uint64_t spans_dropped = 0;
 };
 SABIBinCacheStats GetSABIBinCacheStats();
 void ResetSABIBinCacheStats();
@@ -421,10 +429,11 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
 // of the run reads toward their max.
 //
 // Per-scan lifetime: created by the owning SABITableIterator and destroyed
-// with it, after every consumption. On any unavailability -- no liburing
-// (the shared process-wide flag in block_prefetch_queue.h), a refused
-// submit, a short buffer -- consumers silently read the ordinary way:
-// results identical, speed unchanged.
+// with it; each run's buffer is freed as soon as its bytes are fully
+// consumed, so only unconsumed runs survive to the destructor. On any
+// unavailability -- no liburing (the shared process-wide flag in
+// block_prefetch_queue.h), a refused submit, a short buffer -- consumers
+// silently read the ordinary way: results identical, speed unchanged.
 class SABISpanPrefetch {
  public:
   // `reader` must be a metadata-mode reader of `table`; both must outlive
@@ -438,9 +447,10 @@ class SABISpanPrefetch {
   // into maximal byte-contiguous runs (extents meeting at a shared bin
   // boundary merge, whatever attr they belong to; a gap of even one
   // unwanted bin keeps runs separate, so no dead bytes ride along), and
-  // submits one async read per run -- only when there are at least two,
-  // since a lone run gains nothing over the sync read LoadRun issues
-  // anyway.
+  // submits one async read per run -- only when there are at least two
+  // (a lone run gains nothing over the sync read LoadRun issues anyway),
+  // and at most kMaxSlots of them, in plan order. Runs it does not put in
+  // flight count as spans_dropped and load synchronously.
   void PlanAndSubmit(const std::vector<BinSelection>& selections);
 
   // Copies file bytes [offset, offset + len) into dst if one submitted run
@@ -452,21 +462,41 @@ class SABISpanPrefetch {
   bool TryConsume(uint64_t offset, size_t len, char* dst);
 
  private:
+  // kDead covers both a failed slot and a fully-drained one: either way the
+  // consumer preads.
   enum class SlotState { kSubmitted, kPopulated, kDead };
   // One in-flight run. Unlike BlockPrefetchQueue's fixed reused window,
-  // slots are per-query and never reused: a query has at most
-  // (conditions + 1) runs, so unbounded allocation is bounded by the query.
+  // slots are per-query and never reused. The query does NOT bound the run
+  // count -- cache state does: a half-resident range fragments into one run
+  // per cached/uncached alternation, hundreds at fine rho -- so submission
+  // stops at kMaxSlots and each buffer is freed the moment its run is fully
+  // consumed rather than at end of scan.
   struct Slot {
     std::unique_ptr<rocksdb::FilePrefetchBuffer> buf;
     uint64_t offset = 0;  // absolute file offset of the run
     size_t len = 0;
+    // Unconsumed bytes; consumed sub-ranges are disjoint whenever the bin
+    // cache is live, so hitting 0 means the whole run was copied out and
+    // buf can be freed. (With no bin cache sub-ranges can overlap; the
+    // clamped subtraction then only frees early, degrading to preads.)
+    size_t remaining = 0;
     SlotState state = SlotState::kDead;
     // Valid once kPopulated: the run's bytes inside buf, stable afterwards
     // because nothing touches buf again.
     rocksdb::Slice data;
   };
 
-  void Submit(uint32_t a, uint32_t b);  // flat-bin miss run [a, b] inclusive
+  // Submitted slots per query. Each slot holds its whole run's bytes from
+  // submit until consumption (or death), so this caps transient memory when
+  // a half-resident range plans hundreds of tiny runs; runs beyond the cap
+  // just keep their sync preads. 64 slots cover every plausible
+  // all-cold CNF (one run per condition region plus the tombstone) with
+  // room to spare.
+  static constexpr size_t kMaxSlots = 64;
+
+  // Submits flat-bin miss run [a, b] (inclusive); false = nothing in
+  // flight, the run's loads stay synchronous.
+  bool Submit(uint32_t a, uint32_t b);
 
   SABIReader* reader_;
   const rocksdb::BlockBasedTable* table_;

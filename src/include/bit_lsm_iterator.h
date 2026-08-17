@@ -308,8 +308,8 @@ class SABITableIterator : public SABIInternalIterator {
   // Overlaps this query's cold bin-run reads in metadata mode (sabi.h);
   // null in resident mode and once async reads are known unavailable,
   // slotless (inert) when the query has fewer than two miss runs. Borrows
-  // sabi_reader_ and bbt_; its buffers live until this iterator dies, past
-  // every LoadRun consumption.
+  // sabi_reader_ and bbt_; a run's buffer is freed the moment it is fully
+  // consumed, and only unconsumed buffers survive to die with the iterator.
   std::unique_ptr<SABISpanPrefetch> span_prefetch_;
 
   // Internal status for iterating

@@ -100,16 +100,21 @@ TEST_F(BitLSMTestBase, RangeQueryCoalescesBinReads) {
   // Measured at this seed: reads=2 (tombstone + one 18-bin coalesced run),
   // bitmaps_loaded=19.
   // Positive control: the range really decoded several bins (plus the
-  // tombstone); with fewer, reads < bitmaps_loaded could hold vacuously.
+  // tombstone); with fewer, the coalescing bound could hold vacuously.
   ASSERT_GT(cold.bitmaps_loaded, 2u)
       << "range spanned too few bins to exercise coalescing";
-  EXPECT_LT(cold.reads, cold.bitmaps_loaded)
-      << "cold range query issued one read per bin: no coalescing happened";
+  // Count both load paths: on a liburing build a run may arrive through a
+  // span-prefetch buffer instead of a pread, and reads alone < loaded
+  // would then say nothing about coalescing.
+  EXPECT_LT(cold.reads + cold.spans_prefetched, cold.bitmaps_loaded)
+      << "cold range query issued one load per bin: no coalescing happened";
 
   ASSERT_TRUE(db.VerifyQuery(range_query));
   SABIBinCacheStats warm = GetSABIBinCacheStats();
   EXPECT_EQ(warm.reads, cold.reads)
       << "warm repeat issued new file reads instead of hitting the cache";
+  EXPECT_EQ(warm.spans_prefetched, cold.spans_prefetched)
+      << "warm repeat pulled runs through prefetch buffers again";
   EXPECT_EQ(warm.bitmaps_loaded, cold.bitmaps_loaded)
       << "warm repeat re-decoded bins";
   EXPECT_GT(warm.hits, cold.hits);
@@ -169,13 +174,29 @@ TEST_F(BitLSMTestBase, MultiAttrColdRunsPlanSpanPrefetch) {
   // (tombstone + one coalesced run per condition) happens exactly once, by
   // pread or out of a prefetch buffer -- never both, never neither.
   EXPECT_EQ(cold.reads + cold.spans_prefetched, 3u);
+#ifdef BITLSM_HAVE_URING
+  // Compiled positive control (only where CMake found liburing): the async
+  // branch must actually run here. If the on-demand io_uring opt-in is ever
+  // lost, every submit answers NotSupported, the process-wide flag trips,
+  // and this fails -- instead of the fallback branch below passing green on
+  // a build that was supposed to prove the async path.
+  ASSERT_FALSE(GetBlockPrefetchQueueStats().async_unavailable)
+      << "liburing build refused async reads: the ondemand io_uring opt-in "
+         "is gone";
+#endif
   if (GetBlockPrefetchQueueStats().async_unavailable) {
-    // No liburing: every submit was refused, every run took the sync pread
-    // fallback.
+    // No liburing: every submit was refused, so every planned run is
+    // visible as dropped and took the sync pread fallback.
     EXPECT_EQ(cold.spans_prefetched, 0u);
+    EXPECT_EQ(cold.spans_dropped, cold.spans_planned)
+        << "runs neither submitted nor counted dropped: silent async "
+           "disablement would be invisible in stats";
   } else {
     EXPECT_GT(cold.spans_prefetched, 0u)
         << "async reads available but no run was served from a buffer";
+    EXPECT_EQ(cold.spans_dropped, 0u)
+        << "runs were dropped despite working async reads and a query far "
+           "under the slot cap";
   }
 
   // Warm repeat: every bin is cached, so the plan finds no miss runs (no
