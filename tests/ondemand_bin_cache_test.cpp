@@ -65,6 +65,55 @@ TEST_F(BitLSMTestBase, SecondQueryServesBinsFromCache) {
   EXPECT_GT(second.hits, first.hits);
 }
 
+// Threat: a range predicate's bins are contiguous in the blob, yet a cold
+// query that loads each with its own pread pays ~one seek per bin (measured:
+// serial ~1.2KB reads at fine rho turn one cold query into tens of seconds).
+// Coalescing must make cold loading span-granular: fewer file reads than
+// decoded bins, and a warm repeat must hit without any new read.
+TEST_F(BitLSMTestBase, RangeQueryCoalescesBinReads) {
+  Rng rng(3);
+  BitLSMOptions schema;
+  schema.attr_num = 1;
+  schema.attr_specs = {AttrSpec{AttrRole::ORDERED}};
+  schema.rho = 0.05;  // finest binning tier: ~20 bins on one attr
+  schema.read_seqno = 0;
+  schema.ondemand_index = true;
+  CheckedBitLSM db(&OpenDB(schema), schema);
+  for (int i = 0; i < 5000; ++i) {
+    double v = std::uniform_real_distribution<double>(0.0, 100.0)(rng);
+    ASSERT_TRUE(db.Put("k" + std::to_string(i), std::vector<Attr>{v},
+                       "p" + std::to_string(i)));
+  }
+  ASSERT_TRUE(db.Flush());
+
+  // >= 10.0 over uniform [0, 100) spans nearly every bin of the attr.
+  QueryCondition cond;
+  cond.attr_idx = 0;
+  cond.op = CompareOp::GREATER_EQUAL;
+  cond.value = 10.0;
+  BitLSMQuery range_query(std::vector<QueryCondition>{cond});
+
+  ResetSABIBinCacheStats();
+  ASSERT_TRUE(db.VerifyQuery(range_query));
+  SABIBinCacheStats cold = GetSABIBinCacheStats();
+  // Measured at this seed: reads=2 (tombstone + one 18-bin coalesced run),
+  // bitmaps_loaded=19.
+  // Positive control: the range really decoded several bins (plus the
+  // tombstone); with fewer, reads < bitmaps_loaded could hold vacuously.
+  ASSERT_GT(cold.bitmaps_loaded, 2u)
+      << "range spanned too few bins to exercise coalescing";
+  EXPECT_LT(cold.reads, cold.bitmaps_loaded)
+      << "cold range query issued one read per bin: no coalescing happened";
+
+  ASSERT_TRUE(db.VerifyQuery(range_query));
+  SABIBinCacheStats warm = GetSABIBinCacheStats();
+  EXPECT_EQ(warm.reads, cold.reads)
+      << "warm repeat issued new file reads instead of hitting the cache";
+  EXPECT_EQ(warm.bitmaps_loaded, cold.bitmaps_loaded)
+      << "warm repeat re-decoded bins";
+  EXPECT_GT(warm.hits, cold.hits);
+}
+
 // Threat: pre-v7 the estimator counted rows by decoding every bin of every
 // SST. If any consumer regresses to that, stats rebuild in ondemand mode
 // pages the whole index back in.

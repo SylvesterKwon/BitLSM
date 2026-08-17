@@ -316,11 +316,16 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
       return {Bin(bitmap_offset + start_bin), nullptr};
     }
 
-    // Merge bitmap (OR)
+    // Merge bitmap (OR): one span load, so a cold range costs one coalesced
+    // read per miss run instead of one tiny pread per bin.
     buf.clear();
     buf.reserve(end_bin - start_bin + 1);
-    for (int32_t i = start_bin; i <= end_bin; ++i)
-      buf.push_back(Bin(bitmap_offset + i));
+    if (!sabi_reader_->BinRange(bitmap_offset + start_bin,
+                                bitmap_offset + end_bin, &buf,
+                                &pinned_bins_)) {
+      status_ = rocksdb::Status::Corruption("SABI bin read failed");
+      return {&EmptyBitmap(), nullptr};
+    }
     bitmap_pool_.emplace_back(
         roaring::Roaring::fastunion(buf.size(), buf.data()));
     return {&bitmap_pool_.back(), &bitmap_pool_.back()};

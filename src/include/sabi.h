@@ -217,12 +217,17 @@ class SABIUDIIterator : public rocksdb::UserDefinedIndexIterator {
 
 enum class SABIReaderMode { kResident, kMetadata };
 
-// One decoded bin as a block-cache entry: the 32B-aligned bytes and the
-// frozen view over them, built once on a miss and shared by every query
-// while cached. buf is declared before view so the view dies first.
+// One decoded bin as a block-cache entry: a frozen view over a shared
+// 32B-aligned arena, built once on a miss and shared by every query while
+// cached. Every bin decoded by one coalesced span read shares one arena
+// (v7 32B-aligns each bitmap start, so each view is in place), which lives
+// until the last sharing entry dies -- eviction order across a span never
+// matters. arena is declared before view so the view dies first.
 struct SABICachedBin {
-  std::unique_ptr<char[], void (*)(void*)> buf{nullptr, std::free};
+  std::shared_ptr<char> arena;
   roaring::Roaring view;
+  // The bin's PADDED extent + the entry struct: a span's entries then sum to
+  // about their arena's size -- no double counting, no undercount.
   size_t charge = 0;
 };
 
@@ -265,6 +270,9 @@ struct SABIPinnedBin {
 struct SABIBinCacheStats {
   uint64_t hits = 0;
   uint64_t misses = 0;
+  // File reads issued: one per coalesced run of missed bins, so a cold range
+  // predicate costs reads << bitmaps_loaded.
+  uint64_t reads = 0;
   uint64_t bytes_read = 0;  // bytes pulled off disk
   // read + decode events (the v1 design's smoking gun)
   uint64_t bitmaps_loaded = 0;
@@ -284,6 +292,19 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   const rocksdb::BlockBasedTable* table_ = nullptr;
   // First index of attr_idx's bin range in the flat bitmap array.
   uint32_t AttrBinOffset(uint32_t attr_idx) const;
+  // The table's block cache; null when caller-supplied table options disable
+  // it (the probe/load paths then hand decoded bins straight to their pins).
+  rocksdb::Cache* BinCache() const;
+  // Cache probe for one bin; on a hit fills *slot (pinning the entry) and
+  // returns true. slot->view stays null on a miss.
+  bool ProbeBin(rocksdb::Cache* cache, uint32_t flat_idx, SABIPinnedBin* slot);
+  // Loads missed bins [a, b] (contiguous in the blob) with ONE file read
+  // into one shared 32B-aligned arena, freezes each bin's view in place,
+  // inserts each into `cache` (pin owns the bin on refusal or null cache;
+  // the arena stays shared either way) and fills slots[i - a]. Returns false
+  // on allocation or I/O failure; nothing is cached or filled then.
+  bool LoadRun(uint32_t a, uint32_t b, rocksdb::Cache* cache,
+               SABIPinnedBin* slots);
 
  public:
   // Self-describing: the schema residue (attr roles) is parsed from the
@@ -319,6 +340,15 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   // read+decode+insert; *pin keeps the bin alive; nullptr on I/O failure.
   // flat_idx == TotalBins() is the tombstone.
   const roaring::Roaring* Bin(uint32_t flat_idx, SABIPinnedBin* pin);
+  // Span loader for one attr's contiguous bins [first_flat, last_flat]
+  // (inclusive): probes the cache per bin, then coalesces each maximal run
+  // of misses into ONE file read backing one shared arena. Views append to
+  // *out_views in flat-idx order; *out_pins keeps them alive. Resident mode
+  // appends direct pointers, pins untouched. Returns false on I/O failure
+  // (treat like Bin() returning nullptr); appends nothing then.
+  bool BinRange(uint32_t first_flat, uint32_t last_flat,
+                std::vector<const roaring::Roaring*>* out_views,
+                std::vector<SABIPinnedBin>* out_pins);
   // Returns false only when the query is provably unsatisfiable in this SST
   // (safe to skip all bitmap work and block fetches). Never returns false
   // for a query that could actually match a row.

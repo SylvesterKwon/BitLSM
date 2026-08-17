@@ -91,6 +91,7 @@ namespace {
 // tickers never see them.
 std::atomic<uint64_t> g_bin_hits{0};
 std::atomic<uint64_t> g_bin_misses{0};
+std::atomic<uint64_t> g_bin_reads{0};
 std::atomic<uint64_t> g_bytes_read{0};
 std::atomic<uint64_t> g_bitmaps_loaded{0};
 std::atomic<uint64_t> g_bin_inserts_refused{0};
@@ -99,6 +100,7 @@ std::atomic<uint64_t> g_bin_inserts_refused{0};
 SABIBinCacheStats GetSABIBinCacheStats() {
   return {g_bin_hits.load(memory_order_relaxed),
           g_bin_misses.load(memory_order_relaxed),
+          g_bin_reads.load(memory_order_relaxed),
           g_bytes_read.load(memory_order_relaxed),
           g_bitmaps_loaded.load(memory_order_relaxed),
           g_bin_inserts_refused.load(memory_order_relaxed)};
@@ -107,6 +109,7 @@ SABIBinCacheStats GetSABIBinCacheStats() {
 void ResetSABIBinCacheStats() {
   g_bin_hits.store(0, memory_order_relaxed);
   g_bin_misses.store(0, memory_order_relaxed);
+  g_bin_reads.store(0, memory_order_relaxed);
   g_bytes_read.store(0, memory_order_relaxed);
   g_bitmaps_loaded.store(0, memory_order_relaxed);
   g_bin_inserts_refused.store(0, memory_order_relaxed);
@@ -345,87 +348,163 @@ uint64_t SABIReader::TombstoneCardinality() const {
   return BinCardinality(TotalBins());
 }
 
+Cache* SABIReader::BinCache() const {
+  // no_block_cache=true (or a caller-supplied null block_cache) leaves this
+  // null; BitLSM's ctor takes caller-supplied table options, so it's
+  // reachable (see block_prefetch_queue.cpp's InBlockCache for the same
+  // guard). ProbeBin/LoadRun then skip lookup/insert entirely and hand
+  // decoded bins to their pins instead.
+  return table_->get_rep()->table_options.block_cache.get();
+}
+
+bool SABIReader::ProbeBin(Cache* cache, uint32_t flat_idx,
+                          SABIPinnedBin* slot) {
+  if (cache == nullptr) return false;
+  const auto* rep = table_->get_rep();
+  const uint64_t file_off =
+      rep->udi_handle.offset() + bitmap_offsets_[flat_idx];
+  const CacheKey key = rep->base_cache_key.WithOffset(file_off >> 2);
+  Cache::Handle* h = cache->BasicLookup(key.AsSlice(), /*stats=*/nullptr);
+  if (h == nullptr) return false;
+  auto* bin = static_cast<SABICachedBin*>(cache->Value(h));
+  g_bin_hits.fetch_add(1, memory_order_relaxed);
+  slot->cache = cache;
+  slot->handle = h;
+  slot->view = &bin->view;
+  return true;
+}
+
+bool SABIReader::LoadRun(uint32_t a, uint32_t b, Cache* cache,
+                         SABIPinnedBin* slots) {
+  const auto* rep = table_->get_rep();
+  const uint64_t udi_off = rep->udi_handle.offset();
+  // One read covering every missed bin, [padded start of a, exact end of b).
+  // Alignment gaps between bins ride along: dead bytes cost far less than
+  // the per-bin reads they replace.
+  const uint64_t file_off = udi_off + bitmap_offsets_[a];
+  const size_t run_len =
+      (bitmap_offsets_[b] - bitmap_offsets_[a]) + bitmap_sizes_[b];
+
+  void* raw = nullptr;
+  if (posix_memalign(&raw, 32, run_len == 0 ? 32 : run_len) != 0)
+    return false;
+  // One shared arena for the run: every bin's entry keeps a reference, so
+  // the buffer lives until the last sharing entry (cached or pin-owned)
+  // dies, whatever order the cache evicts them in.
+  std::shared_ptr<char> arena(static_cast<char*>(raw), std::free);
+
+  Slice result;
+  // One read at the run's absolute file offset; the reader realigns for
+  // direct I/O itself, so the run never becomes N straddling page reads
+  // (the v1 design's blob-relative-grid mistake).
+  IOStatus s = rep->file->Read(IOOptions(), file_off, run_len, &result,
+                               arena.get(), /*aligned_buf=*/nullptr);
+  // A short read fails the whole run: no partial arena is ever cached.
+  if (!s.ok() || result.size() < run_len) return false;
+  if (result.data() != arena.get()) {
+    memcpy(arena.get(), result.data(), run_len);
+  }
+  g_bin_reads.fetch_add(1, memory_order_relaxed);
+  g_bytes_read.fetch_add(run_len, memory_order_relaxed);
+
+  // v4.7.0 frozenView returns non-const Roaring: this move-assigns, so the
+  // view aliases the arena (no clone).
+  static_assert(
+      std::is_same_v<decltype(roaring::Roaring::frozenView(nullptr, 0)),
+                     roaring::Roaring>,
+      "frozenView must return non-const Roaring; a const return would "
+      "copy-assign and clone");
+  for (uint32_t i = a; i <= b; ++i) {
+    auto bin = make_unique<SABICachedBin>();
+    bin->arena = arena;
+    // v7 32B-aligns every padded start, so the offset difference keeps each
+    // in-arena view 32B-aligned as frozenView requires.
+    const uint32_t rel = bitmap_offsets_[i] - bitmap_offsets_[a];
+    bin->view = Roaring::frozenView(arena.get() + rel, bitmap_sizes_[i]);
+    // The padded extent, not the arena size: a span's entries then sum to
+    // about one arena, charged exactly once across them.
+    bin->charge = sizeof(SABICachedBin) +
+                  (bitmap_offsets_[i + 1] - bitmap_offsets_[i]);
+    g_bin_misses.fetch_add(1, memory_order_relaxed);
+    g_bitmaps_loaded.fetch_add(1, memory_order_relaxed);
+
+    SABIPinnedBin* slot = &slots[i - a];
+    if (cache == nullptr) {
+      slot->owned = std::move(bin);
+      slot->view = &slot->owned->view;
+      continue;
+    }
+    const CacheKey key =
+        rep->base_cache_key.WithOffset((udi_off + bitmap_offsets_[i]) >> 2);
+    Cache::Handle* h = nullptr;
+    Status is = cache->Insert(key.AsSlice(), bin.get(), SABICachedBinHelper(),
+                              bin->charge, &h);
+    slot->cache = cache;
+    if (is.ok()) {
+      SABICachedBin* entered = bin.release();  // cache owns it now
+      slot->handle = h;
+      slot->view = &entered->view;
+    } else {
+      // Refused insert (strict capacity): the pin owns the bin instead; its
+      // arena stays shared with whatever run-mates did get in.
+      g_bin_inserts_refused.fetch_add(1, memory_order_relaxed);
+      slot->handle = nullptr;
+      slot->owned = std::move(bin);
+      slot->view = &slot->owned->view;
+    }
+  }
+  return true;
+}
+
 const roaring::Roaring* SABIReader::Bin(uint32_t flat_idx, SABIPinnedBin* pin) {
   if (mode_ == SABIReaderMode::kResident) {
     return flat_idx == TotalBins() ? &bitmap_index.tombstone_bitmap
                                    : &bitmap_index.bitmaps[flat_idx];
   }
   assert(table_ != nullptr && pin != nullptr);
-  const auto* rep = table_->get_rep();
-  const uint64_t file_off =
-      rep->udi_handle.offset() + bitmap_offsets_[flat_idx];
-  const uint32_t size = bitmap_sizes_[flat_idx];
-  // no_block_cache=true (or a caller-supplied null block_cache) leaves this
-  // null; BitLSM's ctor takes caller-supplied table options, so it's
-  // reachable (see block_prefetch_queue.cpp's InBlockCache for the same
-  // guard). Skip the lookup/insert entirely below and hand the decoded bin
-  // to the pin instead.
-  Cache* cache = rep->table_options.block_cache.get();
-  const CacheKey key = rep->base_cache_key.WithOffset(file_off >> 2);
-
-  if (cache != nullptr) {
-    if (Cache::Handle* h =
-            cache->BasicLookup(key.AsSlice(), /*stats=*/nullptr)) {
-      auto* bin = static_cast<SABICachedBin*>(cache->Value(h));
-      g_bin_hits.fetch_add(1, memory_order_relaxed);
-      pin->cache = cache;
-      pin->handle = h;
-      pin->view = &bin->view;
-      return pin->view;
-    }
+  Cache* cache = BinCache();
+  // A span of one: single-bin misses take the same probe/read/insert path
+  // as coalesced runs, so there is exactly one miss path to keep correct.
+  SABIPinnedBin slot;
+  if (!ProbeBin(cache, flat_idx, &slot) &&
+      !LoadRun(flat_idx, flat_idx, cache, &slot)) {
+    return nullptr;
   }
-
-  auto bin = make_unique<SABICachedBin>();
-  void* raw = nullptr;
-  if (posix_memalign(&raw, 32, size == 0 ? 32 : size) != 0) return nullptr;
-  bin->buf.reset(static_cast<char*>(raw));
-  Slice result;
-  // One read of the bin's exact extent at its absolute file offset; the
-  // reader realigns for direct I/O itself, so a bin never becomes N
-  // straddling page reads (the v1 design's blob-relative-grid mistake).
-  IOStatus s = rep->file->Read(IOOptions(), file_off, size, &result,
-                               bin->buf.get(), /*aligned_buf=*/nullptr);
-  if (!s.ok() || result.size() < size) return nullptr;
-  if (result.data() != bin->buf.get()) {
-    memcpy(bin->buf.get(), result.data(), size);
-  }
-  // v4.7.0 frozenView returns non-const Roaring: this move-assigns, so the
-  // view aliases buf (no clone).
-  static_assert(
-      std::is_same_v<decltype(roaring::Roaring::frozenView(nullptr, 0)),
-                     roaring::Roaring>,
-      "frozenView must return non-const Roaring; a const return would "
-      "copy-assign and clone");
-  bin->view = Roaring::frozenView(bin->buf.get(), size);
-  bin->charge = sizeof(SABICachedBin) + malloc_usable_size(bin->buf.get());
-  g_bin_misses.fetch_add(1, memory_order_relaxed);
-  g_bytes_read.fetch_add(size, memory_order_relaxed);
-  g_bitmaps_loaded.fetch_add(1, memory_order_relaxed);
-
-  if (cache == nullptr) {
-    pin->cache = nullptr;
-    pin->handle = nullptr;
-    pin->owned = std::move(bin);
-    pin->view = &pin->owned->view;
-    return pin->view;
-  }
-
-  Cache::Handle* h = nullptr;
-  Status is = cache->Insert(key.AsSlice(), bin.get(), SABICachedBinHelper(),
-                            bin->charge, &h);
-  pin->cache = cache;
-  if (is.ok()) {
-    SABICachedBin* entered = bin.release();  // cache owns it now
-    pin->handle = h;
-    pin->view = &entered->view;
-  } else {
-    // Refused insert (strict capacity): the pin owns the bin instead.
-    g_bin_inserts_refused.fetch_add(1, memory_order_relaxed);
-    pin->handle = nullptr;
-    pin->owned = std::move(bin);
-    pin->view = &pin->owned->view;
-  }
+  *pin = std::move(slot);
   return pin->view;
+}
+
+bool SABIReader::BinRange(uint32_t first_flat, uint32_t last_flat,
+                          std::vector<const roaring::Roaring*>* out_views,
+                          std::vector<SABIPinnedBin>* out_pins) {
+  assert(first_flat <= last_flat && last_flat <= TotalBins());
+  if (mode_ == SABIReaderMode::kResident) {
+    for (uint32_t i = first_flat; i <= last_flat; ++i)
+      out_views->push_back(i == TotalBins() ? &bitmap_index.tombstone_bitmap
+                                            : &bitmap_index.bitmaps[i]);
+    return true;
+  }
+  assert(table_ != nullptr && out_views != nullptr && out_pins != nullptr);
+  Cache* cache = BinCache();
+  const uint32_t n = last_flat - first_flat + 1;
+  vector<SABIPinnedBin> slots(n);
+  for (uint32_t i = 0; i < n; ++i) ProbeBin(cache, first_flat + i, &slots[i]);
+  // Coalesce the misses into maximal contiguous runs of one file read each.
+  for (uint32_t i = 0; i < n; ++i) {
+    if (slots[i].view != nullptr) continue;
+    uint32_t j = i;
+    while (j + 1 < n && slots[j + 1].view == nullptr) ++j;
+    if (!LoadRun(first_flat + i, first_flat + j, cache, &slots[i])) {
+      return false;  // hit pins in `slots` release on unwind
+    }
+    i = j;
+  }
+  // Append in flat-idx order (hits and runs interleaved deterministically).
+  for (SABIPinnedBin& slot : slots) {
+    out_views->push_back(slot.view);
+    out_pins->push_back(std::move(slot));
+  }
+  return true;
 }
 
 // The memory usage of the index, including the size of the raw contents and
