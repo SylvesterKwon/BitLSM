@@ -227,7 +227,9 @@ struct SABICachedBin {
   std::shared_ptr<char> arena;
   roaring::Roaring view;
   // The bin's PADDED extent + the entry struct: a span's entries then sum to
-  // about their arena's size -- no double counting, no undercount.
+  // about their arena's size -- the buffer is charged once, neither doubled
+  // nor dropped. Approximate beyond that: the frozen view's own heap
+  // metadata and the shared_ptr control block stay uncharged.
   size_t charge = 0;
 };
 

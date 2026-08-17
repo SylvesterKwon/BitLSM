@@ -386,8 +386,8 @@ bool SABIReader::LoadRun(uint32_t a, uint32_t b, Cache* cache,
       (bitmap_offsets_[b] - bitmap_offsets_[a]) + bitmap_sizes_[b];
 
   void* raw = nullptr;
-  if (posix_memalign(&raw, 32, run_len == 0 ? 32 : run_len) != 0)
-    return false;
+  // run_len >= bitmap_sizes_[b] >= 4 (the frozen header), never zero.
+  if (posix_memalign(&raw, 32, run_len) != 0) return false;
   // One shared arena for the run: every bin's entry keeps a reference, so
   // the buffer lives until the last sharing entry (cached or pin-owned)
   // dies, whatever order the cache evicts them in.
@@ -399,12 +399,13 @@ bool SABIReader::LoadRun(uint32_t a, uint32_t b, Cache* cache,
   // (the v1 design's blob-relative-grid mistake).
   IOStatus s = rep->file->Read(IOOptions(), file_off, run_len, &result,
                                arena.get(), /*aligned_buf=*/nullptr);
+  // Counts reads issued, not reads succeeded: a failed run still shows up.
+  g_bin_reads.fetch_add(1, memory_order_relaxed);
   // A short read fails the whole run: no partial arena is ever cached.
   if (!s.ok() || result.size() < run_len) return false;
   if (result.data() != arena.get()) {
     memcpy(arena.get(), result.data(), run_len);
   }
-  g_bin_reads.fetch_add(1, memory_order_relaxed);
   g_bytes_read.fetch_add(run_len, memory_order_relaxed);
 
   // v4.7.0 frozenView returns non-const Roaring: this move-assigns, so the
@@ -423,8 +424,8 @@ bool SABIReader::LoadRun(uint32_t a, uint32_t b, Cache* cache,
     bin->view = Roaring::frozenView(arena.get() + rel, bitmap_sizes_[i]);
     // The padded extent, not the arena size: a span's entries then sum to
     // about one arena, charged exactly once across them.
-    bin->charge = sizeof(SABICachedBin) +
-                  (bitmap_offsets_[i + 1] - bitmap_offsets_[i]);
+    bin->charge =
+        sizeof(SABICachedBin) + (bitmap_offsets_[i + 1] - bitmap_offsets_[i]);
     g_bin_misses.fetch_add(1, memory_order_relaxed);
     g_bitmaps_loaded.fetch_add(1, memory_order_relaxed);
 
@@ -481,13 +482,14 @@ bool SABIReader::BinRange(uint32_t first_flat, uint32_t last_flat,
                           std::vector<const roaring::Roaring*>* out_views,
                           std::vector<SABIPinnedBin>* out_pins) {
   assert(first_flat <= last_flat && last_flat <= TotalBins());
+  assert(out_views != nullptr && out_pins != nullptr);
   if (mode_ == SABIReaderMode::kResident) {
     for (uint32_t i = first_flat; i <= last_flat; ++i)
       out_views->push_back(i == TotalBins() ? &bitmap_index.tombstone_bitmap
                                             : &bitmap_index.bitmaps[i]);
     return true;
   }
-  assert(table_ != nullptr && out_views != nullptr && out_pins != nullptr);
+  assert(table_ != nullptr);
   Cache* cache = BinCache();
   const uint32_t n = last_flat - first_flat + 1;
   vector<SABIPinnedBin> slots(n);

@@ -321,8 +321,7 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
     buf.clear();
     buf.reserve(end_bin - start_bin + 1);
     if (!sabi_reader_->BinRange(bitmap_offset + start_bin,
-                                bitmap_offset + end_bin, &buf,
-                                &pinned_bins_)) {
+                                bitmap_offset + end_bin, &buf, &pinned_bins_)) {
       status_ = rocksdb::Status::Corruption("SABI bin read failed");
       return {&EmptyBitmap(), nullptr};
     }
