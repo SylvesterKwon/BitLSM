@@ -163,7 +163,9 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
       bbt->get_rep()->table_options.block_restart_interval;
 
   // Early exit: skip all bitmap work and block fetches if the query is
-  // provably unsatisfiable against this SSTable's min/max boundaries.
+  // provably unsatisfiable -- by interval algebra alone (EncodeQuery set
+  // unsat on a contradiction), or against this SSTable's min/max boundaries.
+  if (query_.unsat) return;
   if (!sabi_reader_->QueryCanMatch(query_)) return;
 
   // Metadata mode: plan the query's cache-missing bin runs and submit them
@@ -178,9 +180,10 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
         if (sabi_reader_->SelectBins(cond, &sel)) selections.push_back(sel);
       }
     }
-    // BuildQueryBitmap always loads the tombstone.
-    selections.push_back(
-        {sabi_reader_->TotalBins(), sabi_reader_->TotalBins()});
+    // BuildQueryBitmap loads the tombstone unless metadata proves it empty.
+    if (sabi_reader_->TombstoneCardinality() != 0)
+      selections.push_back(
+          {sabi_reader_->TotalBins(), sabi_reader_->TotalBins()});
     span_prefetch_ = std::make_unique<SABISpanPrefetch>(sabi_reader_, bbt_);
     span_prefetch_->PlanAndSubmit(selections);
   }
@@ -271,7 +274,10 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
 // reader-owned bitmaps where possible and materializing into bitmap_pool_
 // only when a union/intersection/tombstone-filter result must be computed.
 void SABITableIterator::BuildQueryBitmap(const SABIQuery& query) {
-  const roaring::Roaring& tombstone = Tombstone();
+  // A metadata-proven empty tombstone (v7 cardinality directory) skips the
+  // bin load entirely -- one fewer cold read per SST on delete-free tables.
+  const roaring::Roaring& tombstone =
+      sabi_reader_->TombstoneCardinality() == 0 ? EmptyBitmap() : Tombstone();
 
   if (query.clause_groups.empty()) {
     // Empty query is treated as a full table scan.

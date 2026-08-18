@@ -42,20 +42,8 @@ bool ConditionImpossible(const bit_lsm::SABICondition& cond,
         std::get<std::vector<uint64_t>>(bm.binning_policy[idx]);
     if (bounds.size() < 2) return false;
     uint64_t mn = bounds.front(), mx = bounds.back();
-    uint64_t val = cond.okey;
-
-    switch (cond.op) {
-      case bit_lsm::CompareOp::GREATER:
-        return val >= mx;
-      case bit_lsm::CompareOp::GREATER_EQUAL:
-        return val > mx;
-      case bit_lsm::CompareOp::LESS:
-        return val <= mn;
-      case bit_lsm::CompareOp::LESS_EQUAL:
-        return val < mn;
-      case bit_lsm::CompareOp::EQUAL:
-        return val < mn || val > mx;
-    }
+    // Impossible iff the interval is empty or disjoint from [mn, mx].
+    return cond.win.Empty() || cond.win.hi < mn || cond.win.lo > mx;
   } else if (schema.roles[idx] == bit_lsm::AttrRole::UNORDERED) {
     if (cond.op != bit_lsm::CompareOp::EQUAL) return false;
     if (!std::holds_alternative<std::vector<std::pair<std::string, uint32_t>>>(
@@ -635,69 +623,32 @@ bool SABIReader::SelectBins(const SABICondition& cond,
     return true;
   }
   if (role != AttrRole::ORDERED) return false;
+  if (cond.win.Empty()) return false;
 
-  const uint64_t value = cond.okey;
   const auto& boundaries =
       get<vector<uint64_t>>(bitmap_index.binning_policy[cond.attr_idx]);
   const uint32_t num_bins = bitmap_index.bitmap_nums[cond.attr_idx];
 
-  // upper_bound: the position of the first boundary greater than value.
-  auto it = std::upper_bound(boundaries.begin(), boundaries.end(), value);
+  // Bin holding `value`: index of the last boundary <= value. -1 when value
+  // sits below the leftmost boundary; the top bin is closed on the right,
+  // matching how the builder bins the maximum value. Strict bounds arrived
+  // canonicalized one okey step inward (OkeyInterval::FromOp), so a bound
+  // sitting exactly on a threshold lands in the correct neighbor bin here
+  // without any threshold-equality special case.
+  auto bin_of = [&](uint64_t value) -> int32_t {
+    auto it = std::upper_bound(boundaries.begin(), boundaries.end(), value);
+    if (it == boundaries.begin()) return -1;
+    if (it == boundaries.end()) return static_cast<int32_t>(num_bins) - 1;
+    return static_cast<int32_t>(std::distance(boundaries.begin(), it)) - 1;
+  };
 
-  int32_t target_bin_idx;
-  if (it == boundaries.begin()) {
-    // Case A: Given value is smaller than leftmost bin (virtual bin -1)
-    target_bin_idx = -1;
-  } else if (it == boundaries.end()) {
-    // Case B: value >= all boundaries -> last bin. The top bin is closed on
-    // the right, matching how the builder bins the maximum value.
-    target_bin_idx = static_cast<int32_t>(num_bins) - 1;
-  } else {
-    // Case C: Else
-    target_bin_idx =
-        static_cast<int32_t>(std::distance(boundaries.begin(), it)) - 1;
-  }
-  // The virtual bin -1 (Case A) keeps the range math branch-free: e.g. LESS
-  // on a below-min value yields the inverted range [0,-1], i.e. the empty
-  // set.
-
-  // Set raw range based on operator
-  int32_t start_bin, end_bin;
-  switch (cond.op) {
-    case CompareOp::EQUAL:
-      start_bin = target_bin_idx;
-      end_bin = target_bin_idx;
-      break;
-    case CompareOp::GREATER_EQUAL:  // >= value
-    case CompareOp::GREATER:        // > value
-      start_bin = target_bin_idx;
-      end_bin = static_cast<int32_t>(num_bins) - 1;
-      break;
-    case CompareOp::LESS_EQUAL:  // <= value
-      start_bin = 0;
-      end_bin = target_bin_idx;
-      break;
-    case CompareOp::LESS:  // < value
-      start_bin = 0;
-      // A bin whose lower threshold is the comparand itself holds only
-      // values >= it, so a strict < matches nothing there. Thresholds sit on
-      // values that occur (SetOrderedPropertyBinningPolicy snaps them),
-      // which is what makes this equality fire rather than miss by a ULP.
-      // On a blob built before that snapping it simply never fires, leaving
-      // the old, wider range.
-      end_bin = (target_bin_idx >= 0 && boundaries[target_bin_idx] == value)
-                    ? target_bin_idx - 1
-                    : target_bin_idx;
-      break;
-    default:
-      assert(false);
-  }
-  // Clamp range
+  const int32_t end_bin = bin_of(cond.win.hi);
+  if (end_bin < 0) return false;  // whole interval below the leftmost bin
+  int32_t start_bin = bin_of(cond.win.lo);
   if (start_bin < 0) start_bin = 0;
-  if (static_cast<int32_t>(num_bins) <= end_bin)
-    end_bin = static_cast<int32_t>(num_bins) - 1;
-
-  if (start_bin > end_bin) return false;
+  // bin_of is monotone, so start_bin <= end_bin here; the extent is exactly
+  // the bins the interval can touch, boundary bins included (their rows are
+  // over-approximated and trimmed by per-row verification).
   out->first = bitmap_offset + static_cast<uint32_t>(start_bin);
   out->last = bitmap_offset + static_cast<uint32_t>(end_bin);
   return true;
