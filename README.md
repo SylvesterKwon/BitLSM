@@ -8,6 +8,7 @@ Built on top of RocksDB v10.9.0.
 
 - **Compiler**: GCC 11+
 - **CMake**: 3.14+
+- **On-disk format**: v7 — DBs built by older versions must be rebuilt; `ondemand_index` additionally requires v7 blobs.
 
 ## Installation
 

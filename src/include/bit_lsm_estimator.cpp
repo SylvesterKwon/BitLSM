@@ -498,9 +498,8 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
       if (!reader->data_entries_cnt_psum.empty()) {
         // Tombstones are deletion markers, not fetchable rows; shadowed old
         // versions stay counted (the read path fetches them too).
-        stats->physical_rows +=
-            reader->data_entries_cnt_psum.back() -
-            reader->bitmap_index.tombstone_bitmap.cardinality();
+        stats->physical_rows += reader->data_entries_cnt_psum.back() -
+                                reader->TombstoneCardinality();
       }
       stats->live_sst_count++;
 

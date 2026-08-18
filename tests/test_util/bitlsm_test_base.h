@@ -70,6 +70,17 @@ class BitLSMTestBase : public ::testing::Test {
     return *db_;
   }
 
+  // Same as OpenDB(), but installs custom BlockBasedTableOptions first (e.g.
+  // a caller-supplied block cache), and leaves them installed for subsequent
+  // OpenDB() calls in the same test. Follows udi_block_cache_test.cpp's
+  // recipe of assigning table_options_ before opening.
+  BitLSM& OpenDBWithTableOptions(
+      const BitLSMOptions& bitlsm_options,
+      const rocksdb::BlockBasedTableOptions& table_options) {
+    table_options_ = table_options;
+    return OpenDB(bitlsm_options);
+  }
+
   // 흔한 2-속성 스키마 기본값(연속형 + 범주형).
   BitLSMOptions DefaultOptions() {
     BitLSMOptions options;

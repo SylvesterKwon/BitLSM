@@ -166,6 +166,25 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
   // provably unsatisfiable against this SSTable's min/max boundaries.
   if (!sabi_reader_->QueryCanMatch(query_)) return;
 
+  // Metadata mode: plan the query's cache-missing bin runs and submit them
+  // as overlapped async reads before BuildQueryBitmap's loads consume them
+  // (SABISpanPrefetch). Resident mode has nothing to read; a build that
+  // cannot read asynchronously skips even the planning.
+  if (!sabi_reader_->RetainsIndexContents() && !AsyncReadUnavailable()) {
+    std::vector<BinSelection> selections;
+    for (const auto& clause : query_.clause_groups) {
+      for (const auto& cond : clause) {
+        BinSelection sel;
+        if (sabi_reader_->SelectBins(cond, &sel)) selections.push_back(sel);
+      }
+    }
+    // BuildQueryBitmap always loads the tombstone.
+    selections.push_back(
+        {sabi_reader_->TotalBins(), sabi_reader_->TotalBins()});
+    span_prefetch_ = std::make_unique<SABISpanPrefetch>(sabi_reader_, bbt_);
+    span_prefetch_->PlanAndSubmit(selections);
+  }
+
   // 1. Build query bitmap
   BuildQueryBitmap(query_);
   bitmap_iter_ = query_bitmap_->begin();
@@ -209,118 +228,50 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
   //      << ")\n";
 }
 
-// Build bitmap for a single SABICondition (leaf node in CNF)
+const roaring::Roaring* SABITableIterator::Bin(uint32_t flat_idx) {
+  SABIPinnedBin pin;
+  const roaring::Roaring* view =
+      sabi_reader_->Bin(flat_idx, &pin, span_prefetch_.get());
+  if (view == nullptr) {
+    status_ = rocksdb::Status::Corruption("SABI bin read failed");
+    return &EmptyBitmap();
+  }
+  if (pin.view != nullptr) pinned_bins_.push_back(std::move(pin));
+  return view;
+}
+
+const roaring::Roaring& SABITableIterator::Tombstone() {
+  return *Bin(sabi_reader_->TotalBins());
+}
+
+// Build bitmap for a single SABICondition (leaf node in CNF). The bin
+// arithmetic lives in SABIReader::SelectBins -- the same selection the
+// span-prefetch plan submitted -- so this only materializes what was chosen.
 SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
     const SABICondition& cond, vector<const roaring::Roaring*>& buf) {
-  const AttrRole cur_attr_type = sabi_reader_->schema().roles[cond.attr_idx];
+  BinSelection sel;
+  if (!sabi_reader_->SelectBins(cond, &sel)) return {&EmptyBitmap(), nullptr};
+  if (sel.first == sel.last) return {Bin(sel.first), nullptr};
 
-  uint32_t bitmap_offset = 0;
-  for (uint32_t i = 0; i < cond.attr_idx; ++i)
-    bitmap_offset += sabi_reader_->bitmap_index.bitmap_nums[i];
-
-  if (cur_attr_type == AttrRole::UNORDERED) {
-    if (cond.op != CompareOp::EQUAL) assert(false);
-    const string& value = cond.bytes;
-    vector<pair<string, uint32_t>>& cur_attr_binning_policy =
-        get<vector<pair<string, uint32_t>>>(
-            sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
-    auto it = std::lower_bound(
-        cur_attr_binning_policy.begin(), cur_attr_binning_policy.end(), value,
-        [](const pair<string, uint32_t>& policy_entry, const string& val) {
-          return policy_entry.first < val;
-        });
-    if (it != cur_attr_binning_policy.end() && it->first == value) {
-      return {&sabi_reader_->bitmap_index.bitmaps[bitmap_offset + it->second],
-              nullptr};
-    }
+  // Merge bitmap (OR): one span load, so a cold range costs one coalesced
+  // read per miss run instead of one tiny pread per bin.
+  buf.clear();
+  buf.reserve(sel.last - sel.first + 1);
+  if (!sabi_reader_->BinRange(sel.first, sel.last, &buf, &pinned_bins_,
+                              span_prefetch_.get())) {
+    status_ = rocksdb::Status::Corruption("SABI bin read failed");
     return {&EmptyBitmap(), nullptr};
-  } else if (cur_attr_type == AttrRole::ORDERED) {
-    uint64_t value = cond.okey;
-    const vector<uint64_t>& boundaries = std::get<vector<uint64_t>>(
-        sabi_reader_->bitmap_index.binning_policy[cond.attr_idx]);
-    uint32_t num_bins = sabi_reader_->bitmap_index.bitmap_nums[cond.attr_idx];
-
-    // Find bin index by value
-    // upper_bound: value보다 큰 첫 번째 경계값의 위치
-    auto it = std::upper_bound(boundaries.begin(), boundaries.end(), value);
-
-    int32_t target_bin_idx;
-    if (it == boundaries.begin()) {
-      // Case A: Given value is smaller than leftmost bin (virtual bin -1)
-      target_bin_idx = -1;
-    } else if (it == boundaries.end()) {
-      // Case B: value >= all boundaries -> last bin. The top bin is closed on
-      // the right, matching how the builder bins the maximum value.
-      target_bin_idx = static_cast<int32_t>(num_bins) - 1;
-    } else {
-      // Case C: Else
-      target_bin_idx =
-          static_cast<int32_t>(std::distance(boundaries.begin(), it)) - 1;
-    }
-    // The virtual bin -1 (Case A) keeps the range math branch-free: e.g. LESS
-    // on a below-min value yields the inverted range [0,-1], i.e. the empty
-    // set.
-
-    // Set raw range based on operator
-    int32_t start_bin, end_bin;
-    switch (cond.op) {
-      case CompareOp::EQUAL:
-        start_bin = target_bin_idx;
-        end_bin = target_bin_idx;
-        break;
-      case CompareOp::GREATER_EQUAL:  // >= value
-      case CompareOp::GREATER:        // > value
-        start_bin = target_bin_idx;
-        end_bin = static_cast<int32_t>(num_bins) - 1;
-        break;
-      case CompareOp::LESS_EQUAL:  // <= value
-        start_bin = 0;
-        end_bin = target_bin_idx;
-        break;
-      case CompareOp::LESS:  // < value
-        start_bin = 0;
-        // A bin whose lower threshold is the comparand itself holds only
-        // values >= it, so a strict < matches nothing there. Thresholds sit on
-        // values that occur (SetOrderedPropertyBinningPolicy snaps them),
-        // which is what makes this equality fire rather than miss by a ULP.
-        // On a blob built before that snapping it simply never fires, leaving
-        // the old, wider range.
-        end_bin = (target_bin_idx >= 0 && boundaries[target_bin_idx] == value)
-                      ? target_bin_idx - 1
-                      : target_bin_idx;
-        break;
-      default:
-        assert(false);
-    }
-    // Clamp range
-    if (start_bin < 0) start_bin = 0;
-    if (static_cast<int32_t>(num_bins) <= end_bin)
-      end_bin = static_cast<int32_t>(num_bins) - 1;
-
-    if (start_bin > end_bin) return {&EmptyBitmap(), nullptr};
-    if (start_bin == end_bin) {
-      return {&sabi_reader_->bitmap_index.bitmaps[bitmap_offset + start_bin],
-              nullptr};
-    }
-
-    // Merge bitmap (OR)
-    buf.clear();
-    buf.reserve(end_bin - start_bin + 1);
-    for (int32_t i = start_bin; i <= end_bin; ++i)
-      buf.push_back(&(sabi_reader_->bitmap_index.bitmaps[bitmap_offset + i]));
-    bitmap_pool_.emplace_back(
-        roaring::Roaring::fastunion(buf.size(), buf.data()));
-    return {&bitmap_pool_.back(), &bitmap_pool_.back()};
   }
-  return {&EmptyBitmap(), nullptr};
+  bitmap_pool_.emplace_back(
+      roaring::Roaring::fastunion(buf.size(), buf.data()));
+  return {&bitmap_pool_.back(), &bitmap_pool_.back()};
 }
 
 // CNF bitmap evaluation: AND of OR clauses. Sets query_bitmap_, borrowing
 // reader-owned bitmaps where possible and materializing into bitmap_pool_
 // only when a union/intersection/tombstone-filter result must be computed.
 void SABITableIterator::BuildQueryBitmap(const SABIQuery& query) {
-  const roaring::Roaring& tombstone =
-      sabi_reader_->bitmap_index.tombstone_bitmap;
+  const roaring::Roaring& tombstone = Tombstone();
 
   if (query.clause_groups.empty()) {
     // Empty query is treated as a full table scan.

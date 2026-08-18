@@ -56,6 +56,15 @@ bitlsm_add_test(multiget_skip_test)
 bitlsm_add_test(shadow_check_test)
 bitlsm_add_test(scan_prefetch_diff_test)
 bitlsm_add_test(binning_partition_test)
+bitlsm_add_test(ondemand_index_diff_test)
+bitlsm_add_test(ondemand_bin_cache_test)
+# Positive control for the span-prefetch async path: where this build found
+# liburing (cache variable set by RocksDB's Finduring when WITH_LIBURING is
+# on), the test asserts the async branch actually ran instead of quietly
+# passing through the no-liburing fallback.
+if(uring_LIBRARIES)
+  target_compile_definitions(ondemand_bin_cache_test PRIVATE BITLSM_HAVE_URING)
+endif()
 
 # stress 티어: 큰 시드/스텝 예산. PR CI 는 -LE stress 로 제외하고
 # 로컬에서 ctest -L stress 로 실행한다.

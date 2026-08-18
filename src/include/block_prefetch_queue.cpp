@@ -21,6 +21,18 @@ void EnableRocksDbIOUring() {
   g_rocksdb_io_uring.store(true, std::memory_order_relaxed);
 }
 
+bool AsyncReadUnavailable() {
+  return g_async_unavailable.load(std::memory_order_relaxed);
+}
+
+void NoteAsyncReadUnavailable() {
+  if (!g_async_unavailable.exchange(true, std::memory_order_relaxed)) {
+    std::cerr << "[bitlsm] this build cannot issue async reads (no liburing); "
+                 "scan prefetch and SABI span prefetch will fall back to "
+                 "synchronous reads\n";
+  }
+}
+
 BlockPrefetchQueueStats GetBlockPrefetchQueueStats() {
   return {g_served.load(std::memory_order_relaxed),
           g_async_unavailable.load(std::memory_order_relaxed)};
@@ -57,7 +69,7 @@ void BlockPrefetchQueue::Submit(size_t target_idx) {
 
   // Once RocksDB has said it cannot read asynchronously it never will, so stop
   // paying for the attempt on every remaining block.
-  if (g_async_unavailable.load(std::memory_order_relaxed)) return;
+  if (AsyncReadUnavailable()) return;
 
   const BlockHandle& handle = (*targets_)[target_idx].second;
   // Prefetching a cached block is pure extra device I/O.
@@ -84,12 +96,7 @@ void BlockPrefetchQueue::Submit(size_t target_idx) {
       opts, rep->file.get(), handle.offset(),
       BlockBasedTable::BlockSizeWithTrailer(handle), &result);
   slot.submitted = s.ok() || s.IsTryAgain();
-  if (!slot.submitted && s.IsNotSupported() &&
-      !g_async_unavailable.exchange(true, std::memory_order_relaxed)) {
-    std::cerr
-        << "[bitlsm] scan_prefetch_depth is set but this build cannot "
-           "issue async reads (no liburing); the option will do nothing\n";
-  }
+  if (!slot.submitted && s.IsNotSupported()) NoteAsyncReadUnavailable();
 }
 
 bool BlockPrefetchQueue::InBlockCache(const BlockHandle& handle) const {

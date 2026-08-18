@@ -28,12 +28,22 @@ namespace bit_lsm {
 // enough to tell "ran" from "did nothing", and which kind of nothing.
 struct BlockPrefetchQueueStats {
   uint64_t served = 0;  // blocks read out of a queue buffer
-  // Set the first time RocksDB refuses an async read, after which the queue
-  // stops submitting. Means the build found no liburing.
+  // Set the first time RocksDB refuses an async read, after which every
+  // async submitter stops trying (see AsyncReadUnavailable). Means the build
+  // found no liburing.
   bool async_unavailable = false;
 };
 BlockPrefetchQueueStats GetBlockPrefetchQueueStats();
 void ResetBlockPrefetchQueueStats();
+
+// True once RocksDB has refused an async read in this process: the build
+// found no liburing, and that never changes mid-process. Every async
+// submitter (this queue and SABISpanPrefetch) checks it to stop paying for
+// doomed attempts.
+bool AsyncReadUnavailable();
+// Records the refusal; the first call prints the one note covering every
+// async path. Reset only by ResetBlockPrefetchQueueStats, for tests.
+void NoteAsyncReadUnavailable();
 
 // RocksDB hides io_uring behind a weak RocksDbIOUringEnable symbol the
 // application must define (env/fs_posix.cc:78); undefined, every

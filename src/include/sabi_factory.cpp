@@ -35,7 +35,17 @@ UserDefinedIndexBuilder* SABIFactory::NewBuilder() const {
 
 unique_ptr<UserDefinedIndexReader> SABIFactory::NewReader(
     Slice& index_block_) const {
-  return unique_ptr<SABIReader>(new SABIReader(index_block_));
+  // Ungated public entry point (part of the base UserDefinedIndexFactory
+  // interface): always kResident. Only the validating overload below -- the
+  // path RocksDB actually calls to open an SST -- may mint a kMetadata
+  // reader, because the v7 gate lives there. This keeps "kMetadata reader
+  // over a v5/v6 blob with empty bin_cardinalities" unrepresentable.
+  return unique_ptr<SABIReader>(
+      new SABIReader(index_block_, SABIReaderMode::kResident));
+}
+
+bool SABIFactory::ProducesMetadataOnlyReaders() const {
+  return options_.ondemand_index;
 }
 
 Status SABIFactory::NewReader(
@@ -56,6 +66,11 @@ Status SABIFactory::NewReader(
                               to_string(version) + " (this build reads v" +
                               to_string(kBitLSMMinReadFormatVersion) + "..v" +
                               to_string(kBitLSMFormatVersion) + ")");
+  }
+  if (options_.ondemand_index && version < 7) {
+    return Status::Corruption(
+        "ondemand_index requires BitLSM format v7 blobs (found v" +
+        to_string(version) + "); rebuild the DB");
   }
 
   // Validate the directory prefix (attr_num + roles) this method interprets;
@@ -93,7 +108,12 @@ Status SABIFactory::NewReader(
                               RolesToString(schema_.roles) +
                               "; rebuild the DB or fix the schema");
   }
-  reader = NewReader(index_block);
+  // Mode selection happens here, after the v7 gate above, not in the
+  // ungated single-arg NewReader(): a kMetadata reader can only be minted
+  // once this method has confirmed the blob is v7.
+  reader = std::make_unique<SABIReader>(
+      index_block, options_.ondemand_index ? SABIReaderMode::kMetadata
+                                           : SABIReaderMode::kResident);
   return Status::OK();
 }
 
