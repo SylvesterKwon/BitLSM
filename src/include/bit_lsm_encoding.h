@@ -82,7 +82,7 @@ inline uint64_t OrderedToOkey(
 // per-row monostate from the extractor, never as a static flag.
 struct SABISchema {
   std::vector<AttrRole> roles;
-  double rho = 0.01;  // bitmap budget knob; only the builder consumes it
+  double rho = 0.001;  // bitmap budget knob; only the builder consumes it
 
   uint32_t attr_num() const { return static_cast<uint32_t>(roles.size()); }
 
