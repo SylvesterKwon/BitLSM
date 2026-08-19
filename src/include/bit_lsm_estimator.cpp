@@ -262,41 +262,10 @@ void CardinalityEstimator::Reconcile() {
 
 namespace {
 
-// Per-attr okey window accumulated from single-condition clauses; conditions
-// on the same attr intersect here instead of multiplying, so BETWEEN-shaped
-// CNF (a >= x, a <= y as two clauses) is estimated as one range.
-struct OkeyWindow {
-  uint64_t lo = 0;
-  uint64_t hi = UINT64_MAX;
-  bool empty = false;  // a strict bound fell off the okey domain edge
-
-  void Apply(CompareOp op, uint64_t okey) {
-    switch (op) {
-      case CompareOp::EQUAL:
-        lo = std::max(lo, okey);
-        hi = std::min(hi, okey);
-        break;
-      case CompareOp::GREATER:
-        if (okey == UINT64_MAX)
-          empty = true;
-        else
-          lo = std::max(lo, okey + 1);
-        break;
-      case CompareOp::GREATER_EQUAL:
-        lo = std::max(lo, okey);
-        break;
-      case CompareOp::LESS:
-        if (okey == 0)
-          empty = true;
-        else
-          hi = std::min(hi, okey - 1);
-        break;
-      case CompareOp::LESS_EQUAL:
-        hi = std::min(hi, okey);
-        break;
-    }
-  }
-};
+// Ordered conditions arrive from EncodeQuery as closed okey intervals
+// (OkeyInterval, bit_lsm_query.h) -- already merged per attr for
+// BETWEEN-shaped CNF. The per-attr map below re-intersects defensively for
+// hand-built SABIQuerys that skip EncodeQuery.
 
 // Standalone selectivity of one condition (used for OR-clause members).
 // Returns -1 when the condition is unestimatable (caller flags fallback).
@@ -306,9 +275,8 @@ double ConditionSelectivity(const SABICondition& cond, const GlobalStats& stats,
   if (roles[cond.attr_idx] == AttrRole::ORDERED) {
     const auto& ord = stats.ordered[cond.attr_idx];
     if (!ord.has_value()) return -1;
-    OkeyWindow w;
-    w.Apply(cond.op, cond.okey);
-    if (w.empty || w.lo > w.hi) return 0;
+    const OkeyInterval& w = cond.win;
+    if (w.Empty()) return 0;
     return ord->PointAwareRangeMass(w.lo, w.hi) / phys;
   }
   if (cond.op != CompareOp::EQUAL) return -1;
@@ -329,9 +297,8 @@ double ConditionCandidate(const SABICondition& cond, const GlobalStats& stats,
                           double f) {
   if (roles[cond.attr_idx] == AttrRole::ORDERED) {
     const auto& ord = stats.ordered[cond.attr_idx];
-    OkeyWindow w;
-    w.Apply(cond.op, cond.okey);
-    if (w.empty || w.lo > w.hi) return 0;
+    const OkeyInterval& w = cond.win;
+    if (w.Empty()) return 0;
     return std::min(1.0, ord->CandidateMass(w.lo, w.hi, f * phys) / phys);
   }
   // UNORDERED equality: provable absence prunes every SST at execution;
@@ -367,7 +334,7 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
   double phys = static_cast<double>(stats->physical_rows);
   double product = 1.0;
   double cand_product = 1.0;  // bin-rounded counterpart of `product`
-  std::map<uint32_t, OkeyWindow> windows;
+  std::map<uint32_t, OkeyInterval> windows;
 
   for (const auto& clause : q.clause_groups) {
     if (clause.empty()) continue;  // trivially satisfiable
@@ -375,7 +342,7 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
       const SABICondition& cond = clause[0];
       if (cond.attr_idx < schema_.attr_num() &&
           schema_.roles[cond.attr_idx] == AttrRole::ORDERED) {
-        windows[cond.attr_idx].Apply(cond.op, cond.okey);
+        windows[cond.attr_idx].Intersect(cond.win);
       } else {
         double f = ConditionSelectivity(cond, *stats, schema_.roles, phys);
         if (f < 0) {
@@ -416,7 +383,7 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
       fallback.insert(attr_idx);
       continue;
     }
-    if (w.empty || w.lo > w.hi) {
+    if (w.Empty()) {
       product = 0;
       cand_product = 0;
     } else {

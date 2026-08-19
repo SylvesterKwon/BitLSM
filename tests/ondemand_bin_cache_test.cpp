@@ -166,14 +166,15 @@ TEST_F(BitLSMTestBase, MultiAttrColdRunsPlanSpanPrefetch) {
   ASSERT_TRUE(db.VerifyQuery(query));  // the actual correctness bar
   SABIBinCacheStats cold = GetSABIBinCacheStats();
   // The plan/submit path engaged on every build: at least attr 0's run and
-  // attr 1's (the latter possibly merged with the adjacent tombstone bin)
-  // were computed and handed to submission.
+  // attr 1's were computed and handed to submission. The tombstone bin is
+  // absent from the plan: this table has no deletes, the v7 cardinality
+  // directory proves it empty, and the load is skipped outright.
   EXPECT_GE(cold.spans_planned, 2u)
       << "multi-attr cold query did not engage the span-prefetch plan";
-  // Behavior-identical across builds: each of the three cold loads
-  // (tombstone + one coalesced run per condition) happens exactly once, by
-  // pread or out of a prefetch buffer -- never both, never neither.
-  EXPECT_EQ(cold.reads + cold.spans_prefetched, 3u);
+  // Behavior-identical across builds: each of the two cold loads (one
+  // coalesced run per condition) happens exactly once, by pread or out of a
+  // prefetch buffer -- never both, never neither.
+  EXPECT_EQ(cold.reads + cold.spans_prefetched, 2u);
 #ifdef BITLSM_HAVE_URING
   // Compiled positive control (only where CMake found liburing): the async
   // branch must actually run here. If the on-demand io_uring opt-in is ever

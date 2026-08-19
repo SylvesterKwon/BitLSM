@@ -1,5 +1,7 @@
 #include <bit_lsm_query.h>
 
+#include <map>
+
 #include "bit_lsm_encoding.h"
 #include "bit_lsm_utils.h"
 #include "rocksdb/slice.h"
@@ -218,7 +220,31 @@ rocksdb::Status BitLSMQuery::Validate(const BitLSMOptions& options) const {
 SABIQuery EncodeQuery(const BitLSMQuery& q, const BitLSMOptions& options) {
   SABIQuery out;
   out.clause_groups.reserve(q.clause_groups.size());
+  // Same-attr single-condition ORDERED clauses intersect into ONE clause at
+  // the position of the attr's first occurrence: b >= x AND b < y must reach
+  // bin selection as the interval [x, y), not as two half-lines whose bin
+  // extents union to the whole attribute.
+  std::map<uint32_t, size_t> merged_at;  // attr_idx -> index in out
   for (const auto& clause : q.clause_groups) {
+    const bool singleton_ordered =
+        clause.size() == 1 &&
+        options.attr_specs[clause[0].attr_idx].role == AttrRole::ORDERED;
+    if (singleton_ordered) {
+      const auto& c = clause[0];
+      const OkeyInterval win =
+          OkeyInterval::FromOp(c.op, OrderedToOkey(c.value));
+      auto it = merged_at.find(c.attr_idx);
+      if (it != merged_at.end()) {
+        out.clause_groups[it->second][0].win.Intersect(win);
+        if (out.clause_groups[it->second][0].win.Empty()) out.unsat = true;
+        continue;
+      }
+      merged_at.emplace(c.attr_idx, out.clause_groups.size());
+      out.clause_groups.push_back(
+          {SABICondition{c.attr_idx, CompareOp::EQUAL, win, ""}});
+      if (win.Empty()) out.unsat = true;
+      continue;
+    }
     SABIOrClause enc;
     enc.reserve(clause.size());
     for (const auto& c : clause) {
@@ -226,12 +252,17 @@ SABIQuery EncodeQuery(const BitLSMQuery& q, const BitLSMOptions& options) {
       sc.attr_idx = c.attr_idx;
       sc.op = c.op;
       if (options.attr_specs[c.attr_idx].role == AttrRole::ORDERED) {
-        sc.okey = OrderedToOkey(c.value);
+        sc.win = OkeyInterval::FromOp(c.op, OrderedToOkey(c.value));
+        // An empty member contributes nothing to the OR; dropping it keeps
+        // downstream consumers free of empty-interval special cases.
+        if (sc.win.Empty()) continue;
       } else {
         sc.bytes = std::get<std::string>(c.value);
       }
       enc.push_back(std::move(sc));
     }
+    // Every member vanished: an empty OR is satisfiable by nothing.
+    if (enc.empty() && !clause.empty()) out.unsat = true;
     out.clause_groups.push_back(std::move(enc));
   }
   return out;

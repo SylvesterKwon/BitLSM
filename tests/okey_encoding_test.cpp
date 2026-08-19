@@ -128,8 +128,73 @@ TEST(EncodeQuery, ComparandsLandInSabiDomain) {
                                   {2, CompareOp::LESS, int64_t(-3)}});
   SABIQuery sq = EncodeQuery(q, o);
   ASSERT_EQ(sq.clause_groups.size(), 3u);
-  EXPECT_EQ(sq.clause_groups[0][0].okey, F64ToOkey(10.5));
+  EXPECT_FALSE(sq.unsat);
+  EXPECT_EQ(sq.clause_groups[0][0].win.lo, F64ToOkey(10.5));
+  EXPECT_EQ(sq.clause_groups[0][0].win.hi, UINT64_MAX);
   EXPECT_EQ(sq.clause_groups[1][0].bytes, "seoul");
-  EXPECT_EQ(sq.clause_groups[2][0].okey, I64ToOkey(-3));
-  EXPECT_EQ(sq.clause_groups[2][0].op, CompareOp::LESS);
+  // Strict bound canonicalized one okey step inward.
+  EXPECT_EQ(sq.clause_groups[2][0].win.lo, 0u);
+  EXPECT_EQ(sq.clause_groups[2][0].win.hi, I64ToOkey(-3) - 1);
+}
+
+// Workload: BETWEEN-shaped CNF -- b >= 10.5 AND b < 20.5 as two clauses, the
+//           exact form the range compiler emits.
+// Threat: two half-line clauses reach bin selection separately; each covers
+//         a half-line's worth of bins, so together they load the attribute's
+//         ENTIRE bin set for any range (the 417MB-per-query pathology).
+TEST(EncodeQuery, SameAttrClausesMergeToOneInterval) {
+  BitLSMOptions o = MakeOpts3();
+  BitLSMQuery q(
+      std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.5},
+                                  {1, CompareOp::EQUAL, std::string("seoul")},
+                                  {0, CompareOp::LESS, 20.5}});
+  SABIQuery sq = EncodeQuery(q, o);
+  ASSERT_EQ(sq.clause_groups.size(), 2u);  // both bounds fold into clause 0
+  EXPECT_FALSE(sq.unsat);
+  EXPECT_EQ(sq.clause_groups[0][0].attr_idx, 0u);
+  EXPECT_EQ(sq.clause_groups[0][0].win.lo, F64ToOkey(10.5));
+  EXPECT_EQ(sq.clause_groups[0][0].win.hi, F64ToOkey(20.5) - 1);
+  EXPECT_EQ(sq.clause_groups[1][0].bytes, "seoul");
+}
+
+// Workload: contradictory bounds on one attr (b > 20.5 AND b < 10.5).
+// Threat: without interval algebra the contradiction is invisible to bin
+//         selection and every SST is still probed.
+TEST(EncodeQuery, ContradictionSetsUnsat) {
+  BitLSMOptions o = MakeOpts3();
+  BitLSMQuery q(std::vector<QueryCondition>{{0, CompareOp::GREATER, 20.5},
+                                            {0, CompareOp::LESS, 10.5}});
+  SABIQuery sq = EncodeQuery(q, o);
+  EXPECT_TRUE(sq.unsat);
+}
+
+// Workload: a strict bound at the okey domain edge (i64 > INT64_MAX).
+// Threat: okey+1 overflow would wrap the interval around to [0, MAX] and
+//         match everything instead of nothing.
+TEST(EncodeQuery, StrictBoundOffDomainEdgeIsUnsat) {
+  BitLSMOptions o = MakeOpts3();
+  BitLSMQuery q(std::vector<QueryCondition>{
+      {2, CompareOp::GREATER, std::numeric_limits<int64_t>::max()}});
+  ASSERT_EQ(I64ToOkey(std::numeric_limits<int64_t>::max()), UINT64_MAX);
+  SABIQuery sq = EncodeQuery(q, o);
+  EXPECT_TRUE(sq.unsat);
+}
+
+// Workload: an OR clause mixing two ordered members on the same attr.
+// Threat: OR members must NOT intersect with each other or with singleton
+//         clauses -- (a=1 OR a=9) is a union, not a window.
+TEST(EncodeQuery, OrClauseMembersAreNotMerged) {
+  BitLSMOptions o = MakeOpts3();
+  BitLSMQuery q(std::vector<OrClause>{
+      {{0, CompareOp::EQUAL, 1.0}, {0, CompareOp::EQUAL, 9.0}},
+      {{0, CompareOp::LESS_EQUAL, 5.0}}});
+  SABIQuery sq = EncodeQuery(q, o);
+  ASSERT_EQ(sq.clause_groups.size(), 2u);
+  EXPECT_FALSE(sq.unsat);
+  ASSERT_EQ(sq.clause_groups[0].size(), 2u);
+  EXPECT_EQ(sq.clause_groups[0][0].win.lo, F64ToOkey(1.0));
+  EXPECT_EQ(sq.clause_groups[0][0].win.hi, F64ToOkey(1.0));
+  EXPECT_EQ(sq.clause_groups[0][1].win.lo, F64ToOkey(9.0));
+  ASSERT_EQ(sq.clause_groups[1].size(), 1u);
+  EXPECT_EQ(sq.clause_groups[1][0].win.hi, F64ToOkey(5.0));
 }

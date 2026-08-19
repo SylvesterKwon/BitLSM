@@ -272,11 +272,11 @@ TEST_F(BitLSMTestBase, NdvCapDemotesToTopK) {
 namespace {
 
 SABICondition Ord(uint32_t attr, CompareOp op, int64_t v) {
-  return SABICondition{attr, op, I64ToOkey(v), ""};
+  return SABICondition{attr, op, OkeyInterval::FromOp(op, I64ToOkey(v)), ""};
 }
 
 SABICondition Uno(uint32_t attr, const std::string& v) {
-  return SABICondition{attr, CompareOp::EQUAL, 0, v};
+  return SABICondition{attr, CompareOp::EQUAL, {}, v};
 }
 
 double EstimatedRows(const EstimateResult& r) {
