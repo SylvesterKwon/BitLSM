@@ -12,6 +12,76 @@ index eb42e1c7276a9772b4db50a0d2a775422b532b0d..5498ca8b3769aad7fcd1bc0c9e3486a6
   private:
    friend class MemTableList;
  
+diff --git a/env/fs_posix.cc b/env/fs_posix.cc
+index 34efe1204f6d9ddf062b89d2360208b12eca9a44..f12c30476137cb39c375edbeeac4783584094cfa 100644
+--- a/env/fs_posix.cc
++++ b/env/fs_posix.cc
+@@ -1232,6 +1232,41 @@ class PosixFileSystem : public FileSystem {
+         if (posix_handle->iu != iu) {
+           return IOStatus::IOError("");
+         }
++
++        // The ring carries every async read this thread has in flight, so the
++        // wait above can return a completion for a request this call is not
++        // aborting. Consuming its CQE removes it from the ring for good: the
++        // request must be finished and delivered here exactly as Poll would
++        // have, or a later Poll on it waits forever for a completion that no
++        // longer exists.
++        if (std::find(io_handles.begin(), io_handles.end(),
++                      static_cast<void*>(posix_handle)) == io_handles.end()) {
++          // Reset cqe data to catch any stray reuse of it
++          static_cast<struct io_uring_cqe*>(cqe)->user_data =
++              0xd5d5d5d5d5d5d5d5;
++
++          FSReadRequest req;
++          req.scratch = posix_handle->scratch;
++          req.offset = posix_handle->offset;
++          req.len = posix_handle->len;
++
++          size_t finished_len = 0;
++          size_t bytes_read = 0;
++          bool read_again = false;
++          UpdateResult(cqe, "", req.len, posix_handle->iov.iov_len,
++                       true /*async_read*/, posix_handle->use_direct_io,
++                       posix_handle->alignment, finished_len, &req, bytes_read,
++                       read_again);
++          posix_handle->is_finished = true;
++          io_uring_cqe_seen(iu, cqe);
++          posix_handle->cb(req, posix_handle->cb_arg);
++
++          (void)finished_len;
++          (void)bytes_read;
++          (void)read_again;
++          continue;
++        }
++
+         posix_handle->req_count++;
+ 
+         // Reset cqe data to catch any stray reuse of it
+@@ -1248,15 +1283,19 @@ class PosixFileSystem : public FileSystem {
+         //   found, the cancel request is completed with -ENOENT.
+         //
+         // Every handle has to wait for 2 requests completion: original one and
+-        // the cancel request which is tracked by PosixHandle::req_count.
+-        if (posix_handle->req_count == 2 &&
+-            static_cast<Posix_IOHandle*>(io_handles[i]) == posix_handle) {
++        // the cancel request which is tracked by PosixHandle::req_count. Both
++        // can be reaped while the loop waits on an earlier handle of this
++        // call, so completion is recorded on whichever handle reached 2, not
++        // only on the one currently waited for.
++        if (posix_handle->req_count == 2) {
+           posix_handle->is_finished = true;
+           FSReadRequest req;
+           req.status = IOStatus::Aborted();
+           posix_handle->cb(req, posix_handle->cb_arg);
+ 
+-          break;
++          if (static_cast<Posix_IOHandle*>(io_handles[i]) == posix_handle) {
++            break;
++          }
+         }
+       }
+     }
 diff --git a/env/io_posix.h b/env/io_posix.h
 index ca33b8e3e948057450bb60a1e46bb54103aa968c..48081d99da0cbe5be9e3a898d0ba26a9761221c5 100644
 --- a/env/io_posix.h
