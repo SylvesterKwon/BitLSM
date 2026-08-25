@@ -38,9 +38,11 @@ class BitLSM {
          const rocksdb::Options& rocksdb_options,
          const rocksdb::BlockBasedTableOptions& table_options);
   // Multi-CF open. RocksDB rule: descriptors must list every CF that exists
-  // in the DB and must include rocksdb::kDefaultColumnFamilyName. The
-  // rocksdb/table options are the shared base; each CF's SABI factory is
-  // derived from its descriptor's BitLSMOptions.
+  // in the DB and must include rocksdb::kDefaultColumnFamilyName. Descriptor
+  // names must also be unique: RocksDB would return two handles to the same
+  // column family, which the registry cannot represent. The rocksdb/table
+  // options are the shared base; each CF's SABI factory is derived from its
+  // descriptor's BitLSMOptions.
   BitLSM(const std::string& db_path, const rocksdb::Options& rocksdb_options,
          const rocksdb::BlockBasedTableOptions& table_options,
          const std::vector<ColumnFamilyDescriptor>& descriptors);

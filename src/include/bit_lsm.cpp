@@ -93,19 +93,21 @@ bit_lsm::ColumnFamilyHandle* BitLSM::RegisterColumnFamily(
     const BitLSMOptions& options) {
   auto cf = std::unique_ptr<ColumnFamilyHandle>(
       new ColumnFamilyHandle(name, handle, options));
-  if (options.enable_estimator) {
+  if (options.enable_estimator)
     cf->estimator_ = make_unique<CardinalityEstimator>(
         static_cast<DBImpl*>(db_),
         static_cast<ColumnFamilyHandleImpl*>(handle)->cfd(),
         SABISchema::FromOptions(options), options);
-    stats_listener_->Arm(handle->GetID(), cf->estimator_.get());
-  }
   auto [it, inserted] = cf_registry_.emplace(name, std::move(cf));
   // Registry uniqueness is enforced upstream: the multi-CF constructor
   // rejects duplicate descriptors and CreateColumnFamily rejects a name that
   // is already registered. A silently dropped insert would destroy the handle
-  // and estimator this call just armed the listener against.
+  // and estimator this call just built.
   assert(inserted);
+  // Armed only once the registry owns the estimator, so the listener can
+  // never reference an estimator whose handle failed to register.
+  if (it->second->estimator_)
+    stats_listener_->Arm(handle->GetID(), it->second->estimator_.get());
   return it->second.get();
 }
 
