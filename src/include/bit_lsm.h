@@ -51,16 +51,27 @@ class BitLSM {
   // Column family management (names bind here; per-op addressing is by
   // handle, mirroring RocksDB).
   ColumnFamilyHandle* DefaultColumnFamily() const { return default_cf_; }
+  // nullptr if no such column family.
   ColumnFamilyHandle* GetColumnFamily(const std::string& name) const;
+  // InvalidArgument if `name` is already registered. On success `*out` is the
+  // new handle, owned by this BitLSM.
   rocksdb::Status CreateColumnFamily(const std::string& name,
                                      const BitLSMOptions& options,
                                      ColumnFamilyHandle** out);
+  // Invalidates `cf` and removes it from the registry EVEN when the returned
+  // status is not OK: the rocksdb drop can fail past the point of no return,
+  // and unwinding it would leave a half-dead CF still reachable by name. The
+  // caller only loses the ability to retry -- `cf` is dead either way.
   rocksdb::Status DropColumnFamily(ColumnFamilyHandle* cf);
   static rocksdb::Status ListColumnFamilies(const rocksdb::Options& options,
                                             const std::string& db_path,
                                             std::vector<std::string>* out);
 
-  // BitLSM core API. The CF-less overloads target the default CF.
+  // BitLSM core API. The CF-less overloads target the default CF. Every
+  // cf-first overload rejects a null handle -- InvalidArgument from the write
+  // ops, a null iterator from NewIterator, an all-fallback result from
+  // EstimateSelectivity -- so composing one with GetColumnFamily on an
+  // unknown name degrades to an error instead of a crash.
   rocksdb::Status Put(ColumnFamilyHandle* cf, const std::string& pk,
                       const std::vector<Attr>& attrs,
                       const std::string& payload);
@@ -102,7 +113,7 @@ class BitLSM {
   rocksdb::DB* GetInternalDB() { return db_; }
 
   // Live-set cardinality statistics for planning (see bit_lsm_estimator.h).
-  // nullptr unless that CF's BitLSMOptions::enable_estimator is set.
+  // nullptr unless the default CF's BitLSMOptions::enable_estimator is set.
   CardinalityEstimator* Estimator() const { return default_cf_->Estimator(); }
 
   // Planning-time cardinality estimate against the CF's live SST set; see

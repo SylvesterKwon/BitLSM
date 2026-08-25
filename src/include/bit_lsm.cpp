@@ -197,7 +197,7 @@ Status BitLSM::Put(ColumnFamilyHandle* cf, const string& pk,
 
   // 2. Serialize value (thread_local for concurrent Put safety)
   thread_local string serialized_value_buf;
-  EncodeValue(cf->layout(), attrs, payload, serialized_value_buf);
+  EncodeValue(cf->layout_, attrs, payload, serialized_value_buf);
 
   // 3. Put Key-Value pair to RocksDB
   return db_->Put(WriteOptions(), cf->rocksdb_handle(), pk,
@@ -221,7 +221,7 @@ Status BitLSM::PutBatch(ColumnFamilyHandle* cf, const vector<string>& pks,
     }
 
     string serialized_value;
-    EncodeValue(cf->layout(), attrs_list[i], payloads[i], serialized_value);
+    EncodeValue(cf->layout_, attrs_list[i], payloads[i], serialized_value);
     batch.Put(cf->rocksdb_handle(), pks[i], serialized_value);
   }
   WriteOptions wo;

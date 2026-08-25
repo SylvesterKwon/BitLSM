@@ -2,6 +2,7 @@
 
 #include <rocksdb/db.h>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -35,7 +36,6 @@ class ColumnFamilyHandle {
   const std::string& name() const { return name_; }
   uint32_t id() const { return rocksdb_handle_->GetID(); }
   const BitLSMOptions& options() const { return options_; }
-  const ValueLayout& layout() const { return layout_; }
   rocksdb::ColumnFamilyHandle* rocksdb_handle() const {
     return rocksdb_handle_;
   }
