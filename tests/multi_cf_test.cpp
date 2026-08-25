@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 #include <rocksdb/db.h>
 
+#include <chrono>
 #include <cstdint>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "bit_lsm_encoding.h"
@@ -131,7 +133,9 @@ TEST_F(BitLSMTestBase, CreateAndDropColumnFamilyAtRuntime) {
   EXPECT_EQ(db.GetColumnFamily("aux"), nullptr);
 }
 
-// Workload: the same primary key written to two CFs with different payloads.
+// Workload: the same primary key written to two CFs with different payloads
+// -- the orders side through the cf-first PutBatch, alongside a second orders
+// key -- then one key deleted in each CF through that CF's own handle.
 // Threat: CF keyspaces bleeding into each other -- a shared key resolving to
 // the other CF's row (or deleting in one CF erasing the other's row).
 TEST_F(BitLSMTestBase, SameKeyIsIndependentAcrossColumnFamilies) {
@@ -140,18 +144,24 @@ TEST_F(BitLSMTestBase, SameKeyIsIndependentAcrossColumnFamilies) {
   ColumnFamilyHandle* orders = db.GetColumnFamily("orders");
 
   BITLSM_ASSERT_OK(db.Put("shared", {15.0, std::string("apple")}, "pd"));
+  std::vector<std::string> order_keys{"shared", "ok2"};
+  std::vector<std::vector<Attr>> order_attrs{
+      {15.0, 1.0, 2.0, std::string("x")}, {20.0, 3.0, 4.0, std::string("y")}};
+  std::vector<std::string> order_payloads{"po", "po2"};
   BITLSM_ASSERT_OK(
-      db.Put(orders, "shared", {15.0, 1.0, 2.0, std::string("x")}, "po"));
+      db.PutBatch(orders, order_keys, order_attrs, order_payloads));
   BITLSM_ASSERT_OK(db.Flush());
   BITLSM_ASSERT_OK(db.Flush(orders));
 
   BITLSM_ASSERT_OK(db.Delete("shared"));
+  BITLSM_ASSERT_OK(db.Delete(orders, "ok2"));
 
   BitLSMQuery q_orders(
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
   auto oit = db.NewIterator(orders, q_orders);
   ASSERT_NE(oit, nullptr);
-  // The orders row survives the default-CF delete of the same key.
+  // "shared" survives the default-CF delete of the same key; "ok2" matches the
+  // predicate on its own merits but not its own CF's delete.
   EXPECT_EQ(CollectKeys(oit.get()), (std::set<std::string>{"shared"}));
 
   BitLSMQuery q_default(
@@ -238,4 +248,78 @@ TEST_F(BitLSMTestBase, EstimatorBindsPerColumnFamily) {
   EXPECT_EQ(d.physical_rows, 0u);
   EXPECT_DOUBLE_EQ(d.selectivity, 1.0);
   EXPECT_EQ(d.fallback_attrs, (std::vector<uint32_t>{0, 1}));
+}
+
+// Workload: two CFs with the estimator enabled; rows written to "orders" and
+// flushed, then the estimate is polled -- with no TEST_Refresh anywhere --
+// until the flushed SST shows up in that CF's stats.
+// Threat: StatsRefreshListener routes flush/compaction events by cf id, and
+// every other estimator test signals the worker directly through
+// TEST_Refresh. A dropped event, or one delivered to the wrong CF's
+// estimator, would leave planning stats silently stale forever; only the
+// auto-refresh path can observe it.
+TEST_F(BitLSMTestBase, StatsListenerRoutesFlushToOwningColumnFamily) {
+  BitLSMOptions default_opts = DefaultOptions();
+  default_opts.enable_estimator = true;
+  default_opts.estimator_min_rebuild_interval_ms = 0;
+  BitLSMOptions orders_opts = FourAttrOptions();
+  orders_opts.enable_estimator = true;
+  orders_opts.estimator_min_rebuild_interval_ms = 0;
+
+  auto& db = OpenDB({{rocksdb::kDefaultColumnFamilyName, default_opts},
+                     {"orders", orders_opts}});
+  ColumnFamilyHandle* orders = db.GetColumnFamily("orders");
+  ASSERT_NE(orders, nullptr);
+
+  for (int i = 0; i < 100; ++i)
+    BITLSM_ASSERT_OK(db.Put(orders, "ok" + std::to_string(i),
+                            {double(i), 1.0, 2.0, std::string("x")}, "p"));
+  BITLSM_ASSERT_OK(db.Flush(orders));
+
+  SABIQuery q;
+  q.clause_groups = {{OrdF64(0, CompareOp::GREATER_EQUAL, 0.0)}};
+  // The refresh is asynchronous by design (bounded staleness), so poll rather
+  // than read once; the bound only has to outlast a healthy listener hop.
+  EstimateResult r;
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (true) {
+    r = db.EstimateSelectivity(orders, q);
+    if (r.physical_rows == 100u) break;
+    if (std::chrono::steady_clock::now() >= deadline) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(r.physical_rows, 100u)
+      << "orders' estimator never saw its own flush";
+  EXPECT_TRUE(r.fallback_attrs.empty());
+}
+
+// Workload: every cf-first entry point handed the nullptr that
+// GetColumnFamily returns for a name the DB does not have.
+// Threat: composing GetColumnFamily("typo") with an op must degrade to an
+// error status, a null iterator or a fallback estimate -- never a null
+// dereference inside the write/scan path.
+TEST_F(BitLSMTestBase, NullColumnFamilyHandleIsRejected) {
+  auto& db = OpenDB(DefaultOptions());
+  ColumnFamilyHandle* missing = db.GetColumnFamily("typo");
+  ASSERT_EQ(missing, nullptr);
+
+  EXPECT_TRUE(
+      db.Put(missing, "k", {1.0, std::string("a")}, "p").IsInvalidArgument());
+  std::vector<std::string> keys{"k"};
+  std::vector<std::vector<Attr>> attrs{{1.0, std::string("a")}};
+  std::vector<std::string> payloads{"p"};
+  EXPECT_TRUE(db.PutBatch(missing, keys, attrs, payloads).IsInvalidArgument());
+  EXPECT_TRUE(db.Delete(missing, "k").IsInvalidArgument());
+  EXPECT_TRUE(db.Flush(missing).IsInvalidArgument());
+
+  BitLSMQuery q(
+      std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
+  EXPECT_EQ(db.NewIterator(missing, q), nullptr);
+
+  SABIQuery sq;
+  sq.clause_groups = {{OrdF64(0, CompareOp::GREATER_EQUAL, 0.0)}};
+  EstimateResult r = db.EstimateSelectivity(missing, sq);
+  EXPECT_EQ(r.physical_rows, 0u);
+  EXPECT_EQ(r.fallback_attrs, (std::vector<uint32_t>{0}));
 }
