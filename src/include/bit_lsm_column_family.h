@@ -5,12 +5,12 @@
 #include <memory>
 #include <string>
 
+#include "bit_lsm_estimator.h"
 #include "bit_lsm_option.h"
 #include "bit_lsm_utils.h"  // ValueLayout
 
 namespace bit_lsm {
 
-class CardinalityEstimator;
 class BitLSM;
 
 // One column family to open: its name and its schema/knobs. Mirrors
@@ -27,7 +27,6 @@ struct ColumnFamilyDescriptor {
 // iterators/ops on a dropped handle are caller error).
 class ColumnFamilyHandle {
  public:
-  ~ColumnFamilyHandle();
   const std::string& name() const { return name_; }
   uint32_t id() const { return rocksdb_handle_->GetID(); }
   const BitLSMOptions& options() const { return options_; }
