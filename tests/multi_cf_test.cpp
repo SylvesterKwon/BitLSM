@@ -86,3 +86,64 @@ TEST_F(BitLSMTestBase, OpenWithDuplicateDescriptorThrows) {
                        {"orders", FourAttrOptions()}}),
                std::invalid_argument);
 }
+
+// Workload: a CF created at runtime, written, flushed, queried, then dropped.
+// Threat: CreateColumnFamily not installing the CF's own SABI factory (flush
+// would produce an SST the scan path can't prune/read), or Drop leaving a
+// stale registry entry behind.
+TEST_F(BitLSMTestBase, CreateAndDropColumnFamilyAtRuntime) {
+  auto& db = OpenDB(DefaultOptions());
+
+  ColumnFamilyHandle* aux = nullptr;
+  BITLSM_ASSERT_OK(db.CreateColumnFamily("aux", FourAttrOptions(), &aux));
+  ASSERT_NE(aux, nullptr);
+  EXPECT_EQ(db.GetColumnFamily("aux"), aux);
+
+  BITLSM_ASSERT_OK(
+      db.Put(aux, "ak1", {15.0, 1.0, 2.0, std::string("x")}, "pa"));
+  BITLSM_ASSERT_OK(db.Flush(aux));
+
+  BitLSMQuery q(
+      std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
+  auto it = db.NewIterator(aux, q);
+  ASSERT_NE(it, nullptr);
+  EXPECT_EQ(CollectKeys(it.get()), (std::set<std::string>{"ak1"}));
+
+  // Duplicate name and default-CF drop are refused.
+  ColumnFamilyHandle* dup = nullptr;
+  EXPECT_FALSE(db.CreateColumnFamily("aux", FourAttrOptions(), &dup).ok());
+  EXPECT_FALSE(db.DropColumnFamily(db.DefaultColumnFamily()).ok());
+
+  BITLSM_ASSERT_OK(db.DropColumnFamily(aux));
+  EXPECT_EQ(db.GetColumnFamily("aux"), nullptr);
+}
+
+// Workload: the same primary key written to two CFs with different payloads.
+// Threat: CF keyspaces bleeding into each other -- a shared key resolving to
+// the other CF's row (or deleting in one CF erasing the other's row).
+TEST_F(BitLSMTestBase, SameKeyIsIndependentAcrossColumnFamilies) {
+  auto& db = OpenDB({{rocksdb::kDefaultColumnFamilyName, DefaultOptions()},
+                     {"orders", FourAttrOptions()}});
+  ColumnFamilyHandle* orders = db.GetColumnFamily("orders");
+
+  BITLSM_ASSERT_OK(db.Put("shared", {15.0, std::string("apple")}, "pd"));
+  BITLSM_ASSERT_OK(
+      db.Put(orders, "shared", {15.0, 1.0, 2.0, std::string("x")}, "po"));
+  BITLSM_ASSERT_OK(db.Flush());
+  BITLSM_ASSERT_OK(db.Flush(orders));
+
+  BITLSM_ASSERT_OK(db.Delete("shared"));
+
+  BitLSMQuery q_orders(
+      std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
+  auto oit = db.NewIterator(orders, q_orders);
+  ASSERT_NE(oit, nullptr);
+  // The orders row survives the default-CF delete of the same key.
+  EXPECT_EQ(CollectKeys(oit.get()), (std::set<std::string>{"shared"}));
+
+  BitLSMQuery q_default(
+      std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
+  auto dit = db.NewIterator(q_default);
+  ASSERT_NE(dit, nullptr);
+  EXPECT_EQ(CollectKeys(dit.get()), (std::set<std::string>{}));
+}
