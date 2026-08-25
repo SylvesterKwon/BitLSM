@@ -1,6 +1,5 @@
 #pragma once
 
-#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <map>
@@ -246,14 +245,14 @@ class StatsRefreshListener : public rocksdb::EventListener {
   }
 
  private:
+  // mu_ spans the NotifyChange() call so Disarm/DisarmAll cannot return while
+  // a notification for that estimator is still in flight; after they return,
+  // the estimator is safe to destroy. NotifyChange never re-enters the
+  // listener, so the extended critical section cannot deadlock.
   void Notify(uint32_t cf_id) {
-    CardinalityEstimator* estimator = nullptr;
-    {
-      std::lock_guard<std::mutex> lock(mu_);
-      auto it = targets_.find(cf_id);
-      if (it != targets_.end()) estimator = it->second;
-    }
-    if (estimator) estimator->NotifyChange();
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = targets_.find(cf_id);
+    if (it != targets_.end()) it->second->NotifyChange();
   }
   std::mutex mu_;
   std::map<uint32_t, CardinalityEstimator*> targets_;
