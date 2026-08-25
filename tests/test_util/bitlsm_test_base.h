@@ -12,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "bit_lsm.h"
 #include "bit_lsm_option.h"
@@ -43,6 +44,9 @@ class BitLSMTestBase : public ::testing::Test {
     // 이전(크래시한) 런의 잔재 제거.
     rocksdb::DestroyDB(db_path_, rocksdb::Options());
     rocksdb_options_.create_if_missing = true;
+    // 픽스처는 항상 빈 디렉토리에서 시작하므로, 테스트가 지정한 CF 는
+    // open 시점에 만들어져야 한다(단일 CF 오픈에는 영향 없음).
+    rocksdb_options_.create_missing_column_families = true;
   }
 
   void TearDown() override {
@@ -67,6 +71,14 @@ class BitLSMTestBase : public ::testing::Test {
     db_.reset();  // 같은 경로를 다시 열기 전에 기존 DB 를 명시적으로 닫는다.
     db_ = std::make_unique<BitLSM>(db_path_, bitlsm_options, rocksdb_options_,
                                    table_options_);
+    return *db_;
+  }
+
+  // Multi-CF open at db_path_. Same ownership/lifetime rules as OpenDB().
+  BitLSM& OpenDB(const std::vector<ColumnFamilyDescriptor>& descriptors) {
+    db_.reset();
+    db_ = std::make_unique<BitLSM>(db_path_, rocksdb_options_, table_options_,
+                                   descriptors);
     return *db_;
   }
 
