@@ -1,6 +1,8 @@
 #include "bit_lsm.h"
 
+#include <cassert>
 #include <iostream>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -43,7 +45,13 @@ BitLSM::BitLSM(const string& db_path, const Options& rocksdb_options,
       table_options_(table_options) {
   bool has_default = false;
   bool want_uring = false;
+  // DB::Open does not reject a name listed twice: it hands back two handles
+  // to the same column family, which the registry cannot represent.
+  std::set<std::string> seen;
   for (const auto& d : descriptors) {
+    if (!seen.insert(d.name).second)
+      throw std::invalid_argument("duplicate column family in descriptors: " +
+                                  d.name);
     if (d.name == rocksdb::kDefaultColumnFamilyName) has_default = true;
     if (d.options.scan_prefetch_depth > 0 || d.options.ondemand_index)
       want_uring = true;
@@ -54,9 +62,9 @@ BitLSM::BitLSM(const string& db_path, const Options& rocksdb_options,
 
   // Before Open: RocksDB decides whether a file gets io_uring rings when the
   // file is opened, so async reads -- the scan prefetch queue's, and in
-  // on-demand mode the SABI span prefetch's -- have to be opted into now or
-  // never (block_prefetch_queue.h). A CF created later with those options
-  // when no descriptor wanted them here degrades to synchronous reads.
+  // on-demand mode the SABI span prefetch's -- have to be opted into before
+  // the files they read are opened (block_prefetch_queue.h). Column families
+  // created at runtime opt in the same way from CreateColumnFamily.
   if (want_uring) EnableRocksDbIOUring();
 
   // Registered before Open (the listener list is frozen there); estimators
@@ -73,12 +81,14 @@ BitLSM::BitLSM(const string& db_path, const Options& rocksdb_options,
   Status s = DB::Open(rocksdb_options_, db_path, cf_descs, &handles, &db_);
   if (!s.ok()) throw std::runtime_error("Failed to open DB: " + s.ToString());
 
+  std::lock_guard<std::mutex> lock(cf_mu_);
   for (size_t i = 0; i < descriptors.size(); ++i)
     RegisterColumnFamily(descriptors[i].name, handles[i],
                          descriptors[i].options);
   default_cf_ = cf_registry_.at(rocksdb::kDefaultColumnFamilyName).get();
 }
 
+// Callers must hold cf_mu_.
 bit_lsm::ColumnFamilyHandle* BitLSM::RegisterColumnFamily(
     const string& name, rocksdb::ColumnFamilyHandle* handle,
     const BitLSMOptions& options) {
@@ -91,10 +101,13 @@ bit_lsm::ColumnFamilyHandle* BitLSM::RegisterColumnFamily(
         SABISchema::FromOptions(options), options);
     stats_listener_->Arm(handle->GetID(), cf->estimator_.get());
   }
-  ColumnFamilyHandle* raw = cf.get();
-  std::lock_guard<std::mutex> lock(cf_mu_);
-  cf_registry_.emplace(name, std::move(cf));
-  return raw;
+  auto [it, inserted] = cf_registry_.emplace(name, std::move(cf));
+  // Registry uniqueness is enforced upstream: the multi-CF constructor
+  // rejects duplicate descriptors and CreateColumnFamily rejects a name that
+  // is already registered. A silently dropped insert would destroy the handle
+  // and estimator this call just armed the listener against.
+  assert(inserted);
+  return it->second.get();
 }
 
 BitLSM::~BitLSM() {
@@ -125,11 +138,16 @@ bit_lsm::ColumnFamilyHandle* BitLSM::GetColumnFamily(const string& name) const {
 Status BitLSM::CreateColumnFamily(const string& name,
                                   const BitLSMOptions& options,
                                   ColumnFamilyHandle** out) {
-  {
-    std::lock_guard<std::mutex> lock(cf_mu_);
-    if (cf_registry_.count(name))
-      return Status::InvalidArgument("column family already exists: " + name);
-  }
+  // One critical section over the duplicate check, the rocksdb create and the
+  // register: creates are rare, and splitting them would let the registry and
+  // rocksdb's column family set diverge in between.
+  std::lock_guard<std::mutex> lock(cf_mu_);
+  if (cf_registry_.count(name))
+    return Status::InvalidArgument("column family already exists: " + name);
+  // The io_uring latch is read when a file is opened, and every file of a CF
+  // created here is opened after this point, so opting in now is in time.
+  if (options.scan_prefetch_depth > 0 || options.ondemand_index)
+    EnableRocksDbIOUring();
   rocksdb::ColumnFamilyHandle* handle = nullptr;
   Status s = db_->CreateColumnFamily(
       BuildCFOptions(rocksdb_options_, table_options_, options), name, &handle);
@@ -142,15 +160,23 @@ Status BitLSM::DropColumnFamily(ColumnFamilyHandle* cf) {
   if (cf == nullptr || cf == default_cf_)
     return Status::InvalidArgument(
         "cannot drop null or the default column family");
-  // Stop stats refresh first: the worker references the CF being dropped.
+  std::unique_ptr<ColumnFamilyHandle> owned;
+  {
+    std::lock_guard<std::mutex> lock(cf_mu_);
+    auto it = cf_registry_.find(cf->name());
+    if (it == cf_registry_.end() || it->second.get() != cf)
+      return Status::InvalidArgument("unknown column family handle");
+    owned = std::move(it->second);
+    cf_registry_.erase(it);
+  }
+  // Past this point GetColumnFamily can no longer hand out this handle; the
+  // teardown below is unconditional so a failed rocksdb drop cannot leave a
+  // half-dead CF behind -- the caller only loses the ability to retry.
   stats_listener_->Disarm(cf->id());
-  cf->estimator_.reset();
   Status s = db_->DropColumnFamily(cf->rocksdb_handle_);
-  if (!s.ok()) return s;
+  owned->estimator_.reset();
   db_->DestroyColumnFamilyHandle(cf->rocksdb_handle_);
-  std::lock_guard<std::mutex> lock(cf_mu_);
-  cf_registry_.erase(cf->name());
-  return Status::OK();
+  return s;
 }
 
 Status BitLSM::ListColumnFamilies(const Options& options, const string& db_path,
@@ -160,6 +186,8 @@ Status BitLSM::ListColumnFamilies(const Options& options, const string& db_path,
 
 Status BitLSM::Put(ColumnFamilyHandle* cf, const string& pk,
                    const vector<Attr>& attrs, const string& payload) {
+  if (cf == nullptr) return Status::InvalidArgument("null column family");
+
   // 1. Validate # of indexed attrs
   if (attrs.size() != cf->options().attr_num) {
     return Status::InvalidArgument(
@@ -178,6 +206,8 @@ Status BitLSM::Put(ColumnFamilyHandle* cf, const string& pk,
 Status BitLSM::PutBatch(ColumnFamilyHandle* cf, const vector<string>& pks,
                         const vector<vector<Attr>>& attrs_list,
                         const vector<string>& payloads) {
+  if (cf == nullptr) return Status::InvalidArgument("null column family");
+
   // Assume all given vector has same length
   WriteBatch batch;
   uint32_t batch_size = pks.size();
@@ -198,10 +228,12 @@ Status BitLSM::PutBatch(ColumnFamilyHandle* cf, const vector<string>& pks,
 }
 
 Status BitLSM::Delete(ColumnFamilyHandle* cf, const string& key) {
+  if (cf == nullptr) return Status::InvalidArgument("null column family");
   return db_->Delete(WriteOptions(), cf->rocksdb_handle(), key);
 }
 
 Status BitLSM::Flush(ColumnFamilyHandle* cf) {
+  if (cf == nullptr) return Status::InvalidArgument("null column family");
   return db_->Flush(FlushOptions(), cf->rocksdb_handle());
 }
 
@@ -209,8 +241,10 @@ unique_ptr<BitLSMIterator> BitLSM::NewIterator(ColumnFamilyHandle* cf,
                                                BitLSMQuery& query,
                                                ResultMode result_mode,
                                                const Snapshot* snapshot) {
-  // Invalid queries (see BitLSMQuery::Validate) get nullptr; callers needing
-  // the reason call Validate directly.
+  // An unknown column family (GetColumnFamily miss) and an invalid query (see
+  // BitLSMQuery::Validate) both get nullptr; callers needing the reason call
+  // Validate directly.
+  if (cf == nullptr) return nullptr;
   if (!query.Validate(cf->options()).ok()) return nullptr;
 
   // Sort conditions within each OR clause by attr_idx so same-attr conditions

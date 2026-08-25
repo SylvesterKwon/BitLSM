@@ -74,3 +74,15 @@ TEST_F(BitLSMTestBase, TwoColumnFamiliesIsolateRowsAndSchemas) {
 TEST_F(BitLSMTestBase, OpenWithoutDefaultDescriptorThrows) {
   EXPECT_THROW(OpenDB({{"orders", FourAttrOptions()}}), std::invalid_argument);
 }
+
+// Workload: multi-CF open whose descriptor list names the same CF twice.
+// Threat: RocksDB's Open does not reject duplicate names -- it returns two
+// handles to one CF; without validation the second registry insert silently
+// destroys a live handle while the stats listener still references its
+// estimator (use-after-free, unclean close).
+TEST_F(BitLSMTestBase, OpenWithDuplicateDescriptorThrows) {
+  EXPECT_THROW(OpenDB({{rocksdb::kDefaultColumnFamilyName, DefaultOptions()},
+                       {"orders", FourAttrOptions()},
+                       {"orders", FourAttrOptions()}}),
+               std::invalid_argument);
+}

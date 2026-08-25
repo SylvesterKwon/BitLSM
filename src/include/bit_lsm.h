@@ -104,11 +104,12 @@ class BitLSM {
 
   // Planning-time cardinality estimate against the CF's live SST set; see
   // EstimateResult for the consumption contract. With the estimator disabled
-  // every queried attr is flagged as fallback.
+  // -- or with an unknown column family -- every queried attr is flagged as
+  // fallback.
   EstimateResult EstimateSelectivity(ColumnFamilyHandle* cf,
                                      const SABIQuery& q) {
-    return cf->Estimator() ? cf->Estimator()->Estimate(q)
-                           : CardinalityEstimator::FallbackResult(q);
+    return cf && cf->Estimator() ? cf->Estimator()->Estimate(q)
+                                 : CardinalityEstimator::FallbackResult(q);
   }
   EstimateResult EstimateSelectivity(const SABIQuery& q) {
     return EstimateSelectivity(default_cf_, q);
