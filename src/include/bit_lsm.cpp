@@ -55,14 +55,14 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
         static_cast<DBImpl*>(db_),
         static_cast<ColumnFamilyHandleImpl*>(cf_handles_[0])->cfd(),
         SABISchema::FromOptions(bit_lsm_options_), bit_lsm_options_);
-    stats_listener_->Arm(estimator_.get());
+    stats_listener_->Arm(cf_handles_[0]->GetID(), estimator_.get());
   }
 }
 
 BitLSM::~BitLSM() {
   // Stop stats refresh before the DB goes away: the worker references the
   // column family, and close-time flushes must not signal a dead estimator.
-  if (stats_listener_) stats_listener_->Disarm();
+  if (stats_listener_) stats_listener_->DisarmAll();
   estimator_.reset();
 
   Status s;
