@@ -1,8 +1,8 @@
 #pragma once
 
-#include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -217,28 +217,45 @@ class CardinalityEstimator {
   std::thread worker_;
 };
 
-// Forwards RocksDB flush/compaction completion to the estimator's refresh
-// worker. Registered before DB::Open and armed once the estimator exists;
-// events while disarmed are dropped.
+// Forwards RocksDB flush/compaction completion to the owning column family's
+// estimator. Registered before DB::Open (the listener list is frozen there);
+// estimators arm and disarm per cf id as column families come and go. Events
+// for an unarmed cf are dropped.
 class StatsRefreshListener : public rocksdb::EventListener {
  public:
-  void Arm(CardinalityEstimator* estimator) { target_.store(estimator); }
-  void Disarm() { target_.store(nullptr); }
-  void OnFlushCompleted(rocksdb::DB*, const rocksdb::FlushJobInfo&) override {
-    Notify();
+  void Arm(uint32_t cf_id, CardinalityEstimator* estimator) {
+    std::lock_guard<std::mutex> lock(mu_);
+    targets_[cf_id] = estimator;
+  }
+  void Disarm(uint32_t cf_id) {
+    std::lock_guard<std::mutex> lock(mu_);
+    targets_.erase(cf_id);
+  }
+  void DisarmAll() {
+    std::lock_guard<std::mutex> lock(mu_);
+    targets_.clear();
+  }
+  void OnFlushCompleted(rocksdb::DB*,
+                        const rocksdb::FlushJobInfo& info) override {
+    Notify(info.cf_id);
   }
   void OnCompactionCompleted(rocksdb::DB*,
-                             const rocksdb::CompactionJobInfo&) override {
-    Notify();
+                             const rocksdb::CompactionJobInfo& info) override {
+    Notify(info.cf_id);
   }
 
  private:
-  void Notify() {
-    if (CardinalityEstimator* estimator = target_.load()) {
-      estimator->NotifyChange();
-    }
+  // mu_ spans the NotifyChange() call so Disarm/DisarmAll cannot return while
+  // a notification for that estimator is still in flight; after they return,
+  // the estimator is safe to destroy. NotifyChange never re-enters the
+  // listener, so the extended critical section cannot deadlock.
+  void Notify(uint32_t cf_id) {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = targets_.find(cf_id);
+    if (it != targets_.end()) it->second->NotifyChange();
   }
-  std::atomic<CardinalityEstimator*> target_{nullptr};
+  std::mutex mu_;
+  std::map<uint32_t, CardinalityEstimator*> targets_;
 };
 
 }  // namespace bit_lsm

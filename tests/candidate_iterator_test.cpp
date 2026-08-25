@@ -34,8 +34,7 @@ TEST_F(BitLSMTestBase, CandidateModeSkipsRowVerification) {
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
   const rocksdb::Snapshot* snap = db.GetInternalDB()->GetSnapshot();
   {
-    auto it =
-        db.NewIterator(query, /*cfh=*/nullptr, ResultMode::Candidate, snap);
+    auto it = db.NewIterator(query, ResultMode::Candidate, snap);
     ASSERT_NE(it, nullptr);
     // Memtable rows are not bitmap-pruned, so with verification off every
     // live row must surface as a candidate — including non-matching pk2.
@@ -64,14 +63,12 @@ TEST_F(BitLSMTestBase, VerifiedIsSubsetOfCandidatesAtSameSeqno) {
   const rocksdb::Snapshot* snap = db.GetInternalDB()->GetSnapshot();
   std::set<std::string> verified, candidates;
   {
-    auto it =
-        db.NewIterator(query, /*cfh=*/nullptr, ResultMode::Verified, snap);
+    auto it = db.NewIterator(query, ResultMode::Verified, snap);
     ASSERT_NE(it, nullptr);
     verified = CollectKeys(it.get());
   }
   {
-    auto it =
-        db.NewIterator(query, /*cfh=*/nullptr, ResultMode::Candidate, snap);
+    auto it = db.NewIterator(query, ResultMode::Candidate, snap);
     ASSERT_NE(it, nullptr);
     candidates = CollectKeys(it.get());
   }
@@ -96,8 +93,7 @@ TEST_F(BitLSMTestBase, CandidateModeRespectsInjectedSeqno) {
   BitLSMQuery query(
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
   {
-    auto it =
-        db.NewIterator(query, /*cfh=*/nullptr, ResultMode::Candidate, snap);
+    auto it = db.NewIterator(query, ResultMode::Candidate, snap);
     ASSERT_NE(it, nullptr);
     EXPECT_EQ(CollectKeys(it.get()), (std::set<std::string>{"pk1"}));
   }
@@ -124,8 +120,7 @@ TEST_F(BitLSMTestBase, InjectedSnapshotSurvivesIterator) {
   BitLSMQuery query(
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
   {
-    auto it =
-        db.NewIterator(query, /*cfh=*/nullptr, ResultMode::Candidate, snap);
+    auto it = db.NewIterator(query, ResultMode::Candidate, snap);
     ASSERT_NE(it, nullptr);
     it->SeekToFirst();
   }  // iterator destroyed here; snap must stay alive
@@ -136,39 +131,31 @@ TEST_F(BitLSMTestBase, InjectedSnapshotSurvivesIterator) {
   rdb->ReleaseSnapshot(snap);
 }
 
-// Workload: SABI rows living in a non-default column family (the MyRocks
-// layout: one data CF per table), scanned in Candidate mode through that
-// CF's handle while the default CF holds decoy rows.
+// Workload: an integration layer that keeps row data in its own CF (MyRocks
+// layout: one data CF per table), created through BitLSM and scanned in
+// Candidate mode through its handle while the default CF holds decoy rows.
 // Threat: the scan side hardcoding the default CF would silently emit the
 // decoy keys (or nothing) instead of the requested CF's candidates.
 TEST_F(BitLSMTestBase, CandidateModeReadsRequestedColumnFamily) {
   auto& db = OpenDB(DefaultOptions());
   BITLSM_ASSERT_OK(db.Put("dk1", {15.0, std::string("apple")}, "p1"));
 
-  rocksdb::DB* rdb = db.GetInternalDB();
-  // Clone the default CF's options so the aux CF gets the SABI table factory.
-  rocksdb::ColumnFamilyOptions cf_opts(rdb->GetOptions());
-  rocksdb::ColumnFamilyHandle* aux = nullptr;
-  BITLSM_ASSERT_OK(rdb->CreateColumnFamily(cf_opts, "aux", &aux));
-
-  std::string buf;
-  EncodeValue(DefaultOptions(), {15.0, std::string("apple")}, "pa", buf);
-  BITLSM_ASSERT_OK(rdb->Put(rocksdb::WriteOptions(), aux, "ak1", buf));
-  EncodeValue(DefaultOptions(), {5.0, std::string("banana")}, "pb", buf);
-  BITLSM_ASSERT_OK(rdb->Put(rocksdb::WriteOptions(), aux, "ak2", buf));
+  ColumnFamilyHandle* aux = nullptr;
+  BITLSM_ASSERT_OK(db.CreateColumnFamily("aux", DefaultOptions(), &aux));
+  BITLSM_ASSERT_OK(db.Put(aux, "ak1", {15.0, std::string("apple")}, "pa"));
+  BITLSM_ASSERT_OK(db.Put(aux, "ak2", {5.0, std::string("banana")}, "pb"));
 
   BitLSMQuery query(
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
-  const rocksdb::Snapshot* snap = rdb->GetSnapshot();
+  const rocksdb::Snapshot* snap = db.GetInternalDB()->GetSnapshot();
   {
-    auto it = db.NewIterator(query, aux, ResultMode::Candidate, snap);
+    auto it = db.NewIterator(aux, query, ResultMode::Candidate, snap);
     ASSERT_NE(it, nullptr);
     // Memtable rows of the requested CF, unverified — and none of the
     // default CF's.
     EXPECT_EQ(CollectKeys(it.get()), (std::set<std::string>{"ak1", "ak2"}));
   }
-  rdb->ReleaseSnapshot(snap);
-  BITLSM_ASSERT_OK(rdb->DestroyColumnFamilyHandle(aux));
+  db.GetInternalDB()->ReleaseSnapshot(snap);
 }
 
 // Workload: a Candidate-mode caller that forgets to inject its transaction
@@ -183,7 +170,7 @@ TEST_F(BitLSMTestBase, CandidateModeWithoutSnapshotRejected) {
 
   BitLSMQuery query(
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
-  EXPECT_THROW(db.NewIterator(query, /*cfh=*/nullptr, ResultMode::Candidate,
+  EXPECT_THROW(db.NewIterator(query, ResultMode::Candidate,
                               /*snapshot=*/nullptr),
                std::invalid_argument);
 }
@@ -201,8 +188,7 @@ TEST_F(BitLSMTestBase, CandidateModeValueThrows) {
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
   const rocksdb::Snapshot* snap = db.GetInternalDB()->GetSnapshot();
   {
-    auto it =
-        db.NewIterator(query, /*cfh=*/nullptr, ResultMode::Candidate, snap);
+    auto it = db.NewIterator(query, ResultMode::Candidate, snap);
     ASSERT_NE(it, nullptr);
     it->SeekToFirst();
     ASSERT_TRUE(it->Valid());

@@ -58,6 +58,7 @@ bitlsm_add_test(scan_prefetch_diff_test)
 bitlsm_add_test(binning_partition_test)
 bitlsm_add_test(ondemand_index_diff_test)
 bitlsm_add_test(ondemand_bin_cache_test)
+bitlsm_add_test(multi_cf_test)
 # Positive control for the span-prefetch async path: where this build found
 # liburing (cache variable set by RocksDB's Finduring when WITH_LIBURING is
 # on), the test asserts the async branch actually ran instead of quietly

@@ -70,7 +70,7 @@ size_t CountCandidates(BitLSM& db, const BitLSMQuery& query) {
   size_t n = 0;
   {
     BitLSMQuery q = query;
-    auto it = db.NewIterator(q, /*cfh=*/nullptr, ResultMode::Candidate, snap);
+    auto it = db.NewIterator(q, ResultMode::Candidate, snap);
     EXPECT_NE(it, nullptr);
     if (it != nullptr)
       for (it->SeekToFirst(); it->Valid(); it->Next()) ++n;
