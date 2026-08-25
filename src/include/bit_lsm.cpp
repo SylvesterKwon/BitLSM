@@ -1,5 +1,6 @@
 #include "bit_lsm.h"
 
+#include <algorithm>
 #include <cassert>
 #include <iostream>
 #include <set>
@@ -40,9 +41,7 @@ BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
 BitLSM::BitLSM(const string& db_path, const Options& rocksdb_options,
                const BlockBasedTableOptions& table_options,
                const vector<ColumnFamilyDescriptor>& descriptors)
-    : db_path_(db_path),
-      rocksdb_options_(rocksdb_options),
-      table_options_(table_options) {
+    : rocksdb_options_(rocksdb_options), table_options_(table_options) {
   bool has_default = false;
   bool want_uring = false;
   // DB::Open does not reject a name listed twice: it hands back two handles
@@ -113,7 +112,7 @@ bit_lsm::ColumnFamilyHandle* BitLSM::RegisterColumnFamily(
 BitLSM::~BitLSM() {
   // Stop stats refresh before the DB goes away: the workers reference their
   // column families, and close-time flushes must not signal dead estimators.
-  if (stats_listener_) stats_listener_->DisarmAll();
+  stats_listener_->DisarmAll();
   for (auto& [name, cf] : cf_registry_) {
     cf->estimator_.reset();
     db_->DestroyColumnFamilyHandle(cf->rocksdb_handle_);

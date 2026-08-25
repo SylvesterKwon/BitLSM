@@ -4,8 +4,10 @@
 #include <rocksdb/table.h>
 
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "bit_lsm_column_family.h"
 #include "bit_lsm_estimator.h"
@@ -17,8 +19,7 @@ namespace bit_lsm {
 
 class BitLSM {
  private:
-  rocksdb::DB* db_;
-  std::string db_path_;
+  rocksdb::DB* db_ = nullptr;
   rocksdb::Options rocksdb_options_;
   rocksdb::BlockBasedTableOptions table_options_;  // shared per-CF base
   std::map<std::string, std::unique_ptr<ColumnFamilyHandle>> cf_registry_;
@@ -100,18 +101,18 @@ class BitLSM {
 
   // Live-set cardinality statistics for planning (see bit_lsm_estimator.h).
   // nullptr unless that CF's BitLSMOptions::enable_estimator is set.
-  CardinalityEstimator* Estimator() { return default_cf_->Estimator(); }
+  CardinalityEstimator* Estimator() const { return default_cf_->Estimator(); }
 
   // Planning-time cardinality estimate against the CF's live SST set; see
   // EstimateResult for the consumption contract. With the estimator disabled
   // -- or with an unknown column family -- every queried attr is flagged as
   // fallback.
   EstimateResult EstimateSelectivity(ColumnFamilyHandle* cf,
-                                     const SABIQuery& q) {
+                                     const SABIQuery& q) const {
     return cf && cf->Estimator() ? cf->Estimator()->Estimate(q)
                                  : CardinalityEstimator::FallbackResult(q);
   }
-  EstimateResult EstimateSelectivity(const SABIQuery& q) {
+  EstimateResult EstimateSelectivity(const SABIQuery& q) const {
     return EstimateSelectivity(default_cf_, q);
   }
 
