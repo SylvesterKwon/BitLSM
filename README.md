@@ -2,13 +2,13 @@
 
 BitLSM is an LSM-tree storage engine that efficiently supports multi-attribute conjunctive queries.
 
-Built on top of RocksDB v10.9.0.
+Built on top of RocksDB v10.10.0.
 
 ## Prerequisites
 
 - **Compiler**: GCC 11+
 - **CMake**: 3.14+
-- **On-disk format**: v7 — DBs built by older versions must be rebuilt; `ondemand_index` additionally requires v7 blobs.
+
 
 ## Installation
 
