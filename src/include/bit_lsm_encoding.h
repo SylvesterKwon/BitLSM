@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <variant>
 #include <vector>
@@ -49,6 +50,32 @@ inline double OkeyToF64(uint64_t okey) {
   double d;
   std::memcpy(&d, &u, 8);
   return d;
+}
+
+// ---- okey <-> SABI byte domain ----
+// SABI orders every range-indexed attribute by memcmp over bytes. An okey
+// enters that domain as its 8-byte big-endian form, which memcmp orders
+// exactly like the unsigned integer.
+inline constexpr size_t kOkeyBytes = 8;
+
+inline void OkeyToBytes(uint64_t okey, char* out) {
+  for (int i = static_cast<int>(kOkeyBytes) - 1; i >= 0; --i) {
+    out[i] = static_cast<char>(okey & 0xff);
+    okey >>= 8;
+  }
+}
+
+inline std::string OkeyToBytes(uint64_t okey) {
+  std::string s(kOkeyBytes, '\0');
+  OkeyToBytes(okey, s.data());
+  return s;
+}
+
+// Precondition: bytes.size() == kOkeyBytes.
+inline uint64_t OkeyFromBytes(std::string_view bytes) {
+  uint64_t okey = 0;
+  for (unsigned char c : bytes) okey = (okey << 8) | c;
+  return okey;
 }
 
 // ---- dispatch helpers (adapter side; the only spec-aware entry points) ----

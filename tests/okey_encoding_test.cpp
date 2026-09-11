@@ -93,6 +93,41 @@ TEST(OkeyEncoding, RoundTrip) {
   for (double v : dvals) EXPECT_EQ(OkeyToF64(F64ToOkey(v)), v);
 }
 
+// ---- okey <-> SABI byte domain ----
+
+// Workload: the uint64 domain endpoints plus 100k random okey pairs through
+//           OkeyToBytes, compared in memcmp order (std::string <).
+// Threat: a little-endian or partial write lets a smaller okey sort above a
+//         larger one in the byte domain, mis-binning every numeric attribute.
+TEST(OkeyBytes, MemcmpOrderMatchesOkeyOrder) {
+  const uint64_t edges[] = {0,
+                            1,
+                            0x7fffffffffffffffull,
+                            0x8000000000000000ull,
+                            UINT64_MAX - 1,
+                            UINT64_MAX};
+  for (uint64_t a : edges)
+    for (uint64_t b : edges) ASSERT_EQ(a < b, OkeyToBytes(a) < OkeyToBytes(b));
+  std::mt19937_64 rng(7);
+  for (int i = 0; i < 100000; ++i) {
+    uint64_t a = rng(), b = rng();
+    ASSERT_EQ(a < b, OkeyToBytes(a) < OkeyToBytes(b));
+  }
+}
+
+// Workload: representative okeys through OkeyToBytes and OkeyFromBytes.
+// Threat: a lossy round trip corrupts the okey coordinates the estimator
+//         recovers from persisted boundary bytes.
+TEST(OkeyBytes, RoundTrip) {
+  const uint64_t vals[] = {0, 1, 0x0123456789abcdefull, 0x8000000000000000ull,
+                           UINT64_MAX};
+  for (uint64_t v : vals) {
+    std::string s = OkeyToBytes(v);
+    ASSERT_EQ(s.size(), kOkeyBytes);
+    EXPECT_EQ(OkeyFromBytes(s), v);
+  }
+}
+
 // ---- SABISchema: the schema residue visible to SABI ----
 
 static BitLSMOptions MakeOpts3() {
