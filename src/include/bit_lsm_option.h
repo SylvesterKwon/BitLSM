@@ -7,31 +7,28 @@
 
 namespace bit_lsm {
 
-// Attribute role: ORDERED = total order (range queries + quantile binning),
-// UNORDERED = equality only (frequency binning).
-// Values are persisted as role bytes in the SABI directory (format v5+);
-// never renumber existing entries.
-enum AttrRole {
-  UNORDERED,
-  ORDERED,
-};
+// Which predicates the index accelerates on an attribute. kRange bins by
+// equal-mass boundaries and serves =, <, <=, >, >=; kEquality bins by a
+// frequency-balanced value dictionary and serves = only. Persisted as a byte
+// in the SABI directory: never renumber.
+enum class IndexType : uint8_t { kEquality = 0, kRange = 1 };
 
 // Full spec for one attribute. The physical fields (width/is_signed/is_float)
-// apply only to ORDERED attributes, which store a fixed-width native value;
-// UNORDERED attributes are variable-width opaque bytes and ignore them.
-// Constructing from a bare AttrRole is explicit; the field defaults describe a
-// double-valued, non-nullable ORDERED attribute (the pre-v3 physical shape).
+// apply only to kRange attributes, which store a fixed-width native value;
+// kEquality attributes are variable-width opaque bytes and ignore them.
+// Constructing from a bare IndexType is explicit; the field defaults describe a
+// double-valued, non-nullable kRange attribute (the pre-v3 physical shape).
 struct AttrSpec {
-  AttrRole role;
-  uint8_t width;   // ORDERED byte width: 1/2/4/8
-  bool is_signed;  // ORDERED integer signedness (ignored when is_float)
-  bool is_float;   // ORDERED: IEEE754 (true) vs integer (false)
+  IndexType index_type;
+  uint8_t width;   // kRange byte width: 1/2/4/8
+  bool is_signed;  // kRange integer signedness (ignored when is_float)
+  bool is_float;   // kRange: IEEE754 (true) vs integer (false)
   bool nullable;
 
-  explicit AttrSpec(AttrRole role = ORDERED, uint8_t width = 8,
+  explicit AttrSpec(IndexType index_type = IndexType::kRange, uint8_t width = 8,
                     bool is_signed = true, bool is_float = true,
                     bool nullable = false)
-      : role(role),
+      : index_type(index_type),
         width(width),
         is_signed(is_signed),
         is_float(is_float),

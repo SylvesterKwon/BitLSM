@@ -10,8 +10,8 @@
 
 namespace bit_lsm {
 
-// monostate = SQL NULL; ORDERED = int64/uint64/double per spec;
-// UNORDERED = string
+// monostate = SQL NULL; kRange = int64/uint64/double per spec;
+// kEquality = string
 using Attr =
     std::variant<std::monostate, int64_t, uint64_t, double, std::string>;
 

@@ -1,8 +1,8 @@
 #pragma once
 
 // Order-preserving uint64 ("okey") domain for SABI: the adapter encodes each
-// ORDERED native scalar through a monotone injection so the core orders
-// attributes with a single unsigned comparison; UNORDERED attrs stay opaque
+// kRange native scalar through a monotone injection so the core orders
+// attributes with a single unsigned comparison; kEquality attrs stay opaque
 // bytes.
 
 #include <cmath>
@@ -81,7 +81,7 @@ inline uint64_t OkeyFromBytes(std::string_view bytes) {
 // ---- dispatch helpers (adapter side; the only spec-aware entry points) ----
 
 // Decoded row scalar (AttrView from DecodeAttr) -> okey. Caller guarantees a
-// non-NULL ORDERED input.
+// non-NULL kRange input.
 inline uint64_t OrderedToOkey(const AttrView& v) {
   if (std::holds_alternative<int64_t>(v))
     return I64ToOkey(std::get<int64_t>(v));
@@ -108,15 +108,15 @@ inline uint64_t OrderedToOkey(
 // Width/signedness/collation are absorbed by the adapter; NULL arrives as a
 // per-row monostate from the extractor, never as a static flag.
 struct SABISchema {
-  std::vector<AttrRole> roles;
+  std::vector<IndexType> index_types;
   double rho = 0.001;  // bitmap budget knob; only the builder consumes it
 
-  uint32_t attr_num() const { return static_cast<uint32_t>(roles.size()); }
+  uint32_t attr_num() const { return static_cast<uint32_t>(index_types.size()); }
 
   static SABISchema FromOptions(const BitLSMOptions& o) {
     SABISchema s;
-    s.roles.reserve(o.attr_num);
-    for (const auto& sp : o.attr_specs) s.roles.push_back(sp.role);
+    s.index_types.reserve(o.attr_num);
+    for (const auto& sp : o.attr_specs) s.index_types.push_back(sp.index_type);
     s.rho = o.rho;
     return s;
   }
@@ -125,8 +125,8 @@ struct SABISchema {
 // ---- Row -> encoded attrs bridge ----
 
 // Per-attr extraction result handed to SABI: SQL NULL, or the attr's bytes
-// in SABI's memcmp domain -- an ORDERED numeric's okey in 8-byte big-endian
-// form, an UNORDERED attr's raw bytes. Views are valid only during the
+// in SABI's memcmp domain -- an kRange numeric's okey in 8-byte big-endian
+// form, an kEquality attr's raw bytes. Views are valid only during the
 // ExtractAll call that produced them.
 using EncodedAttr = std::variant<std::monostate, std::string_view>;
 

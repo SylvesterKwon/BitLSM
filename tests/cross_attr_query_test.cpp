@@ -9,13 +9,13 @@
 using namespace bit_lsm;
 
 namespace {
-// {ORDERED, UNORDERED, ORDERED} schema so OR clauses can cross
+// {kRange, kEquality, kRange} schema so OR clauses can cross
 // attributes of the same type (a0/a2) and of mixed types (a0/a1).
 BitLSMOptions ThreeAttrOptions() {
   BitLSMOptions o;
   o.attr_num = 3;
-  o.attr_specs = {AttrSpec{AttrRole::ORDERED}, AttrSpec{AttrRole::UNORDERED},
-                  AttrSpec{AttrRole::ORDERED}};
+  o.attr_specs = {AttrSpec{IndexType::kRange}, AttrSpec{IndexType::kEquality},
+                  AttrSpec{IndexType::kRange}};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;

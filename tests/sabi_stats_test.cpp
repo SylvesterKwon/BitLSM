@@ -19,27 +19,27 @@ using UDIB = rocksdb::UserDefinedIndexBuilder;
 
 namespace {
 
-// Single ORDERED int64 attr; rho 0.1 -> bin budget 10. NULL rows only exist
+// Single kRange int64 attr; rho 0.1 -> bin budget 10. NULL rows only exist
 // for nullable attrs (non-nullable NULLs encode as a placeholder value).
 BitLSMOptions I64Options(bool nullable = false) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, /*is_signed=*/true,
+  o.attr_specs = {AttrSpec(IndexType::kRange, 8, /*is_signed=*/true,
                            /*is_float=*/false, nullable)};
   o.read_seqno = 0;
   o.rho = 0.1;
   return o;
 }
 
-// {UNORDERED, ORDERED i64, ORDERED i64}: the leading unordered attr shifts
+// {kEquality, kRange i64, kRange i64}: the leading unordered attr shifts
 // the ordered attrs' bitmap ranges inside the flat bitmap array.
 BitLSMOptions MixedOptions() {
   BitLSMOptions o;
   o.attr_num = 3;
-  o.attr_specs = {AttrSpec{AttrRole::UNORDERED},
-                  AttrSpec(AttrRole::ORDERED, 8, /*is_signed=*/true,
+  o.attr_specs = {AttrSpec{IndexType::kEquality},
+                  AttrSpec(IndexType::kRange, 8, /*is_signed=*/true,
                            /*is_float=*/false),
-                  AttrSpec(AttrRole::ORDERED, 8, /*is_signed=*/true,
+                  AttrSpec(IndexType::kRange, 8, /*is_signed=*/true,
                            /*is_float=*/false)};
   o.read_seqno = 0;
   o.rho = 0.1;
@@ -116,7 +116,7 @@ uint64_t Sum(const std::vector<uint64_t>& v) {
 
 }  // namespace
 
-// Workload: 1000 int64 rows 0..999 (a narrow okey span), single ORDERED
+// Workload: 1000 int64 rows 0..999 (a narrow okey span), single kRange
 //           attr, one blob, bin budget 10; read the histogram back.
 // Threat: the boundaries are persisted after (okey - min_okey) t-digest
 //         normalization; an accessor that leaks normalized values instead of
@@ -131,8 +131,8 @@ TEST(SabiHistogram, SingleAttrHistogramMatchesData) {
   }
   BuiltIndex built = BuildIndex(I64Options(), rows);
 
-  OrderedAttrHistogram h;
-  ASSERT_TRUE(built.reader->OrderedHistogram(0, &h));
+  RangeAttrHistogram h;
+  ASSERT_TRUE(built.reader->RangeHistogram(0, &h));
   ASSERT_GE(h.boundaries.size(), 2u);
   ASSERT_EQ(h.counts.size(), h.boundaries.size() - 1);
   ASSERT_GT(h.counts.size(), 1u) << "budget must allocate >1 bin";
@@ -146,7 +146,7 @@ TEST(SabiHistogram, SingleAttrHistogramMatchesData) {
   EXPECT_EQ(h.counts, CountPerBin(h.boundaries, values));
 }
 
-// Workload: {UNORDERED, ORDERED, ORDERED} schema where the two ordered attrs
+// Workload: {kEquality, kRange, kRange} schema where the two ordered attrs
 //           carry disjoint value ranges (0..499 vs 1000..1499).
 // Threat: the per-attr bitmap ranges live in one flat array; an off-by-one in
 //         the attr offset arithmetic reads a neighbor attr's bitmaps and
@@ -163,9 +163,9 @@ TEST(SabiHistogram, MixedSchemaAttrsKeepTheirOwnCounts) {
   }
   BuiltIndex built = BuildIndex(MixedOptions(), rows);
 
-  OrderedAttrHistogram h1, h2;
-  ASSERT_TRUE(built.reader->OrderedHistogram(1, &h1));
-  ASSERT_TRUE(built.reader->OrderedHistogram(2, &h2));
+  RangeAttrHistogram h1, h2;
+  ASSERT_TRUE(built.reader->RangeHistogram(1, &h1));
+  ASSERT_TRUE(built.reader->RangeHistogram(2, &h2));
 
   EXPECT_EQ(h1.boundaries.front(), I64ToOkey(0));
   EXPECT_EQ(h1.boundaries.back(), I64ToOkey(499));
@@ -180,7 +180,7 @@ TEST(SabiHistogram, MixedSchemaAttrsKeepTheirOwnCounts) {
 
 // Workload: a caller sweeping every attr index of a mixed blob, plus one
 //           index past the end.
-// Threat: an UNORDERED attr holds a string binning policy in the variant;
+// Threat: an kEquality attr holds a string binning policy in the variant;
 //         reading it as okey boundaries (or indexing past attr_num) is
 //         undefined behavior instead of a clean "no histogram" answer.
 TEST(SabiHistogram, RejectsUnorderedAndOutOfRangeAttrs) {
@@ -188,9 +188,9 @@ TEST(SabiHistogram, RejectsUnorderedAndOutOfRangeAttrs) {
   for (int64_t i = 0; i < 100; ++i) rows.push_back({std::string("cat"), i, i});
   BuiltIndex built = BuildIndex(MixedOptions(), rows);
 
-  OrderedAttrHistogram h;
-  EXPECT_FALSE(built.reader->OrderedHistogram(0, &h));  // UNORDERED
-  EXPECT_FALSE(built.reader->OrderedHistogram(3, &h));  // out of range
+  RangeAttrHistogram h;
+  EXPECT_FALSE(built.reader->RangeHistogram(0, &h));  // kEquality
+  EXPECT_FALSE(built.reader->RangeHistogram(3, &h));  // out of range
 }
 
 // Workload: 100 valued rows, 20 rows with a NULL attr, 5 tombstones, one
@@ -209,13 +209,13 @@ TEST(SabiHistogram, CountsOnlyBinnedDataRows) {
   BuiltIndex built =
       BuildIndex(I64Options(/*nullable=*/true), rows, /*tombstone_cnt=*/5);
 
-  OrderedAttrHistogram h;
-  ASSERT_TRUE(built.reader->OrderedHistogram(0, &h));
+  RangeAttrHistogram h;
+  ASSERT_TRUE(built.reader->RangeHistogram(0, &h));
   EXPECT_EQ(Sum(h.counts), values.size());
   EXPECT_EQ(h.counts, CountPerBin(h.boundaries, values));
 }
 
-// Workload: an SST whose ORDERED attr is NULL on every row.
+// Workload: an SST whose kRange attr is NULL on every row.
 // Threat: with zero binned rows the stored boundaries come from an empty
 //         t-digest and are meaningless; exposing them as a valid histogram
 //         would inject garbage cells into a global aggregate.
@@ -224,37 +224,37 @@ TEST(SabiHistogram, AllNullAttrHasNoHistogram) {
   for (int64_t i = 0; i < 50; ++i) rows.push_back({std::monostate{}});
   BuiltIndex built = BuildIndex(I64Options(/*nullable=*/true), rows);
 
-  OrderedAttrHistogram h;
-  EXPECT_FALSE(built.reader->OrderedHistogram(0, &h));
+  RangeAttrHistogram h;
+  EXPECT_FALSE(built.reader->RangeHistogram(0, &h));
 }
 
 namespace {
 
-// Single UNORDERED attr; rho 0.1 -> bin budget 10.
+// Single kEquality attr; rho 0.1 -> bin budget 10.
 BitLSMOptions UnorderedOptions(bool nullable = false) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec(AttrRole::UNORDERED, 8, /*is_signed=*/true,
+  o.attr_specs = {AttrSpec(IndexType::kEquality, 8, /*is_signed=*/true,
                            /*is_float=*/true, nullable)};
   o.read_seqno = 0;
   o.rho = 0.1;
   return o;
 }
 
-// {ORDERED i64, UNORDERED}: the leading ordered attr shifts the unordered
+// {kRange i64, kEquality}: the leading ordered attr shifts the unordered
 // attr's bitmap range inside the flat bitmap array.
 BitLSMOptions OrderedThenUnorderedOptions() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, /*is_signed=*/true,
+  o.attr_specs = {AttrSpec(IndexType::kRange, 8, /*is_signed=*/true,
                            /*is_float=*/false),
-                  AttrSpec{AttrRole::UNORDERED}};
+                  AttrSpec{IndexType::kEquality}};
   o.read_seqno = 0;
   o.rho = 0.1;
   return o;
 }
 
-double SumCounts(const UnorderedAttrValueCounts& c) {
+double SumCounts(const EqualityAttrValueCounts& c) {
   double s = 0;
   for (const auto& [value, count] : c.value_counts) s += count;
   return s;
@@ -262,7 +262,7 @@ double SumCounts(const UnorderedAttrValueCounts& c) {
 
 }  // namespace
 
-// Workload: 160 rows over {ORDERED, UNORDERED} where the unordered attr has
+// Workload: 160 rows over {kRange, kEquality} where the unordered attr has
 //           3 distinct values with known counts (red 100 / green 50 /
 //           blue 10) and the bin budget covers all of them.
 // Threat: with one value per bin every count must be exact; a crossed
@@ -276,8 +276,8 @@ TEST(SabiValueCounts, ExactCountsWhenBudgetCoversValues) {
   }
   BuiltIndex built = BuildIndex(OrderedThenUnorderedOptions(), rows);
 
-  UnorderedAttrValueCounts c;
-  ASSERT_TRUE(built.reader->UnorderedValueCounts(1, &c));
+  EqualityAttrValueCounts c;
+  ASSERT_TRUE(built.reader->EqualityValueCounts(1, &c));
   // Entries come back sorted by value, one per interned distinct value.
   std::vector<std::pair<std::string, double>> expected = {
       {"blue", 10.0}, {"green", 50.0}, {"red", 100.0}};
@@ -298,8 +298,8 @@ TEST(SabiValueCounts, SharedBinsSplitCardinalityUniformly) {
   }
   BuiltIndex built = BuildIndex(UnorderedOptions(), rows);
 
-  UnorderedAttrValueCounts c;
-  ASSERT_TRUE(built.reader->UnorderedValueCounts(0, &c));
+  EqualityAttrValueCounts c;
+  ASSERT_TRUE(built.reader->EqualityValueCounts(0, &c));
   ASSERT_EQ(c.value_counts.size(), 20u);
   for (const auto& [value, count] : c.value_counts)
     EXPECT_DOUBLE_EQ(count, 10.0) << "value " << value;
@@ -308,7 +308,7 @@ TEST(SabiValueCounts, SharedBinsSplitCardinalityUniformly) {
 
 // Workload: a caller sweeping every attr index of a mixed blob, plus one
 //           index past the end.
-// Threat: an ORDERED attr holds okey boundaries in the variant; reading it
+// Threat: an kRange attr holds okey boundaries in the variant; reading it
 //         as string entries (or indexing past attr_num) is undefined
 //         behavior instead of a clean "no counts" answer.
 TEST(SabiValueCounts, RejectsOrderedAndOutOfRangeAttrs) {
@@ -316,9 +316,9 @@ TEST(SabiValueCounts, RejectsOrderedAndOutOfRangeAttrs) {
   for (int64_t i = 0; i < 100; ++i) rows.push_back({i, std::string("cat")});
   BuiltIndex built = BuildIndex(OrderedThenUnorderedOptions(), rows);
 
-  UnorderedAttrValueCounts c;
-  EXPECT_FALSE(built.reader->UnorderedValueCounts(0, &c));  // ORDERED
-  EXPECT_FALSE(built.reader->UnorderedValueCounts(2, &c));  // out of range
+  EqualityAttrValueCounts c;
+  EXPECT_FALSE(built.reader->EqualityValueCounts(0, &c));  // kRange
+  EXPECT_FALSE(built.reader->EqualityValueCounts(2, &c));  // out of range
 }
 
 // Workload: 100 valued rows, 20 rows with a NULL attr, 5 tombstones, one
@@ -333,12 +333,12 @@ TEST(SabiValueCounts, CountsOnlyBinnedDataRows) {
   BuiltIndex built = BuildIndex(UnorderedOptions(/*nullable=*/true), rows,
                                 /*tombstone_cnt=*/5);
 
-  UnorderedAttrValueCounts c;
-  ASSERT_TRUE(built.reader->UnorderedValueCounts(0, &c));
+  EqualityAttrValueCounts c;
+  ASSERT_TRUE(built.reader->EqualityValueCounts(0, &c));
   EXPECT_DOUBLE_EQ(SumCounts(c), 100.0);
 }
 
-// Workload: an SST whose UNORDERED attr is NULL on every row.
+// Workload: an SST whose kEquality attr is NULL on every row.
 // Threat: with no interned values there is no equality material; exposing an
 //         empty-but-true result would make callers treat "no data" as "zero
 //         selectivity for every value".
@@ -347,8 +347,8 @@ TEST(SabiValueCounts, AllNullAttrHasNoCounts) {
   for (int64_t i = 0; i < 50; ++i) rows.push_back({std::monostate{}});
   BuiltIndex built = BuildIndex(UnorderedOptions(/*nullable=*/true), rows);
 
-  UnorderedAttrValueCounts c;
-  EXPECT_FALSE(built.reader->UnorderedValueCounts(0, &c));
+  EqualityAttrValueCounts c;
+  EXPECT_FALSE(built.reader->EqualityValueCounts(0, &c));
 }
 
 TEST(SabiHistogram, CountsComeFromDirectoryNotBitmaps) {
@@ -357,8 +357,8 @@ TEST(SabiHistogram, CountsComeFromDirectoryNotBitmaps) {
   auto built = BuildIndex(I64Options(), rows);
   // The directory persists counts; the histogram must equal the decoded truth.
   ASSERT_FALSE(built.reader->bin_cardinalities.empty());
-  OrderedAttrHistogram h;
-  ASSERT_TRUE(built.reader->OrderedHistogram(0, &h));
+  RangeAttrHistogram h;
+  ASSERT_TRUE(built.reader->RangeHistogram(0, &h));
   uint32_t off = 0;  // attr 0 → flat offset 0
   for (size_t b = 0; b < h.counts.size(); ++b)
     EXPECT_EQ(h.counts[b],

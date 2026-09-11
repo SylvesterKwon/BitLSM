@@ -15,7 +15,7 @@ namespace {
 BitLSMOptions ContOpt() {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec{AttrRole::ORDERED}};
+  o.attr_specs = {AttrSpec{IndexType::kRange}};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;

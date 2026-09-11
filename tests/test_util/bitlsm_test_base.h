@@ -97,8 +97,8 @@ class BitLSMTestBase : public ::testing::Test {
   BitLSMOptions DefaultOptions() {
     BitLSMOptions options;
     options.attr_num = 2;
-    options.attr_specs = {AttrSpec{AttrRole::ORDERED},
-                          AttrSpec{AttrRole::UNORDERED}};
+    options.attr_specs = {AttrSpec{IndexType::kRange},
+                          AttrSpec{IndexType::kEquality}};
     options.read_seqno = 0;
     options.rho = 0.5;
     return options;

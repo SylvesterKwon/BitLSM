@@ -12,8 +12,8 @@
 #include "bit_lsm_option.h"
 
 // A row attribute value. std::monostate is SQL NULL (only for nullable attrs);
-// ORDERED attrs carry a native scalar (int64/uint64 per signedness, or double
-// for float/double); UNORDERED attrs carry opaque bytes.
+// kRange attrs carry a native scalar (int64/uint64 per signedness, or double
+// for float/double); kEquality attrs carry opaque bytes.
 using Attr =
     std::variant<std::monostate, int64_t, uint64_t, double, std::string>;
 
@@ -25,7 +25,7 @@ namespace bit_lsm {
 // The null bitmap (present only when some attr is nullable; bit set = NULL)
 // leads so its size is schema-derived. Only information that cannot be derived
 // from the schema is stored: var_end[r] is the end offset of the r-th unordered
-// attr's bytes relative to unordered_base. Fixed-width ORDERED attrs live at
+// attr's bytes relative to unordered_base. Fixed-width kRange attrs live at
 // schema-derived offsets (each spec.width bytes; double = 8B, so a non-nullable
 // double-only schema is byte-identical to v2), and the payload spans
 // [unordered_base + var_end[last], value.size()), so neither needs a stored
@@ -35,8 +35,8 @@ struct ValueLayout {
   uint32_t n_nullable = 0;
   uint32_t null_bitmap_bytes = 0;  // ceil(n_nullable/8); leading header bytes
   uint32_t unordered_base = 0;
-  // attr_idx -> ORDERED: absolute byte offset of the native value
-  //             UNORDERED: rank among unordered attrs
+  // attr_idx -> kRange: absolute byte offset of the native value
+  //             kEquality: rank among unordered attrs
   std::vector<uint32_t> slot;
   std::vector<uint8_t> is_ordered;
   std::vector<int32_t> null_bit;  // attr_idx -> null-bitmap bit position, or -1
@@ -49,7 +49,7 @@ struct ValueLayout {
     is_ordered.resize(attr_num);
     null_bit.assign(attr_num, -1);
     for (uint32_t i = 0; i < attr_num; ++i) {
-      if (specs[i].role == AttrRole::UNORDERED) n_unordered++;
+      if (specs[i].index_type == IndexType::kEquality) n_unordered++;
       if (specs[i].nullable) null_bit[i] = static_cast<int32_t>(n_nullable++);
     }
     null_bitmap_bytes = (n_nullable + 7) / 8;
@@ -58,7 +58,7 @@ struct ValueLayout {
                    n_unordered * static_cast<uint32_t>(sizeof(uint32_t));
     uint32_t unordered_rank = 0;
     for (uint32_t i = 0; i < attr_num; ++i) {
-      if (specs[i].role == AttrRole::ORDERED) {
+      if (specs[i].index_type == IndexType::kRange) {
         is_ordered[i] = 1;
         slot[i] = off;
         off += specs[i].width;
@@ -81,7 +81,7 @@ inline bool IsNullBitSet(const char* base, int32_t null_bit) {
 using AttrView =
     std::variant<std::monostate, int64_t, uint64_t, double, std::string_view>;
 
-// Write an ORDERED attr's native value as spec.width little-endian bytes.
+// Write an kRange attr's native value as spec.width little-endian bytes.
 inline void EncodeOrdered(char* dst, const Attr& v, const AttrSpec& s) {
   if (s.is_float) {
     double d = std::get<double>(v);
@@ -100,7 +100,7 @@ inline void EncodeOrdered(char* dst, const Attr& v, const AttrSpec& s) {
   }
 }
 
-// Read an ORDERED attr's native value (spec.width bytes) back to a widened
+// Read an kRange attr's native value (spec.width bytes) back to a widened
 // AttrView (int64/uint64/double).
 inline AttrView DecodeOrdered(const char* src, const AttrSpec& s) {
   if (s.is_float) {
@@ -127,7 +127,7 @@ inline AttrView DecodeOrdered(const char* src, const AttrSpec& s) {
   return raw;
 }
 
-// Project a decoded ORDERED scalar to the double binning domain. Binning is
+// Project a decoded kRange scalar to the double binning domain. Binning is
 // approximate (double magnitude); the exact answer is preserved by the native
 // typed re-check, so a lossy projection here only affects false-positive rate.
 inline double OrderedToDouble(const AttrView& v) {
@@ -139,7 +139,7 @@ inline double OrderedToDouble(const AttrView& v) {
 }
 
 // Same projection for a query comparand (Attr-shaped variant; the string
-// alternative is unreachable for an ORDERED attr past Validate()).
+// alternative is unreachable for an kRange attr past Validate()).
 inline double OrderedToDouble(
     const std::variant<int64_t, uint64_t, double, std::string>& v) {
   if (std::holds_alternative<int64_t>(v))
@@ -251,7 +251,7 @@ inline void TEST_DumpValue(BitLSMOptions options, rocksdb::Slice input) {
     AttrView av = DecodeAttr(layout, input.ToStringView(), i);
     if (std::holds_alternative<std::monostate>(av)) {
       std::cout << "NULL";
-    } else if (options.attr_specs[i].role == AttrRole::ORDERED) {
+    } else if (options.attr_specs[i].index_type == IndexType::kRange) {
       std::cout << std::fixed << std::setprecision(6) << OrderedToDouble(av);
     } else {
       std::cout << std::get<std::string_view>(av);

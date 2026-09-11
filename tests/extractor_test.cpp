@@ -8,7 +8,7 @@
 
 using namespace bit_lsm;
 
-// Workload: a v3 row with [ORDERED double, UNORDERED bytes, ORDERED i64]
+// Workload: a v3 row with [kRange double, kEquality bytes, kRange i64]
 //           attrs, extracted through ValueLayoutExtractor.
 // Threat: extractor output diverging from DecodeAttr + OrderedToOkey (as
 //         8-byte okey bytes) would put rows into different bins than the
@@ -16,9 +16,9 @@ using namespace bit_lsm;
 TEST(ValueLayoutExtractor, MatchesDecodeAttr) {
   BitLSMOptions o;
   o.attr_num = 3;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, true, true, true),  // double
-                  AttrSpec(AttrRole::UNORDERED),                     // bytes
-                  AttrSpec(AttrRole::ORDERED, 8, true, false, false)};  // i64
+  o.attr_specs = {AttrSpec(IndexType::kRange, 8, true, true, true),  // double
+                  AttrSpec(IndexType::kEquality),                     // bytes
+                  AttrSpec(IndexType::kRange, 8, true, false, false)};  // i64
 
   std::vector<Attr> attrs = {Attr(3.25), Attr(std::string("seoul")),
                              Attr(int64_t(-42))};
@@ -34,14 +34,14 @@ TEST(ValueLayoutExtractor, MatchesDecodeAttr) {
   EXPECT_EQ(std::get<std::string_view>(out[2]), OkeyToBytes(I64ToOkey(-42)));
 }
 
-// Workload: a v3 row whose nullable ORDERED attr is SQL NULL.
+// Workload: a v3 row whose nullable kRange attr is SQL NULL.
 // Threat: a NULL leaking through as okey 0 (instead of monostate) would land
 //         the row in a value bin and match value predicates it must not.
 TEST(ValueLayoutExtractor, NullBecomesMonostate) {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, true, true, true),
-                  AttrSpec(AttrRole::UNORDERED)};
+  o.attr_specs = {AttrSpec(IndexType::kRange, 8, true, true, true),
+                  AttrSpec(IndexType::kEquality)};
   std::vector<Attr> attrs = {Attr(std::monostate{}), Attr(std::string("x"))};
   std::string row;
   EncodeValue(o, attrs, "", row);

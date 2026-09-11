@@ -75,7 +75,7 @@ TEST_F(BitLSMTestBase, RangeQueryCoalescesBinReads) {
   Rng rng(3);
   BitLSMOptions schema;
   schema.attr_num = 1;
-  schema.attr_specs = {AttrSpec{AttrRole::ORDERED}};
+  schema.attr_specs = {AttrSpec{IndexType::kRange}};
   schema.rho = 0.05;  // finest binning tier: ~20 bins on one attr
   schema.read_seqno = 0;
   schema.ondemand_index = true;
@@ -132,8 +132,8 @@ TEST_F(BitLSMTestBase, MultiAttrColdRunsPlanSpanPrefetch) {
   Rng rng(4);
   BitLSMOptions schema;
   schema.attr_num = 2;
-  schema.attr_specs = {AttrSpec{AttrRole::ORDERED},
-                       AttrSpec{AttrRole::ORDERED}};
+  schema.attr_specs = {AttrSpec{IndexType::kRange},
+                       AttrSpec{IndexType::kRange}};
   schema.rho = 0.05;  // finest binning tier: ~20 bins per attr
   schema.read_seqno = 0;
   schema.ondemand_index = true;
@@ -286,7 +286,7 @@ TEST_F(BitLSMTestBase, EstimatorRebuildLoadsNoBitmaps) {
 // fit individually and evict each other as the scan moves on, so they always
 // succeed regardless of how many are touched in sequence; the ~28 KB bin can
 // never fit under any eviction, full stop.
-// 200,000 rows on one ORDERED attr at the coarsest rho (0.5, few/big bins)
+// 200,000 rows on one kRange attr at the coarsest rho (0.5, few/big bins)
 // puts one outlier value in a large bin (~28 KB observed) while an EQUAL
 // query on that value verifies on the order of 100+ data blocks (succeeds
 // down to ~9 KB observed); 16 KB sits in the middle of that window. Full-scan
@@ -298,7 +298,7 @@ TEST_F(BitLSMTestBase, TinyCacheStaysCorrect) {
   Rng rng(2);
   BitLSMOptions schema;
   schema.attr_num = 1;
-  schema.attr_specs = {AttrSpec{AttrRole::ORDERED}};
+  schema.attr_specs = {AttrSpec{IndexType::kRange}};
   schema.rho = 0.5;  // coarsest binning: fewest, largest bins
   schema.read_seqno = 0;
   schema.ondemand_index = true;

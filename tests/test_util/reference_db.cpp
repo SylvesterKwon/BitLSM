@@ -16,7 +16,7 @@ bool ReferenceDB::MatchCondition(const QueryCondition& cond,
   const Attr& a = attrs[cond.attr_idx];
   // 3VL: a NULL attr makes every comparison UNKNOWN, i.e. not a match.
   if (std::holds_alternative<std::monostate>(a)) return false;
-  if (options_.attr_specs[cond.attr_idx].role == AttrRole::ORDERED) {
+  if (options_.attr_specs[cond.attr_idx].index_type == IndexType::kRange) {
     // Compare in the native domain fixed by the attr's spec.
     if (std::holds_alternative<int64_t>(a))
       return ApplyCompareOp(cond.op, std::get<int64_t>(a),

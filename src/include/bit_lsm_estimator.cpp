@@ -18,7 +18,7 @@ using namespace rocksdb;
 
 namespace bit_lsm {
 
-double GlobalOrderedStats::CumBelow(uint64_t okey) const {
+double GlobalRangeStats::CumBelow(uint64_t okey) const {
   if (okey <= min_okey || total == 0) return 0;
   uint64_t span = max_okey - min_okey;
   uint64_t s = okey - min_okey;
@@ -34,14 +34,14 @@ double GlobalOrderedStats::CumBelow(uint64_t okey) const {
   return below + cell_mass * (p - cell);
 }
 
-double GlobalOrderedStats::RangeMass(uint64_t lo, uint64_t hi) const {
+double GlobalRangeStats::RangeMass(uint64_t lo, uint64_t hi) const {
   if (hi < lo || total == 0) return 0;
   // Inclusive upper edge: okeys are integers, so "<= hi" is "< hi + 1".
   double upper = hi >= max_okey ? total : CumBelow(hi + 1);
   return std::max(0.0, upper - CumBelow(lo));
 }
 
-double GlobalOrderedStats::PointAwareRangeMass(uint64_t lo, uint64_t hi) const {
+double GlobalRangeStats::PointAwareRangeMass(uint64_t lo, uint64_t hi) const {
   double mass = RangeMass(lo, hi);
   // NDV equality floor, point windows INSIDE the live span only: the grid
   // smears mass uniformly over the okey span, so on a sparse domain an
@@ -56,7 +56,7 @@ double GlobalOrderedStats::PointAwareRangeMass(uint64_t lo, uint64_t hi) const {
   return std::min(mass, total);
 }
 
-double GlobalOrderedStats::CandidateMass(uint64_t lo, uint64_t hi,
+double GlobalRangeStats::CandidateMass(uint64_t lo, uint64_t hi,
                                          double match_mass) const {
   if (hi < lo || sst_bins.empty()) return match_mass;
   // Pass 1: span-uniform overlap mass per covering SST -- the weight that
@@ -106,7 +106,7 @@ namespace {
 // max_okey]: each source bin's count is spread over the cells it overlaps,
 // proportional to overlap length (uniform-within-bin assumption), in
 // min_okey-shifted coordinates.
-void ProjectHistogram(const OrderedAttrHistogram& hist, uint64_t min_okey,
+void ProjectHistogram(const RangeAttrHistogram& hist, uint64_t min_okey,
                       uint64_t max_okey, vector<double>& cells) {
   uint64_t span = max_okey - min_okey;
   const size_t n = cells.size();
@@ -148,8 +148,8 @@ CardinalityEstimator::CardinalityEstimator(DBImpl* db_impl,
       grid_cells_(std::max(1u, options.estimator_grid_cells)),
       min_rebuild_interval_ms_(options.estimator_min_rebuild_interval_ms) {
   auto empty = std::make_shared<GlobalStats>();
-  empty->ordered.resize(schema_.attr_num());
-  empty->unordered.resize(schema_.attr_num());
+  empty->range.resize(schema_.attr_num());
+  empty->equality.resize(schema_.attr_num());
   cached_ = std::move(empty);
   worker_ = std::thread([this] { WorkerLoop(); });
   NotifyChange();  // prime: build the current live set at open
@@ -304,17 +304,17 @@ bool WindowToOkeys(const bit_lsm::ByteInterval& w, uint64_t* lo,
 // Standalone selectivity of one condition (used for OR-clause members).
 // Returns -1 when the condition is unestimatable (caller flags fallback).
 double ConditionSelectivity(const SABICondition& cond, const GlobalStats& stats,
-                            const std::vector<AttrRole>& roles, double phys) {
-  if (cond.attr_idx >= roles.size()) return -1;
-  if (roles[cond.attr_idx] == AttrRole::ORDERED) {
-    const auto& ord = stats.ordered[cond.attr_idx];
+                            const std::vector<IndexType>& index_types, double phys) {
+  if (cond.attr_idx >= index_types.size()) return -1;
+  if (index_types[cond.attr_idx] == IndexType::kRange) {
+    const auto& ord = stats.range[cond.attr_idx];
     if (!ord.has_value()) return -1;
     uint64_t lo, hi;
     if (!WindowToOkeys(cond.win, &lo, &hi)) return -1;
     if (lo > hi) return 0;
     return ord->PointAwareRangeMass(lo, hi) / phys;
   }
-  const auto& uno = stats.unordered[cond.attr_idx];
+  const auto& uno = stats.equality[cond.attr_idx];
   if (!uno.has_value()) return -1;
   auto it = uno->value_counts.find(cond.bytes);
   if (it != uno->value_counts.end()) return it->second / phys;
@@ -327,19 +327,19 @@ double ConditionSelectivity(const SABICondition& cond, const GlobalStats& stats,
 // whose match fraction f is already known (>= 0): what the bin-granular
 // pruning ADMITS for this condition alone.
 double ConditionCandidate(const SABICondition& cond, const GlobalStats& stats,
-                          const std::vector<AttrRole>& roles, double phys,
+                          const std::vector<IndexType>& index_types, double phys,
                           double f) {
-  if (roles[cond.attr_idx] == AttrRole::ORDERED) {
-    const auto& ord = stats.ordered[cond.attr_idx];
+  if (index_types[cond.attr_idx] == IndexType::kRange) {
+    const auto& ord = stats.range[cond.attr_idx];
     uint64_t lo, hi;
     if (!WindowToOkeys(cond.win, &lo, &hi) || lo > hi) return 0;
     return std::min(1.0, ord->CandidateMass(lo, hi, f * phys) / phys);
   }
-  // UNORDERED equality: provable absence prunes every SST at execution;
+  // kEquality equality: provable absence prunes every SST at execution;
   // otherwise the value's whole balance-packed bin per SST is fetched, and
   // a value hotter than the average bin floors at its own match mass.
   if (f == 0) return 0;
-  const auto& uno = stats.unordered[cond.attr_idx];
+  const auto& uno = stats.equality[cond.attr_idx];
   return std::min(1.0, std::max(f, uno->binmass_sum / phys));
 }
 
@@ -375,16 +375,16 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
     if (clause.size() == 1) {
       const SABICondition& cond = clause[0];
       if (cond.attr_idx < schema_.attr_num() &&
-          schema_.roles[cond.attr_idx] == AttrRole::ORDERED) {
+          schema_.index_types[cond.attr_idx] == IndexType::kRange) {
         windows[cond.attr_idx].Intersect(cond.win);
       } else {
-        double f = ConditionSelectivity(cond, *stats, schema_.roles, phys);
+        double f = ConditionSelectivity(cond, *stats, schema_.index_types, phys);
         if (f < 0) {
           fallback.insert(cond.attr_idx);
         } else {
           product *= f;
           cand_product *=
-              ConditionCandidate(cond, *stats, schema_.roles, phys, f);
+              ConditionCandidate(cond, *stats, schema_.index_types, phys, f);
         }
       }
     } else {
@@ -395,13 +395,13 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
       double cand_sum = 0;
       bool clause_fallback = false;
       for (const SABICondition& cond : clause) {
-        double f = ConditionSelectivity(cond, *stats, schema_.roles, phys);
+        double f = ConditionSelectivity(cond, *stats, schema_.index_types, phys);
         if (f < 0) {
           clause_fallback = true;
           fallback.insert(cond.attr_idx);
         } else {
           sum += f;
-          cand_sum += ConditionCandidate(cond, *stats, schema_.roles, phys, f);
+          cand_sum += ConditionCandidate(cond, *stats, schema_.index_types, phys, f);
         }
       }
       if (!clause_fallback) {
@@ -412,7 +412,7 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
   }
 
   for (const auto& [attr_idx, w] : windows) {
-    const auto& ord = stats->ordered[attr_idx];
+    const auto& ord = stats->range[attr_idx];
     uint64_t lo, hi;
     if (!ord.has_value() || !WindowToOkeys(w, &lo, &hi)) {
       fallback.insert(attr_idx);
@@ -451,12 +451,12 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
     SuperVersion* sv) {
   const uint32_t attr_num = schema_.attr_num();
   auto stats = std::make_shared<GlobalStats>();
-  stats->ordered.resize(attr_num);
-  stats->unordered.resize(attr_num);
+  stats->range.resize(attr_num);
+  stats->equality.resize(attr_num);
 
   // Ordered histograms are buffered so the grid domain can be derived from
   // the live min/max okey before projecting; unordered counts merge inline.
-  vector<vector<OrderedAttrHistogram>> hists(attr_num);
+  vector<vector<RangeAttrHistogram>> hists(attr_num);
   vector<unordered_map<string, double>> value_maps(attr_num);
   vector<double> unordered_totals(attr_num, 0);
   vector<double> unordered_binmass_sums(attr_num, 0);
@@ -506,12 +506,12 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
       stats->live_sst_count++;
 
       for (uint32_t a = 0; a < attr_num; ++a) {
-        if (schema_.roles[a] == AttrRole::ORDERED) {
-          OrderedAttrHistogram h;
-          if (reader->OrderedHistogram(a, &h)) hists[a].push_back(std::move(h));
+        if (schema_.index_types[a] == IndexType::kRange) {
+          RangeAttrHistogram h;
+          if (reader->RangeHistogram(a, &h)) hists[a].push_back(std::move(h));
         } else {
-          UnorderedAttrValueCounts c;
-          if (reader->UnorderedValueCounts(a, &c)) {
+          EqualityAttrValueCounts c;
+          if (reader->EqualityValueCounts(a, &c)) {
             double sst_total = 0;
             for (auto& [value, count] : c.value_counts) {
               value_maps[a][value] += count;
@@ -533,9 +533,9 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
   }
 
   for (uint32_t a = 0; a < attr_num; ++a) {
-    if (schema_.roles[a] == AttrRole::ORDERED) {
+    if (schema_.index_types[a] == IndexType::kRange) {
       if (hists[a].empty()) continue;
-      GlobalOrderedStats ord;
+      GlobalRangeStats ord;
       ord.min_okey = UINT64_MAX;
       ord.max_okey = 0;
       ord.sst_bins.reserve(hists[a].size());
@@ -545,7 +545,7 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
         // Union NDV >= any per-SST distinct count: a safe lower bound (and
         // exact when every SST sees the full value set, e.g. uniform data).
         ord.ndv = std::max(ord.ndv, h.distinct);
-        GlobalOrderedStats::SSTBins b;
+        GlobalRangeStats::SSTBins b;
         b.lo = h.boundaries.front();
         b.hi = h.boundaries.back();
         for (uint64_t c : h.counts) b.total += static_cast<double>(c);
@@ -562,10 +562,10 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
         ord.cell_psum[c] = acc;
       }
       ord.total = acc;
-      stats->ordered[a] = std::move(ord);
+      stats->range[a] = std::move(ord);
     } else {
       if (value_maps[a].empty()) continue;
-      GlobalUnorderedStats uno;
+      GlobalEqualityStats uno;
       uno.total = unordered_totals[a];
       uno.binmass_sum = unordered_binmass_sums[a];
       if (value_maps[a].size() > kMaxTrackedValues) {
@@ -582,7 +582,7 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
       } else {
         uno.value_counts = std::move(value_maps[a]);
       }
-      stats->unordered[a] = std::move(uno);
+      stats->equality[a] = std::move(uno);
     }
   }
   return stats;

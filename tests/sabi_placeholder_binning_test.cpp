@@ -18,14 +18,14 @@ using UDIB = rocksdb::UserDefinedIndexBuilder;
 
 namespace {
 
-// One ORDERED int64 attr + one UNORDERED attr; rho 0.25 -> bin budget 8.
+// One kRange int64 attr + one kEquality attr; rho 0.25 -> bin budget 8.
 BitLSMOptions MixedOptions() {
   BitLSMOptions o;
   o.attr_num = 2;
   o.attr_specs = {
-      AttrSpec(AttrRole::ORDERED, 8, /*is_signed=*/true, /*is_float=*/false,
+      AttrSpec(IndexType::kRange, 8, /*is_signed=*/true, /*is_float=*/false,
                /*nullable=*/true),
-      AttrSpec(AttrRole::UNORDERED)};
+      AttrSpec(IndexType::kEquality)};
   o.read_seqno = 0;
   o.rho = 0.25;
   return o;
@@ -98,7 +98,7 @@ uint64_t BinCardinalitySum(const SABIReader& reader, uint32_t i) {
 }  // namespace
 
 // Workload: 100 data rows, 10 NULL-attr rows, and 5 deletion entries in one
-//           blob; inspect every value bin of the ORDERED attr.
+//           blob; inspect every value bin of the kRange attr.
 // Threat: placeholder rows (NULL/tombstone) leaking into value bins — a
 //         tombstone binned by its dummy okey 0 lands in the lowest bin and
 //         bloats every range query touching it.
@@ -117,7 +117,7 @@ TEST(SabiPlaceholderBinning, OrderedValueBinsHoldOnlyDataRows) {
   EXPECT_EQ(boundaries.back(), OkeyToBytes(I64ToOkey(99)));
 }
 
-// Workload: the same blob; inspect the UNORDERED attr's binning policy and
+// Workload: the same blob; inspect the kEquality attr's binning policy and
 //           bins. Only "c0".."c3" are real category bytes.
 // Threat: NULL/tombstone placeholders interned as "" fabricate a phantom
 //         category — it wastes a bin slot, skews the frequency-based bin

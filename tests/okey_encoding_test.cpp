@@ -133,30 +133,30 @@ TEST(OkeyBytes, RoundTrip) {
 static BitLSMOptions MakeOpts3() {
   BitLSMOptions o;
   o.attr_num = 3;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, true, true, true),
-                  AttrSpec(AttrRole::UNORDERED),
-                  AttrSpec(AttrRole::ORDERED, 4, true, false, false)};
+  o.attr_specs = {AttrSpec(IndexType::kRange, 8, true, true, true),
+                  AttrSpec(IndexType::kEquality),
+                  AttrSpec(IndexType::kRange, 4, true, false, false)};
   o.rho = 0.2;
   return o;
 }
 
 // Workload: derive SABISchema from a 3-attr BitLSMOptions.
-// Threat: dropping or reordering roles during derivation would make SABI
+// Threat: dropping or reordering index_types during derivation would make SABI
 //         parse bins with the wrong binning-policy variant.
 TEST(SABISchema, FromOptionsKeepsOnlyRoles) {
   SABISchema s = SABISchema::FromOptions(MakeOpts3());
   ASSERT_EQ(s.attr_num(), 3u);
-  EXPECT_EQ(s.roles[0], AttrRole::ORDERED);
-  EXPECT_EQ(s.roles[1], AttrRole::UNORDERED);
+  EXPECT_EQ(s.index_types[0], IndexType::kRange);
+  EXPECT_EQ(s.index_types[1], IndexType::kEquality);
   EXPECT_DOUBLE_EQ(s.rho, 0.2);
 }
 
-// Workload: a 3-clause query over [ORDERED f64, UNORDERED, ORDERED i64]
+// Workload: a 3-clause query over [kRange f64, kEquality, kRange i64]
 //           through the standalone adapter's EncodeQuery.
 // Threat: a comparand encoded with the wrong AttrSpec (or left native) makes
 //         every downstream bin comparison meaningless.
 TEST(EncodeQuery, ComparandsLandInSabiDomain) {
-  BitLSMOptions o = MakeOpts3();  // [ORDERED f64, UNORDERED, ORDERED i64]
+  BitLSMOptions o = MakeOpts3();  // [kRange f64, kEquality, kRange i64]
   BitLSMQuery q(
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.5},
                                   {1, CompareOp::EQUAL, std::string("seoul")},

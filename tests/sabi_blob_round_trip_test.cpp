@@ -21,14 +21,14 @@ namespace {
 BitLSMOptions MakeOptions() {
   BitLSMOptions options;
   options.attr_num = 2;
-  options.attr_specs = {AttrSpec{AttrRole::ORDERED},
-                        AttrSpec{AttrRole::UNORDERED}};
+  options.attr_specs = {AttrSpec{IndexType::kRange},
+                        AttrSpec{IndexType::kEquality}};
   options.read_seqno = 0;
   options.rho = 0.5;  // 전체 bin 예산 = attr_num/rho = 4 (속성별 할당은 동적)
   return options;
 }
 
-// Shared fixture: 4 rows over {ORDERED, UNORDERED} and one AddIndexEntry.
+// Shared fixture: 4 rows over {kRange, kEquality} and one AddIndexEntry.
 // Returns an owned copy of the blob since the builder (owner of the Slice
 // memory Finish() points into) goes out of scope on return. When
 // out_bitmap_sizes is non-null, filled with the builder's own
@@ -82,10 +82,10 @@ TEST(SabiBlobRoundTrip, BuildsAndParses) {
   // v5: 리더는 스키마 주입 없이 블롭의 directory 에서 self-describe 한다.
   SABIReader reader(blob);
 
-  // roles 가 블롭에서 그대로 복원되는지.
+  // index_types 가 블롭에서 그대로 복원되는지.
   ASSERT_EQ(reader.schema().attr_num(), options.attr_num);
-  EXPECT_EQ(reader.schema().roles[0], AttrRole::ORDERED);
-  EXPECT_EQ(reader.schema().roles[1], AttrRole::UNORDERED);
+  EXPECT_EQ(reader.schema().index_types[0], IndexType::kRange);
+  EXPECT_EQ(reader.schema().index_types[1], IndexType::kEquality);
 
   // 인덱스 엔트리(블록) 1개.
   ASSERT_EQ(reader.block_handles.size(), 1u);

@@ -16,8 +16,8 @@ namespace {
 BitLSMOptions TwoAttrOpts() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, true, true, false),
-                  AttrSpec(AttrRole::UNORDERED)};
+  o.attr_specs = {AttrSpec(IndexType::kRange, 8, true, true, false),
+                  AttrSpec(IndexType::kEquality)};
   o.rho = 0.5;
   return o;
 }
@@ -76,19 +76,19 @@ TEST(SabiV5Footer, SelfDescribesWithoutSchema) {
   ASSERT_NE(reader, nullptr);
   const SABIReader& sabi = *static_cast<SABIReader*>(reader.get());
   ASSERT_EQ(sabi.schema().attr_num(), 2u);
-  EXPECT_EQ(sabi.schema().roles[0], AttrRole::ORDERED);
-  EXPECT_EQ(sabi.schema().roles[1], AttrRole::UNORDERED);
+  EXPECT_EQ(sabi.schema().index_types[0], IndexType::kRange);
+  EXPECT_EQ(sabi.schema().index_types[1], IndexType::kEquality);
   EXPECT_EQ(sabi.block_handles.size(), 1u);
 }
 
-// Workload: build with [ORDERED, UNORDERED], reopen with attr 1 flipped to
-//           ORDERED.
-// Threat: role selects the binning-policy variant at parse time — a silent
+// Workload: build with [kRange, kEquality], reopen with attr 1 flipped to
+//           kRange.
+// Threat: the index type selects the binning-policy variant at parse time — a silent
 //         mismatch parses string policy bytes as okey thresholds.
 TEST(SabiV5Footer, RejectsRoleFlip) {
   BitLSMOptions build_o = TwoAttrOpts();
   BitLSMOptions read_o = TwoAttrOpts();
-  read_o.attr_specs[1] = AttrSpec(AttrRole::ORDERED);  // UNORDERED->ORDERED
+  read_o.attr_specs[1] = AttrSpec(IndexType::kRange);  // kEquality->kRange
   rocksdb::Status s = OpenViaFactory(SABIFactory(read_o), BuildBlob(build_o));
   EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 }
@@ -108,15 +108,15 @@ TEST(SabiV5Footer, RejectsWrongVersion) {
   EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 }
 
-// Workload: a valid blob whose first stored role byte is patched to a value
-//           outside the AttrRole enum.
-// Threat: the directory is now the source of truth for roles — an
-//         unrecognized role byte must fail loudly at open, not fall through
-//         parse branches as an arbitrary role.
+// Workload: a valid blob whose first stored index-type byte is patched to a value
+//           outside the IndexType enum.
+// Threat: the directory is now the source of truth for index_types — an
+//         unrecognized index-type byte must fail loudly at open, not fall through
+//         parse branches as an arbitrary index type.
 TEST(SabiV5Footer, RejectsUnknownRoleByte) {
   BitLSMOptions o = TwoAttrOpts();
   std::string blob = BuildBlob(o);
-  // directory_off is the third-to-last u32; role bytes start right after the
+  // directory_off is the third-to-last u32; index-type bytes start right after the
   // directory's leading attr_num u32.
   uint32_t directory_off;
   std::memcpy(&directory_off, blob.data() + blob.size() - 3 * sizeof(uint32_t),
@@ -126,7 +126,7 @@ TEST(SabiV5Footer, RejectsUnknownRoleByte) {
   EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 }
 
-// Workload: reopen a blob with width/is_float/nullable changed but roles
+// Workload: reopen a blob with width/is_float/nullable changed but index_types
 //           identical.
 // Threat: validating adapter-private spec fields would invalidate every
 //         existing SST on changes that don't affect blob interpretation

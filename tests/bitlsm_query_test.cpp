@@ -19,13 +19,13 @@ std::set<std::string> ScanKeys(BitLSM& db, BitLSMQuery& query) {
   return keys;
 }
 
-// 2-attr schema: signed int32 ORDERED + UNORDERED string.
+// 2-attr schema: signed int32 kRange + kEquality string.
 BitLSMOptions IntSchema() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 4, /*is_signed=*/true,
+  o.attr_specs = {AttrSpec(IndexType::kRange, 4, /*is_signed=*/true,
                            /*is_float=*/false),
-                  AttrSpec{AttrRole::UNORDERED}};
+                  AttrSpec{IndexType::kEquality}};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;
@@ -44,7 +44,7 @@ TEST_F(BitLSMTestBase, FilteredQueryInMemtable) {
   EXPECT_EQ(ScanKeys(db, query), (std::set<std::string>{"pk1", "pk3"}));
 }
 
-// Workload: a signed native-int (int32) ORDERED attr, range query crossing
+// Workload: a signed native-int (int32) kRange attr, range query crossing
 // zero, evaluated in the memtable.
 // Threat: the int comparand routed through the double path, or a re-check
 // comparing the wrong native type, would drop negatives or misorder near zero.
@@ -82,14 +82,14 @@ TEST_F(BitLSMTestBase, NativeIntRangeAfterFlush) {
   EXPECT_EQ(ScanKeys(db, q2), (std::set<std::string>{"pk1", "pk2"}));
 }
 
-// Workload: an unsigned native-int (uint32) ORDERED attr with a value beyond
+// Workload: an unsigned native-int (uint32) kRange attr with a value beyond
 // INT32_MAX, EQUAL-matched after a flush.
 // Threat: an unsigned comparand misread as signed, or the uint64 re-check
 // path never being exercised.
 TEST_F(BitLSMTestBase, NativeUintEqualityAfterFlush) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 4, /*is_signed=*/false,
+  o.attr_specs = {AttrSpec(IndexType::kRange, 4, /*is_signed=*/false,
                            /*is_float=*/false)};
   o.read_seqno = 0;
   o.rho = 0.5;
@@ -104,7 +104,7 @@ TEST_F(BitLSMTestBase, NativeUintEqualityAfterFlush) {
   EXPECT_EQ(ScanKeys(db, q), (std::set<std::string>{"pk2"}));
 }
 
-// Workload: a nullable ORDERED attr with NULL rows; range/equality queries
+// Workload: a nullable kRange attr with NULL rows; range/equality queries
 // must auto-exclude NULLs (SQL 3VL) in the memtable and after a flush (NULL
 // rows are in no value bin, and the per-row re-check consults the presence
 // bit). A conjunction whose other clause a NULL row satisfies still excludes
@@ -113,8 +113,8 @@ TEST_F(BitLSMTestBase, NativeUintEqualityAfterFlush) {
 TEST_F(BitLSMTestBase, NullRowsExcludedFromQueries) {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, true, true, /*nullable=*/true),
-                  AttrSpec{AttrRole::UNORDERED}};
+  o.attr_specs = {AttrSpec(IndexType::kRange, 8, true, true, /*nullable=*/true),
+                  AttrSpec{IndexType::kEquality}};
   o.read_seqno = 0;
   o.rho = 0.5;
   auto& db = OpenDB(o);

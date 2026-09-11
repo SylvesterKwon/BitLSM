@@ -9,7 +9,7 @@
 using namespace bit_lsm;
 
 namespace {
-// {ORDERED, UNORDERED} schema shared by these scenarios.
+// {kRange, kEquality} schema shared by these scenarios.
 BitLSMQuery GeCont(double v) {
   return BitLSMQuery(
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, v}});

@@ -41,12 +41,12 @@ namespace bit_lsm {
 //                       so one 32B-aligned copy of the region backs every
 //                       frozenView in place.
 //   [binning policies]  per attr:
-//                       ORDERED:   BytesList of bin_count+1 boundaries
+//                       kRange:   BytesList of bin_count+1 boundaries
 //                                  ([count u32][end u32 x count][bytes]),
 //                                  bytes in SABI's memcmp domain
-//                       UNORDERED: [entry_count u32] then
+//                       kEquality: [entry_count u32] then
 //                                  {varint-len string, bin u32} x entry_count
-//   [directory]         [attr_num u32][role u8 x attr_num]
+//   [directory]         [attr_num u32][index_type u8 x attr_num]
 //                       [bin_count u32 x attr_num][index_entries_cnt u32]
 //                       [distinct_cnt u64 x attr_num]
 //                       [bin_cardinality u32 x (total_bins+1)]
@@ -87,14 +87,14 @@ struct BinSelection {
   uint32_t last;
 };
 
-// Per-SST histogram of one ORDERED attribute, the raw material for DB-level
+// Per-SST histogram of one kRange attribute, the raw material for DB-level
 // cardinality estimation: bin i covers okeys [boundaries[i], boundaries[i+1])
 // (the last bin also includes its upper edge), counts[i] is that bin's row
 // count. NULL and tombstone rows sit in no value bin, so they are excluded by
 // construction. Boundaries are recovered from the persisted 8-byte boundary
 // bytes; an attr whose values are raw strings has no histogram in this
-// domain (SABIReader::OrderedHistogram returns false).
-struct OrderedAttrHistogram {
+// domain (SABIReader::RangeHistogram returns false).
+struct RangeAttrHistogram {
   std::vector<uint64_t> boundaries;  // absolute okeys, bin_count + 1
   std::vector<uint64_t> counts;      // bin_count
   // Exact distinct values in this SST. Feeds the estimator's equality floor
@@ -102,13 +102,13 @@ struct OrderedAttrHistogram {
   uint64_t distinct = 0;
 };
 
-// Per-SST equality-count material for one UNORDERED attribute: every
+// Per-SST equality-count material for one kEquality attribute: every
 // interned distinct value paired with an estimated row count, sorted by
 // value. The blob persists only per-bin bitmaps, so a value alone in its bin
 // is exact and values sharing a bin split the bin's cardinality uniformly.
 // NULL and tombstone rows sit in no value bin, so they are excluded by
 // construction.
-struct UnorderedAttrValueCounts {
+struct EqualityAttrValueCounts {
   std::vector<std::pair<std::string, double>> value_counts;
 };
 
@@ -123,7 +123,7 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
   // appended once to a string arena and rows keep only its dense id. The
   // value -> id lookup is a flat open-addressing table so high-cardinality
   // attributes pay no per-value node allocation.
-  struct CatAttrBuf {
+  struct EqualityAttrBuf {
     struct ValueRef {
       uint32_t offset;
       uint32_t len;
@@ -150,7 +150,7 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
     void Grow();
   };
 
-  // Dense per-row buffer for one ORDERED attribute: values as bytes, append
+  // Dense per-row buffer for one kRange attribute: values as bytes, append
   // only, so a row costs one memcpy. Sort() fills `sorted` (row positions in
   // value order) and `distinct`; the bin budget and the binning sweep both
   // read those, so the sort happens once.
@@ -161,12 +161,12 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
     void Sort();
   };
 
-  // Per-attr value buffer, dense: data rows only (ORDERED bytes; UNORDERED
+  // Per-attr value buffer, dense: data rows only (kRange bytes; kEquality
   // interned bytes). NULL and tombstone rows push nothing — they
   // live solely in attr_null_rows_ / tombstone_bitmap — so binning statistics
   // are plain scans. CalculateBitmapIndex is the single place that re-aligns
   // buffer entries with row ids by skipping exactly those bitmaps' ids.
-  std::vector<std::variant<CatAttrBuf, RangeAttrBuf>> attr_buf_;
+  std::vector<std::variant<EqualityAttrBuf, RangeAttrBuf>> attr_buf_;
   // Per-attr set of row ids whose value is SQL NULL. NULL rows land in no
   // value bin and never enter binning-boundary estimation, so range/equality
   // queries auto-exclude them. Empty for non-nullable attrs.
@@ -176,8 +176,8 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
   uint64_t total_data_entries_size_uncomp_ = 0;  // total size of KVPs (bytes)
   uint32_t data_entries_cnt_ = 0;   // total number of KVPs in current table
   uint32_t index_entries_cnt_ = 0;  // total number of index entries added
-  // Per-attr exact distinct values (directory field). ORDERED: the sorted
-  // buffer's run count; UNORDERED: the interning table size.
+  // Per-attr exact distinct values (directory field). kRange: the sorted
+  // buffer's run count; kEquality: the interning table size.
   std::vector<uint64_t> distinct_cnts_;
 
   // Bitmap Index
@@ -192,7 +192,7 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
 
   // Helper methods
   void SetBinningPolicy();
-  void SetUnorderedPropertyBinningPolicy(uint32_t i);
+  void SetEqualityBinningPolicy(uint32_t i);
   void SetRangeBinningPolicy(uint32_t i);
   void CalculateBitmapIndex();
 
@@ -342,7 +342,7 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
                SABIPinnedBin* slots, SABISpanPrefetch* prefetch);
 
  public:
-  // Self-describing: the schema residue (attr roles) is parsed from the
+  // Self-describing: the schema residue (attr index_types) is parsed from the
   // blob's directory, so no schema binding is needed to open an SST.
   explicit SABIReader(rocksdb::Slice& index_block);  // = kResident
   SABIReader(rocksdb::Slice& index_block, SABIReaderMode mode);
@@ -378,8 +378,8 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   const roaring::Roaring* Bin(uint32_t flat_idx, SABIPinnedBin* pin,
                               SABISpanPrefetch* prefetch = nullptr);
   // Computes cond's flat-bin extent without loading anything: the single bin
-  // an UNORDERED equality maps to, or the clamped [first, last] range an
-  // ORDERED comparison covers. Returns false when the condition matches no
+  // an kEquality equality maps to, or the clamped [first, last] range an
+  // kRange comparison covers. Returns false when the condition matches no
   // bin (the empty result). The one source of truth for bin selection: the
   // iterator's materialization and the span-prefetch plan both consume it.
   bool SelectBins(const SABICondition& cond, BinSelection* out) const;
@@ -403,15 +403,15 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   // for a query that could actually match a row.
   bool QueryCanMatch(const SABIQuery& q) const;
   // Fills `out` with attr_idx's histogram in absolute okey coordinates.
-  // Returns false when the attr is out of range, not ORDERED, has zero
+  // Returns false when the attr is out of range, not kRange, has zero
   // binned rows (its stored boundaries are meaningless then), or holds
   // boundaries that are not 8-byte okeys (raw-string values).
-  bool OrderedHistogram(uint32_t attr_idx, OrderedAttrHistogram* out) const;
-  // Fills `out` with attr_idx's per-value counts (see UnorderedAttrValueCounts
+  bool RangeHistogram(uint32_t attr_idx, RangeAttrHistogram* out) const;
+  // Fills `out` with attr_idx's per-value counts (see EqualityAttrValueCounts
   // for exactness). Returns false when the attr is out of range, not
-  // UNORDERED, or has zero binned rows.
-  bool UnorderedValueCounts(uint32_t attr_idx,
-                            UnorderedAttrValueCounts* out) const;
+  // kEquality, or has zero binned rows.
+  bool EqualityValueCounts(uint32_t attr_idx,
+                            EqualityAttrValueCounts* out) const;
   void Dump();
 };
 
@@ -527,8 +527,8 @@ class SABIFactory : public rocksdb::UserDefinedIndexFactory {
   std::unique_ptr<rocksdb::UserDefinedIndexReader> NewReader(
       rocksdb::Slice& index_block_) const override;
   // Rejects blobs with a missing or non-v8 version footer, an invalid
-  // directory, or (when this factory is schema-bound) roles that differ from
-  // the bound schema. A schema-less factory skips the roles cross-check and
+  // directory, or (when this factory is schema-bound) index_types that differ from
+  // the bound schema. A schema-less factory skips the index_types cross-check and
   // trusts the blob's directory.
   rocksdb::Status NewReader(
       const rocksdb::UserDefinedIndexOption& option,

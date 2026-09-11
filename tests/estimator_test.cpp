@@ -21,13 +21,13 @@ using namespace bit_lsm;
 
 namespace {
 
-// {ORDERED i64, UNORDERED}; rho 0.1 -> 20 bins budget per SST.
+// {kRange i64, kEquality}; rho 0.1 -> 20 bins budget per SST.
 BitLSMOptions EstOptions() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, /*is_signed=*/true,
+  o.attr_specs = {AttrSpec(IndexType::kRange, 8, /*is_signed=*/true,
                            /*is_float=*/false),
-                  AttrSpec{AttrRole::UNORDERED}};
+                  AttrSpec{IndexType::kEquality}};
   o.read_seqno = 0;
   o.rho = 0.1;
   o.enable_estimator = true;
@@ -69,8 +69,8 @@ TEST_F(BitLSMTestBase, OrderedRangeMassMatchesUniformData) {
   EXPECT_EQ(stats->physical_rows, 1000u);
   EXPECT_EQ(stats->live_sst_count, 2u);
 
-  ASSERT_TRUE(stats->ordered[0].has_value());
-  const GlobalOrderedStats& ord = *stats->ordered[0];
+  ASSERT_TRUE(stats->range[0].has_value());
+  const GlobalRangeStats& ord = *stats->range[0];
   EXPECT_EQ(ord.min_okey, I64ToOkey(0));
   EXPECT_EQ(ord.max_okey, I64ToOkey(999));
   EXPECT_NEAR(ord.total, 1000.0, 1e-6);
@@ -78,8 +78,8 @@ TEST_F(BitLSMTestBase, OrderedRangeMassMatchesUniformData) {
   EXPECT_NEAR(ord.RangeMass(I64ToOkey(0), I64ToOkey(499)), 500.0, 40.0);
   EXPECT_NEAR(ord.RangeMass(I64ToOkey(750), I64ToOkey(999)), 250.0, 40.0);
 
-  ASSERT_TRUE(stats->unordered[1].has_value());
-  const GlobalUnorderedStats& uno = *stats->unordered[1];
+  ASSERT_TRUE(stats->equality[1].has_value());
+  const GlobalEqualityStats& uno = *stats->equality[1];
   EXPECT_DOUBLE_EQ(uno.total, 1000.0);
   ASSERT_EQ(uno.value_counts.count("x"), 1u);
   EXPECT_DOUBLE_EQ(uno.value_counts.at("x"), 1000.0);
@@ -130,17 +130,17 @@ TEST_F(BitLSMTestBase, ChurnKeepsEstimatesStable) {
   }
 
   std::shared_ptr<const GlobalStats> pre = db.Estimator()->Stats();
-  ASSERT_TRUE(pre->ordered[0].has_value());
-  EXPECT_NEAR(pre->ordered[0]->total, 1000.0, 1e-6);
-  EXPECT_NEAR(pre->ordered[0]->RangeMass(I64ToOkey(0), I64ToOkey(249)), 250.0,
+  ASSERT_TRUE(pre->range[0].has_value());
+  EXPECT_NEAR(pre->range[0]->total, 1000.0, 1e-6);
+  EXPECT_NEAR(pre->range[0]->RangeMass(I64ToOkey(0), I64ToOkey(249)), 250.0,
               35.0);
 
   CompactAllDB(db);
   std::shared_ptr<const GlobalStats> post = db.Estimator()->Stats();
-  ASSERT_TRUE(post->ordered[0].has_value());
-  EXPECT_NEAR(post->ordered[0]->total, 1000.0, 1e-6);
+  ASSERT_TRUE(post->range[0].has_value());
+  EXPECT_NEAR(post->range[0]->total, 1000.0, 1e-6);
   EXPECT_EQ(post->physical_rows, pre->physical_rows);
-  EXPECT_NEAR(post->ordered[0]->RangeMass(I64ToOkey(0), I64ToOkey(249)), 250.0,
+  EXPECT_NEAR(post->range[0]->RangeMass(I64ToOkey(0), I64ToOkey(249)), 250.0,
               35.0);
 }
 
@@ -165,8 +165,8 @@ TEST_F(BitLSMTestBase, UnorderedCountsMergeAcrossSSTs) {
   FlushDB(db);
 
   std::shared_ptr<const GlobalStats> stats = db.Estimator()->Stats();
-  ASSERT_TRUE(stats->unordered[1].has_value());
-  const GlobalUnorderedStats& uno = *stats->unordered[1];
+  ASSERT_TRUE(stats->equality[1].has_value());
+  const GlobalEqualityStats& uno = *stats->equality[1];
   EXPECT_DOUBLE_EQ(uno.value_counts.at("red"), 150.0);
   EXPECT_DOUBLE_EQ(uno.value_counts.at("blue"), 30.0);
   EXPECT_DOUBLE_EQ(uno.total, 180.0);
@@ -188,8 +188,8 @@ TEST_F(BitLSMTestBase, SingleValueAttrKeepsPointMass) {
   FlushDB(db);
 
   std::shared_ptr<const GlobalStats> stats = db.Estimator()->Stats();
-  ASSERT_TRUE(stats->ordered[0].has_value());
-  const GlobalOrderedStats& ord = *stats->ordered[0];
+  ASSERT_TRUE(stats->range[0].has_value());
+  const GlobalRangeStats& ord = *stats->range[0];
   EXPECT_EQ(ord.min_okey, I64ToOkey(42));
   EXPECT_EQ(ord.max_okey, I64ToOkey(42));
   EXPECT_DOUBLE_EQ(ord.RangeMass(I64ToOkey(42), I64ToOkey(42)), 200.0);
@@ -240,9 +240,9 @@ TEST_F(BitLSMTestBase, EmptyBeforeFirstFlush) {
   std::shared_ptr<const GlobalStats> stats = db.Estimator()->Stats();
   EXPECT_EQ(stats->physical_rows, 0u);
   EXPECT_EQ(stats->live_sst_count, 0u);
-  ASSERT_EQ(stats->ordered.size(), 2u);
-  EXPECT_FALSE(stats->ordered[0].has_value());
-  EXPECT_FALSE(stats->unordered[1].has_value());
+  ASSERT_EQ(stats->range.size(), 2u);
+  EXPECT_FALSE(stats->range[0].has_value());
+  EXPECT_FALSE(stats->equality[1].has_value());
 }
 
 // Workload: more distinct unordered values than kMaxTrackedValues in the
@@ -261,8 +261,8 @@ TEST_F(BitLSMTestBase, NdvCapDemotesToTopK) {
   FlushDB(db);
 
   std::shared_ptr<const GlobalStats> stats = db.Estimator()->Stats();
-  ASSERT_TRUE(stats->unordered[1].has_value());
-  const GlobalUnorderedStats& uno = *stats->unordered[1];
+  ASSERT_TRUE(stats->equality[1].has_value());
+  const GlobalEqualityStats& uno = *stats->equality[1];
   EXPECT_TRUE(uno.truncated);
   EXPECT_EQ(uno.value_counts.size(), CardinalityEstimator::kMaxTrackedValues);
   EXPECT_NEAR(uno.total, static_cast<double>(ndv), 1.0)
@@ -407,7 +407,7 @@ TEST_F(BitLSMTestBase, EstimateEmptyLiveSetFlagsFallback) {
   EXPECT_EQ(r.fallback_attrs, (std::vector<uint32_t>{0, 1}));
 }
 
-// Workload: equality on an ORDERED attr whose live span is the single value
+// Workload: equality on an kRange attr whose live span is the single value
 //           42 (EQUAL folds into a degenerate [42,42] window).
 // Threat: EQUAL handled as an unbounded window (or the point mass smeared
 //         away) breaks equality estimates on ordered attrs.
@@ -601,8 +601,8 @@ TEST_F(BitLSMTestBase, UnorderedMergeMatchesReferenceOnRandomInput) {
   FlushDB(db);
 
   std::shared_ptr<const GlobalStats> stats = db.Estimator()->Stats();
-  ASSERT_TRUE(stats->unordered[1].has_value());
-  const GlobalUnorderedStats& uno = *stats->unordered[1];
+  ASSERT_TRUE(stats->equality[1].has_value());
+  const GlobalEqualityStats& uno = *stats->equality[1];
   ASSERT_EQ(uno.value_counts.size(), reference.size());
   double expected_total = 0;
   for (const auto& [value, count] : reference) {
@@ -648,9 +648,9 @@ TEST_F(BitLSMTestBase, GridCellsOptionControlsResolution) {
   FlushDB(db);
 
   std::shared_ptr<const GlobalStats> stats = db.Estimator()->Stats();
-  ASSERT_TRUE(stats->ordered[0].has_value());
-  EXPECT_EQ(stats->ordered[0]->cell_psum.size(), 64u);
-  EXPECT_NEAR(stats->ordered[0]->total, 500.0, 1e-6);
+  ASSERT_TRUE(stats->range[0].has_value());
+  EXPECT_EQ(stats->range[0]->cell_psum.size(), 64u);
+  EXPECT_NEAR(stats->range[0]->total, 500.0, 1e-6);
 }
 
 // Workload: 100 rows flushed with a raw Flush (no test-side refresh), then
@@ -936,8 +936,8 @@ TEST_F(BitLSMTestBase, SparseDomainEqualityNdvFloor) {
   FlushDB(db);
 
   std::shared_ptr<const GlobalStats> stats = db.Estimator()->Stats();
-  ASSERT_TRUE(stats->ordered[0].has_value());
-  const GlobalOrderedStats& ord = *stats->ordered[0];
+  ASSERT_TRUE(stats->range[0].has_value());
+  const GlobalRangeStats& ord = *stats->range[0];
   EXPECT_EQ(ord.ndv, 84u);
   // The raw grid smears the point into the holes (~840/611 per okey unit).
   EXPECT_LT(ord.RangeMass(I64ToOkey(199401), I64ToOkey(199401)), 5.0);

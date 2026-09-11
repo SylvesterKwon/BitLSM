@@ -17,12 +17,12 @@ using UDIB = rocksdb::UserDefinedIndexBuilder;
 
 namespace {
 
-// Single ORDERED double attr, the shape passenger_count has in the taxi
+// Single kRange double attr, the shape passenger_count has in the taxi
 // workload: a scalar column whose values are in fact a handful of integers.
 BitLSMOptions F64Options() {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, /*is_signed=*/true,
+  o.attr_specs = {AttrSpec(IndexType::kRange, 8, /*is_signed=*/true,
                            /*is_float=*/true)};
   o.read_seqno = 0;
   o.rho = 0.02;  // bin budget 50, well past the value count
@@ -81,7 +81,7 @@ size_t CountCandidates(BitLSM& db, const BitLSMQuery& query) {
 
 }  // namespace
 
-// Workload: an ORDERED attribute holding two values, with three quarters of
+// Workload: an kRange attribute holding two values, with three quarters of
 //           the rows on the upper one, flushed to an SST so the query goes
 //           through the bitmap; then a strict `< 1.0`.
 // Threat: thresholds sit between values, so a bin whose lower threshold is the
@@ -132,7 +132,7 @@ TEST_F(BitLSMTestBase, StrictLessThanExcludesTheBinItsBoundStartsAt) {
       << "strict > got tighter than the thresholds can justify";
 }
 
-// Workload: an ORDERED double attribute carrying integers 0..6 in the skewed
+// Workload: an kRange double attribute carrying integers 0..6 in the skewed
 //           mix a taxi passenger_count has.
 // Threat: the range logic assumes a threshold marks a value, not a position
 //         near one -- that assumption is what lets a strict `<` drop the bin

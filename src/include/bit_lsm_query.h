@@ -41,9 +41,9 @@ inline bool ApplyCompareOp(CompareOp op, const T& lhs, const T& rhs) {
   return false;
 }
 
-// Query condition. For ORDERED attrs the comparand is a native scalar matching
+// Query condition. For kRange attrs the comparand is a native scalar matching
 // the attr's AttrSpec (double for float/double, int64 for signed, uint64 for
-// unsigned); for UNORDERED attrs it is the comparand string.
+// unsigned); for kEquality attrs it is the comparand string.
 struct QueryCondition {
   uint32_t attr_idx;
   CompareOp op;
@@ -189,15 +189,15 @@ struct ByteInterval {
 };
 
 // A query with comparands pre-encoded into the SABI byte domain: a
-// ByteInterval for ORDERED attrs (numeric comparands become 8-byte okeys, so
+// ByteInterval for kRange attrs (numeric comparands become 8-byte okeys, so
 // one interval type serves ints, floats and strings alike), opaque bytes for
-// UNORDERED equality. Built once per query; EncodeQuery folds the operator
+// kEquality equality. Built once per query; EncodeQuery folds the operator
 // into `win` and merges same-attr single-condition clauses by intersection,
 // so a BETWEEN-shaped CNF reaches every consumer as one interval.
 struct SABICondition {
   uint32_t attr_idx;
-  ByteInterval win;   // active when the attr is ORDERED
-  std::string bytes;  // active when the attr is UNORDERED (always EQUAL)
+  ByteInterval win;   // active when the attr is kRange
+  std::string bytes;  // active when the attr is kEquality (always EQUAL)
 };
 using SABIOrClause = std::vector<SABICondition>;
 struct SABIQuery {

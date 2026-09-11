@@ -26,15 +26,15 @@ SABIBuilder::SABIBuilder(SABISchema schema,
   attr_null_rows_.resize(schema_.attr_num());
   attr_buf_.reserve(schema_.attr_num());
   for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
-    if (schema_.roles[i] == AttrRole::ORDERED) {
+    if (schema_.index_types[i] == IndexType::kRange) {
       attr_buf_.push_back(RangeAttrBuf());
     } else {
-      attr_buf_.push_back(CatAttrBuf());
+      attr_buf_.push_back(EqualityAttrBuf());
     }
   }
 };
 
-void SABIBuilder::CatAttrBuf::Intern(string_view value) {
+void SABIBuilder::EqualityAttrBuf::Intern(string_view value) {
   uint64_t h = std::hash<string_view>{}(value);
   size_t mask = slot_id_.size() - 1;
   size_t idx = h & mask;
@@ -58,7 +58,7 @@ void SABIBuilder::CatAttrBuf::Intern(string_view value) {
   if (++used_ * 10 >= slot_id_.size() * 7) Grow();
 }
 
-void SABIBuilder::CatAttrBuf::Grow() {
+void SABIBuilder::EqualityAttrBuf::Grow() {
   size_t n = slot_id_.size() * 2;
   vector<uint64_t> new_hash(n);
   vector<uint32_t> new_id(n, 0);
@@ -108,11 +108,11 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
       const EncodedAttr& attr_val = scratch_[i];
       if (holds_alternative<monostate>(attr_val)) {
         attr_null_rows_[i].add(data_entries_cnt_);
-      } else if (schema_.roles[i] == AttrRole::ORDERED) {
+      } else if (schema_.index_types[i] == IndexType::kRange) {
         get<RangeAttrBuf>(attr_buf_[i]).values.push_back(
             get<string_view>(attr_val));
       } else {
-        get<CatAttrBuf>(attr_buf_[i]).Intern(get<string_view>(attr_val));
+        get<EqualityAttrBuf>(attr_buf_[i]).Intern(get<string_view>(attr_val));
       }
     }
   } else {
@@ -136,8 +136,8 @@ void SABIBuilder::SetBinningPolicy() {
   // 2. Set # of bitmaps for each attr
   vector<uint32_t> cardinality(schema_.attr_num(), 0);
   for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
-    if (schema_.roles[i] == AttrRole::UNORDERED) {
-      cardinality[i] = get<CatAttrBuf>(attr_buf_[i]).value_by_id.size();
+    if (schema_.index_types[i] == IndexType::kEquality) {
+      cardinality[i] = get<EqualityAttrBuf>(attr_buf_[i]).value_by_id.size();
     } else {
       RangeAttrBuf& buf = get<RangeAttrBuf>(attr_buf_[i]);
       buf.Sort();
@@ -181,10 +181,10 @@ void SABIBuilder::SetBinningPolicy() {
 
   // 3. Set binning boundaries for each attr
   for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
-    if (schema_.roles[i] == AttrRole::UNORDERED) {
+    if (schema_.index_types[i] == IndexType::kEquality) {
       // 3-A. Unordered property Binning
-      SetUnorderedPropertyBinningPolicy(i);
-    } else if (schema_.roles[i] == AttrRole::ORDERED) {
+      SetEqualityBinningPolicy(i);
+    } else if (schema_.index_types[i] == IndexType::kRange) {
       // 3-B. Ordered property Binning
       SetRangeBinningPolicy(i);
     } else {
@@ -193,8 +193,8 @@ void SABIBuilder::SetBinningPolicy() {
   }
 }
 
-void SABIBuilder::SetUnorderedPropertyBinningPolicy(uint32_t i) {
-  CatAttrBuf& cat = get<CatAttrBuf>(attr_buf_[i]);
+void SABIBuilder::SetEqualityBinningPolicy(uint32_t i) {
+  EqualityAttrBuf& cat = get<EqualityAttrBuf>(attr_buf_[i]);
   priority_queue<pair<uint32_t, uint32_t>, vector<pair<uint32_t, uint32_t>>,
                  greater<pair<uint32_t, uint32_t>>>
       min_bin_pq;
@@ -237,7 +237,7 @@ void SABIBuilder::RangeAttrBuf::Sort() {
   }
 }
 
-// Bin thresholds for one ORDERED attribute: cut the sorted values into
+// Bin thresholds for one kRange attribute: cut the sorted values into
 // `bitmap_nums[i]` runs of as near equal row mass as the values allow.
 //
 // Equal mass is what minimises expected candidate waste. A range query reads a
@@ -330,8 +330,8 @@ void SABIBuilder::CalculateBitmapIndex() {
     // Row ids are monotonic per bin, so a bulk context per bin lets
     // CRoaring skip the container lookup on nearly every add.
     vector<roaring::BulkContext> bin_ctxs(bitmap_index_.bitmap_nums[i]);
-    if (schema_.roles[i] == AttrRole::UNORDERED) {
-      const CatAttrBuf& cat = get<CatAttrBuf>(attr_buf_[i]);
+    if (schema_.index_types[i] == IndexType::kEquality) {
+      const EqualityAttrBuf& cat = get<EqualityAttrBuf>(attr_buf_[i]);
       for (uint32_t j = 0; j < data_entries_cnt_; ++j) {
         if (s < skip_ids.size() && skip_ids[s] == j) {
           ++s;
@@ -342,7 +342,7 @@ void SABIBuilder::CalculateBitmapIndex() {
             bin_ctxs[local_bin], j);
       }
       assert(k == cat.row_ids.size());
-    } else if (schema_.roles[i] == AttrRole::ORDERED) {
+    } else if (schema_.index_types[i] == IndexType::kRange) {
       const BytesList& values = get<RangeAttrBuf>(attr_buf_[i]).values;
       const BytesList& binning =
           get<BytesList>(bitmap_index_.binning_policy[i]);
@@ -397,12 +397,12 @@ Status SABIBuilder::Finish(Slice* index_contents) {
     r.writeFrozen(index_blob_.data() + bitmap_offsets[i]);
   }
 
-  // 3-2. Add binning policies. ORDERED bodies are a BytesList of bin_count+1
-  // boundaries; UNORDERED bodies carry their entry count.
+  // 3-2. Add binning policies. kRange bodies are a BytesList of bin_count+1
+  // boundaries; kEquality bodies carry their entry count.
   vector<uint32_t> policy_offsets;
   policy_offsets.push_back(index_blob_.size());
   for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
-    if (schema_.roles[i] == AttrRole::UNORDERED) {
+    if (schema_.index_types[i] == IndexType::kEquality) {
       vector<pair<string, uint32_t>>& cur_binning_policy =
           std::get<vector<pair<string, uint32_t>>>(
               bitmap_index_.binning_policy[i]);
@@ -412,7 +412,7 @@ Status SABIBuilder::Finish(Slice* index_contents) {
         PutLengthPrefixedSlice(&index_blob_, bi.first);
         PutFixed32(&index_blob_, bi.second);
       }
-    } else if (schema_.roles[i] == AttrRole::ORDERED) {
+    } else if (schema_.index_types[i] == IndexType::kRange) {
       std::get<BytesList>(bitmap_index_.binning_policy[i])
           .Serialize(&index_blob_);
     } else {
@@ -422,12 +422,12 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   }
 
   // 3-3. Add directory: everything a reader must know before touching the
-  // body, parsed forward from attr_num. Persisted roles make the blob
+  // body, parsed forward from attr_num. Persisted index_types make the blob
   // self-describing, so opening an SST needs no schema binding.
   uint32_t directory_off = index_blob_.size();
   PutFixed32(&index_blob_, schema_.attr_num());
-  for (AttrRole role : schema_.roles)
-    index_blob_.push_back(static_cast<char>(role));
+  for (IndexType index_type : schema_.index_types)
+    index_blob_.push_back(static_cast<char>(index_type));
   for (uint32_t bin_num : bitmap_index_.bitmap_nums)
     PutFixed32(&index_blob_, bin_num);
   PutFixed32(&index_blob_, index_entries_cnt_);

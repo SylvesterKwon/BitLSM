@@ -66,9 +66,9 @@ int main() {
   BitLSMOptions opts;
   opts.attr_num = 3;
   opts.attr_specs = {
-      AttrSpec(ORDERED, 8, /*is_signed=*/true, /*is_float=*/false),  // a0: int64
-      AttrSpec(ORDERED, 8, /*is_signed=*/true, /*is_float=*/true),   // a1: double
-      AttrSpec(UNORDERED),                                           // a2: bytes
+      AttrSpec(IndexType::kRange, 8, /*is_signed=*/true, /*is_float=*/false),  // a0: int64
+      AttrSpec(IndexType::kRange, 8, /*is_signed=*/true, /*is_float=*/true),   // a1: double
+      AttrSpec(IndexType::kEquality),                                          // a2: bytes
   };
   opts.rho = 0.001;
 
@@ -108,8 +108,8 @@ int main() {
 ### Core Concepts
 
 - **Schema.** A row is a primary key, a fixed set of indexed attributes, and an
-opaque payload. Each attribute is `ORDERED` — a native number, range queries —
-or `UNORDERED`, opaque bytes matched by equality only.
+opaque payload. Each attribute is `kRange` — a native number, range queries —
+or `kEquality`, opaque bytes matched by equality only.
 
 - **Rho** sets the granularity of the bitmap bins: `rho = 0.1` gives roughly ten
 bins per attribute.

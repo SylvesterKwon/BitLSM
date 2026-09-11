@@ -35,7 +35,7 @@ bool ConditionImpossible(const bit_lsm::SABICondition& cond,
   if (idx >= bm.binning_policy.size()) return false;
   if (idx >= schema.attr_num()) return false;
 
-  if (schema.roles[idx] == bit_lsm::AttrRole::ORDERED) {
+  if (schema.index_types[idx] == bit_lsm::IndexType::kRange) {
     const auto* bounds =
         std::get_if<bit_lsm::BytesList>(&bm.binning_policy[idx]);
     if (bounds == nullptr || bounds->size() < 2) return false;
@@ -45,7 +45,7 @@ bool ConditionImpossible(const bit_lsm::SABICondition& cond,
     if (w.Empty() || w.lo > mx) return true;
     if (w.hi_unbounded) return false;
     return w.hi < mn || (w.hi == mn && w.hi_open);
-  } else if (schema.roles[idx] == bit_lsm::AttrRole::UNORDERED) {
+  } else if (schema.index_types[idx] == bit_lsm::IndexType::kEquality) {
     if (!std::holds_alternative<std::vector<std::pair<std::string, uint32_t>>>(
             bm.binning_policy[idx]))
       return false;
@@ -158,9 +158,9 @@ SABIReader::SABIReader(Slice& index_block, SABIReaderMode mode) : mode_(mode) {
   const char* dir = index_block.data() + directory_off;
   uint32_t attr_num = DecodeFixed32(dir);
   dir += sizeof(uint32_t);
-  schema_.roles.resize(attr_num);
+  schema_.index_types.resize(attr_num);
   for (uint32_t i = 0; i < attr_num; ++i)
-    schema_.roles[i] = static_cast<AttrRole>(static_cast<uint8_t>(dir[i]));
+    schema_.index_types[i] = static_cast<IndexType>(static_cast<uint8_t>(dir[i]));
   dir += attr_num;
   bitmap_index.bitmap_nums.resize(attr_num);
   uint32_t total_bins = 0;
@@ -201,13 +201,13 @@ SABIReader::SABIReader(Slice& index_block, SABIReaderMode mode) : mode_(mode) {
   data_entries_cnt_psum.resize(index_entries_cnt_);
   block_handles.resize(index_entries_cnt_);
 
-  // 3. Binning policies. ORDERED bodies are a BytesList of bin_count+1
-  // boundaries; UNORDERED bodies carry their entry count.
+  // 3. Binning policies. kRange bodies are a BytesList of bin_count+1
+  // boundaries; kEquality bodies carry their entry count.
   bitmap_index.binning_policy.resize(attr_num);
   for (uint32_t i = 0; i < attr_num; ++i) {
     const char* ptr = index_block.data() + policy_offsets[i];
 
-    if (schema_.roles[i] == AttrRole::UNORDERED) {
+    if (schema_.index_types[i] == IndexType::kEquality) {
       uint32_t cur_binning_policy_entry_count = DecodeFixed32(ptr);
       ptr += sizeof(uint32_t);
       // read {length prefixed string + uint32t (bin number)}
@@ -223,7 +223,7 @@ SABIReader::SABIReader(Slice& index_block, SABIReaderMode mode) : mode_(mode) {
         ptr += sizeof(uint32_t);
       }
       bitmap_index.binning_policy[i] = std::move(cur_binning_policy);
-    } else if (schema_.roles[i] == AttrRole::ORDERED) {
+    } else if (schema_.index_types[i] == IndexType::kRange) {
       BytesList boundaries;
       boundaries.Parse(ptr);
       bitmap_index.binning_policy[i] = std::move(boundaries);
@@ -499,7 +499,7 @@ size_t SABIReader::ApproximateMemoryUsage() const {
     usage += malloc_usable_size(buf.get());
 
   // Schema residue parsed out of the blob's directory.
-  usage += schema_.roles.capacity() * sizeof(AttrRole);
+  usage += schema_.index_types.capacity() * sizeof(IndexType);
 
   usage += bitmap_index.bitmaps.capacity() * sizeof(roaring::Roaring);
   usage += bitmap_index.bitmap_nums.capacity() * sizeof(uint32_t);
@@ -558,10 +558,10 @@ uint32_t SABIReader::AttrBinOffset(uint32_t attr_idx) const {
 
 bool SABIReader::SelectBins(const SABICondition& cond,
                             BinSelection* out) const {
-  const AttrRole role = schema_.roles[cond.attr_idx];
+  const IndexType index_type = schema_.index_types[cond.attr_idx];
   const uint32_t bitmap_offset = AttrBinOffset(cond.attr_idx);
 
-  if (role == AttrRole::UNORDERED) {
+  if (index_type == IndexType::kEquality) {
     const auto& policy = get<vector<pair<string, uint32_t>>>(
         bitmap_index.binning_policy[cond.attr_idx]);
     auto it = std::lower_bound(
@@ -573,7 +573,7 @@ bool SABIReader::SelectBins(const SABICondition& cond,
     out->first = out->last = bitmap_offset + it->second;
     return true;
   }
-  if (role != AttrRole::ORDERED) return false;
+  if (index_type != IndexType::kRange) return false;
   if (cond.win.Empty()) return false;
 
   const auto& boundaries =
@@ -608,10 +608,10 @@ bool SABIReader::SelectBins(const SABICondition& cond,
   return true;
 }
 
-bool SABIReader::OrderedHistogram(uint32_t attr_idx,
-                                  OrderedAttrHistogram* out) const {
+bool SABIReader::RangeHistogram(uint32_t attr_idx,
+                                  RangeAttrHistogram* out) const {
   if (attr_idx >= schema_.attr_num()) return false;
-  if (schema_.roles[attr_idx] != AttrRole::ORDERED) return false;
+  if (schema_.index_types[attr_idx] != IndexType::kRange) return false;
 
   uint32_t bin_offset = AttrBinOffset(attr_idx);
   uint32_t bins = bitmap_index.bitmap_nums[attr_idx];
@@ -642,10 +642,10 @@ bool SABIReader::OrderedHistogram(uint32_t attr_idx,
   return true;
 }
 
-bool SABIReader::UnorderedValueCounts(uint32_t attr_idx,
-                                      UnorderedAttrValueCounts* out) const {
+bool SABIReader::EqualityValueCounts(uint32_t attr_idx,
+                                      EqualityAttrValueCounts* out) const {
   if (attr_idx >= schema_.attr_num()) return false;
-  if (schema_.roles[attr_idx] != AttrRole::UNORDERED) return false;
+  if (schema_.index_types[attr_idx] != IndexType::kEquality) return false;
 
   const auto& entries = std::get<std::vector<std::pair<std::string, uint32_t>>>(
       bitmap_index.binning_policy[attr_idx]);

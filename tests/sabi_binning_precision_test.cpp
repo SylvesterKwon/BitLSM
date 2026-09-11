@@ -19,12 +19,12 @@ using UDIB = rocksdb::UserDefinedIndexBuilder;
 
 namespace {
 
-// Single ORDERED int64 attr; rho 0.1 -> bin budget 10.
+// Single kRange int64 attr; rho 0.1 -> bin budget 10.
 BitLSMOptions I64Options() {
   BitLSMOptions o;
   o.attr_num = 1;
   o.attr_specs = {
-      AttrSpec(AttrRole::ORDERED, 8, /*is_signed=*/true, /*is_float=*/false)};
+      AttrSpec(IndexType::kRange, 8, /*is_signed=*/true, /*is_float=*/false)};
   o.read_seqno = 0;
   o.rho = 0.1;
   return o;
@@ -124,7 +124,7 @@ TEST(SabiBinningPrecision, NarrowInt64SpanSpreadsAcrossBins) {
 
 // Workload: the same narrow int64 span plus a few deletion entries in the
 //           same blob (any real SST with deletes).
-// Threat: tombstone rows push a placeholder okey 0 into the ORDERED buffer;
+// Threat: tombstone rows push a placeholder okey 0 into the kRange buffer;
 //         if it leaks into the binning stats, min_okey becomes 0 (the okey
 //         domain minimum), which both skews the min/max pin and re-collapses
 //         the shifted t-digest projection back to absolute magnitude.

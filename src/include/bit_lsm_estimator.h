@@ -24,16 +24,16 @@ struct SuperVersion;
 namespace bit_lsm {
 
 // Global per-attr statistics over the live SST set, aggregated from the
-// per-SST SABI accessors (SABIReader::OrderedHistogram / -ValueCounts).
+// per-SST SABI accessors (SABIReader::RangeHistogram / -ValueCounts).
 // A pure function of the live SST set, so estimates never drift across
 // compaction churn. The memtable is excluded: before the first flush every
 // attr slot is empty and physical_rows is 0.
 
-// One ORDERED attr: per-SST equi-depth histograms projected onto a uniform
+// One kRange attr: per-SST equi-depth histograms projected onto a uniform
 // okey grid over the live [min_okey, max_okey] span, kept as a prefix sum.
 // Mass is treated as a density over the continuous okey line, so point mass
 // sitting exactly on a queried boundary is smeared, never lost.
-struct GlobalOrderedStats {
+struct GlobalRangeStats {
   uint64_t min_okey = 0;
   uint64_t max_okey = 0;
   std::vector<double> cell_psum;  // cell_psum[i] = mass of cells [0, i]
@@ -74,29 +74,29 @@ struct GlobalOrderedStats {
   double CumBelow(uint64_t okey) const;
 };
 
-// One UNORDERED attr: value -> row-count dictionary merged across live SSTs.
+// One kEquality attr: value -> row-count dictionary merged across live SSTs.
 // Per-value counts inherit the per-SST exactness contract (exact for values
 // alone in their bin, uniform-split otherwise). When the merged NDV exceeds
 // CardinalityEstimator::kMaxTrackedValues only the top-k values are kept and
 // `truncated` is set; `total` always keeps the full mass.
-struct GlobalUnorderedStats {
+struct GlobalEqualityStats {
   std::unordered_map<std::string, double> value_counts;
   double total = 0;
   bool truncated = false;
   // Candidate (FPR) scalar: sum over live SSTs of that SST's average bin
   // mass (binned rows / bin count). An equality candidates its value's
   // whole (balance-packed) bin in every SST, so this sum is the expected
-  // fetch mass of a point lookup. Unlike ORDERED there is no span to
+  // fetch mass of a point lookup. Unlike kRange there is no span to
   // exclude an SST by, so the sum conservatively assumes the value occurs
   // everywhere (an SST without the value prunes to zero at execution).
   double binmass_sum = 0;
 };
 
 struct GlobalStats {
-  // Indexed by attr; only the slot matching the attr's role is ever engaged,
+  // Indexed by attr; only the slot matching the attr's index type is ever engaged,
   // and it stays empty when no live SST has binned rows for the attr.
-  std::vector<std::optional<GlobalOrderedStats>> ordered;
-  std::vector<std::optional<GlobalUnorderedStats>> unordered;
+  std::vector<std::optional<GlobalRangeStats>> range;
+  std::vector<std::optional<GlobalEqualityStats>> equality;
   // Live SST data entries minus tombstone markers, shadowing uncorrected:
   // exactly the candidate count the read path would fetch (cost slot).
   uint64_t physical_rows = 0;
@@ -182,7 +182,7 @@ class CardinalityEstimator {
 
   // Cached-stats arithmetic only, no bitmap or row scans. Same-attr
   // conditions intersect into one byte window (BETWEEN-shaped CNF is not
-  // squared); UNORDERED equality reads the value dictionary; OR clauses use
+  // squared); kEquality equality reads the value dictionary; OR clauses use
   // a union bound capped at 1; attrs combine as an independence product.
   EstimateResult Estimate(const SABIQuery& q);
 
