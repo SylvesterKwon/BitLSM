@@ -10,8 +10,9 @@ using namespace bit_lsm;
 
 // Workload: a v3 row with [ORDERED double, UNORDERED bytes, ORDERED i64]
 //           attrs, extracted through ValueLayoutExtractor.
-// Threat: extractor output diverging from DecodeAttr + OrderedToOkey would
-//         put rows into different bins than the query path expects.
+// Threat: extractor output diverging from DecodeAttr + OrderedToOkey (as
+//         8-byte okey bytes) would put rows into different bins than the
+//         query path expects.
 TEST(ValueLayoutExtractor, MatchesDecodeAttr) {
   BitLSMOptions o;
   o.attr_num = 3;
@@ -28,9 +29,9 @@ TEST(ValueLayoutExtractor, MatchesDecodeAttr) {
   std::vector<EncodedAttr> out(o.attr_num);
   ex.ExtractAll("pk0", row, out.data());
 
-  EXPECT_EQ(std::get<uint64_t>(out[0]), F64ToOkey(3.25));
+  EXPECT_EQ(std::get<std::string_view>(out[0]), OkeyToBytes(F64ToOkey(3.25)));
   EXPECT_EQ(std::get<std::string_view>(out[1]), "seoul");
-  EXPECT_EQ(std::get<uint64_t>(out[2]), I64ToOkey(-42));
+  EXPECT_EQ(std::get<std::string_view>(out[2]), OkeyToBytes(I64ToOkey(-42)));
 }
 
 // Workload: a v3 row whose nullable ORDERED attr is SQL NULL.

@@ -2,6 +2,7 @@
 #include <sys/types.h>
 
 #include <iostream>
+#include <numeric>
 #include <queue>
 
 #include "util/coding.h"
@@ -26,7 +27,7 @@ SABIBuilder::SABIBuilder(SABISchema schema,
   attr_buf_.reserve(schema_.attr_num());
   for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
     if (schema_.roles[i] == AttrRole::ORDERED) {
-      attr_buf_.push_back(vector<uint64_t>());
+      attr_buf_.push_back(RangeAttrBuf());
     } else {
       attr_buf_.push_back(CatAttrBuf());
     }
@@ -108,7 +109,8 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
       if (holds_alternative<monostate>(attr_val)) {
         attr_null_rows_[i].add(data_entries_cnt_);
       } else if (schema_.roles[i] == AttrRole::ORDERED) {
-        get<vector<uint64_t>>(attr_buf_[i]).push_back(get<uint64_t>(attr_val));
+        get<RangeAttrBuf>(attr_buf_[i]).values.push_back(
+            get<string_view>(attr_val));
       } else {
         get<CatAttrBuf>(attr_buf_[i]).Intern(get<string_view>(attr_val));
       }
@@ -133,21 +135,14 @@ void SABIBuilder::SetBinningPolicy() {
 
   // 2. Set # of bitmaps for each attr
   vector<uint32_t> cardinality(schema_.attr_num(), 0);
-  uint32_t cardinality_ub =
-      target_total_bitmaps_cnt;  // theoretically max bins for one attr
   for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
     if (schema_.roles[i] == AttrRole::UNORDERED) {
       cardinality[i] = get<CatAttrBuf>(attr_buf_[i]).value_by_id.size();
     } else {
-      const auto& okey_vec = get<vector<uint64_t>>(attr_buf_[i]);
-      unordered_set<uint64_t> unique_vals;
-      for (uint64_t val : okey_vec) {
-        unique_vals.insert(val);
-        if (unique_vals.size() >= cardinality_ub) {
-          break;  // Optimization: Upper bound 도달 시 탐색 즉시 종료
-        }
-      }
-      cardinality[i] = unique_vals.size();
+      RangeAttrBuf& buf = get<RangeAttrBuf>(attr_buf_[i]);
+      buf.Sort();
+      cardinality[i] = static_cast<uint32_t>(
+          std::min<uint64_t>(buf.distinct, target_total_bitmaps_cnt));
     }
   }
 
@@ -191,7 +186,7 @@ void SABIBuilder::SetBinningPolicy() {
       SetUnorderedPropertyBinningPolicy(i);
     } else if (schema_.roles[i] == AttrRole::ORDERED) {
       // 3-B. Ordered property Binning
-      SetOrderedPropertyBinningPolicy(i);
+      SetRangeBinningPolicy(i);
     } else {
       assert(false);
     }
@@ -224,8 +219,22 @@ void SABIBuilder::SetUnorderedPropertyBinningPolicy(uint32_t i) {
   }
   sort(binning.begin(), binning.end());
   bitmap_index_.binning_policy[i] = std::move(binning);
-  // v6 directory field: the interning table is exactly the distinct set.
+  // Directory field: the interning table is exactly the distinct set.
   distinct_cnts_[i] = cat.value_by_id.size();
+}
+
+void SABIBuilder::RangeAttrBuf::Sort() {
+  sorted.resize(values.size());
+  std::iota(sorted.begin(), sorted.end(), 0u);
+  std::sort(sorted.begin(), sorted.end(),
+            [this](uint32_t a, uint32_t b) { return values[a] < values[b]; });
+  distinct = 0;
+  for (size_t a = 0; a < sorted.size();) {
+    size_t b = a + 1;
+    while (b < sorted.size() && values[sorted[b]] == values[sorted[a]]) ++b;
+    ++distinct;
+    a = b;
+  }
 }
 
 // Bin thresholds for one ORDERED attribute: cut the sorted values into
@@ -238,44 +247,36 @@ void SABIBuilder::SetUnorderedPropertyBinningPolicy(uint32_t i) {
 // proportional to its mass and wastes about half of it, so expected waste goes
 // as sum(mass^2), minimised when the masses are level.
 //
-// The cut points are gaps between adjacent values, never values themselves.
-// That is the whole difference from asking a t-digest for quantiles: a digest
-// answers with interpolated positions, which land beside a value rather than on
-// it and repeat on a heavy one. Both hurt. A threshold beside a value puts a
-// strict `< value` comparand inside the bin holding every row with that value
-// instead of on its edge, so the bin cannot be skipped; a repeated threshold
-// spends budget on a bin that can never hold anything. Cutting between values
-// makes both impossible by construction, and it is cheaper: the sort is already
-// paid for by the distinct count, leaving one linear pass.
-void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
+// The cut points are values that occur, never interpolated positions between
+// them. A threshold beside a value would put a strict `< value` comparand
+// inside the bin holding every row with that value instead of on its edge, so
+// the bin could not be skipped; a repeated threshold would spend budget on a
+// bin that can never hold anything. Cutting on run starts makes both
+// impossible by construction, in one linear pass over the sorted buffer.
+void SABIBuilder::SetRangeBinningPolicy(uint32_t i) {
   const uint32_t bins = bitmap_index_.bitmap_nums[i];
-  const auto& v = get<vector<uint64_t>>(attr_buf_[i]);
+  const RangeAttrBuf& buf = get<RangeAttrBuf>(attr_buf_[i]);
+  const BytesList& v = buf.values;
+  const vector<uint32_t>& sorted = buf.sorted;
+  distinct_cnts_[i] = buf.distinct;
 
-  vector<uint64_t> boundaries;
-  boundaries.reserve(bins + 1);
-
-  if (v.empty()) {
-    distinct_cnts_[i] = 0;
-    bitmap_index_.binning_policy[i].emplace<vector<uint64_t>>(bins + 1, 0);
+  BytesList boundaries;
+  if (sorted.empty()) {
+    for (uint32_t b = 0; b <= bins; ++b) boundaries.push_back("");
+    bitmap_index_.binning_policy[i] = std::move(boundaries);
     return;
   }
 
-  // The distinct count (v6 directory field) needs this sorted anyway, and the
-  // sweep below reads the same array as (value, run length) pairs.
-  vector<uint64_t> sorted(v);
-  std::sort(sorted.begin(), sorted.end());
-
-  uint64_t distinct = 0;
   uint64_t remaining_mass = sorted.size();
   uint32_t remaining_bins = bins;
   uint64_t cur = 0;  // mass accumulated into the bin being built
-  boundaries.push_back(sorted.front());
+  boundaries.push_back(v[sorted.front()]);
 
   for (size_t a = 0; a < sorted.size();) {
+    const string_view value = v[sorted[a]];
     size_t b = a;
-    while (b < sorted.size() && sorted[b] == sorted[a]) ++b;
+    while (b < sorted.size() && v[sorted[b]] == value) ++b;
     const uint64_t run = b - a;
-    ++distinct;
 
     // The target is re-derived from what is left, so closing a bin light or
     // heavy is absorbed by the bins after it instead of accumulating.
@@ -290,7 +291,7 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
           std::abs(static_cast<double>(cur) - target) <=
           std::abs(static_cast<double>(cur + run) - target);
       if (own_bin || nearer_before) {
-        boundaries.push_back(sorted[a]);
+        boundaries.push_back(value);
         remaining_mass -= cur;
         --remaining_bins;
         cur = 0;
@@ -299,18 +300,16 @@ void SABIBuilder::SetOrderedPropertyBinningPolicy(uint32_t i) {
     cur += run;
     a = b;
   }
-  distinct_cnts_[i] = distinct;
 
-  // Fewer distinct values than bins leaves thresholds over. Repeat the maximum:
-  // CalculateBitmapIndex clamps a row past the last threshold into the final
-  // bin and SABITableIterator's case B resolves a lookup there the same way, so
-  // the spare bins sit empty between them rather than swallowing the maximum.
-  // Pinning the ends to the exact data bounds also keeps min/max pruning and
-  // the virtual-bin -1 path exact.
+  // The sweep closes at most bins-1 times, so at least one threshold is
+  // always left over. Repeat the maximum: CalculateBitmapIndex clamps a row
+  // past the last threshold into the final bin and SelectBins resolves a
+  // lookup there the same way, so spare bins sit empty between them rather
+  // than swallowing the maximum, and the ends stay pinned to the exact data
+  // bounds for min/max pruning.
+  const string max_value(v[sorted.back()]);
   while (boundaries.size() < static_cast<size_t>(bins) + 1)
-    boundaries.push_back(sorted.back());
-  boundaries.front() = sorted.front();
-  boundaries.back() = sorted.back();
+    boundaries.push_back(max_value);
 
   bitmap_index_.binning_policy[i] = std::move(boundaries);
 }
@@ -344,27 +343,22 @@ void SABIBuilder::CalculateBitmapIndex() {
       }
       assert(k == cat.row_ids.size());
     } else if (schema_.roles[i] == AttrRole::ORDERED) {
-      const vector<uint64_t>& cur_attr_buf =
-          get<vector<uint64_t>>(attr_buf_[i]);
-      vector<uint64_t>& binning =
-          get<vector<uint64_t>>(bitmap_index_.binning_policy[i]);
+      const BytesList& values = get<RangeAttrBuf>(attr_buf_[i]).values;
+      const BytesList& binning =
+          get<BytesList>(bitmap_index_.binning_policy[i]);
       for (uint32_t j = 0; j < data_entries_cnt_; ++j) {
         if (s < skip_ids.size() && skip_ids[s] == j) {
           ++s;
           continue;
         }
-        auto it =
-            std::upper_bound(binning.begin(), binning.end(), cur_attr_buf[k++]);
-        uint32_t idx = std::distance(binning.begin(), it);
-        uint32_t local_bin_idx =
-            (idx == 0) ? 0 : static_cast<uint32_t>(idx - 1);
+        const uint32_t idx = binning.UpperBound(values[k++]);
+        uint32_t local_bin_idx = idx == 0 ? 0 : idx - 1;
         if (local_bin_idx >= bitmap_index_.bitmap_nums[i])
           local_bin_idx = bitmap_index_.bitmap_nums[i] - 1;
-
         bitmap_index_.bitmaps[bin_idx_offset + local_bin_idx].addBulk(
             bin_ctxs[local_bin_idx], j);
       }
-      assert(k == cur_attr_buf.size());
+      assert(k == values.size());
     } else {
       assert(false);
     }
@@ -379,8 +373,8 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   // 2. Calculate bitmap index by buffered attr data & binning policy
   CalculateBitmapIndex();
 
-  // 3. Make final index blob (v7 layout; see sabi.h)
-  // 3-1. Add frozen bitmaps, tombstone bitmap last. v7: pad every start to a
+  // 3. Make final index blob (v8 layout; see sabi.h)
+  // 3-1. Add frozen bitmaps, tombstone bitmap last. Pad every start to a
   // 32-byte boundary (resize() zero-fills the gaps) and record exact sizes
   // and cardinalities for the directory.
   bitmap_index_.bitmaps.push_back(bitmap_index_.tombstone_bitmap);
@@ -403,8 +397,8 @@ Status SABIBuilder::Finish(Slice* index_contents) {
     r.writeFrozen(index_blob_.data() + bitmap_offsets[i]);
   }
 
-  // 3-2. Add binning policies. ORDERED bodies are headerless: the boundary
-  // count is bin_count+1, and bin_count lives in the directory.
+  // 3-2. Add binning policies. ORDERED bodies are a BytesList of bin_count+1
+  // boundaries; UNORDERED bodies carry their entry count.
   vector<uint32_t> policy_offsets;
   policy_offsets.push_back(index_blob_.size());
   for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
@@ -419,9 +413,8 @@ Status SABIBuilder::Finish(Slice* index_contents) {
         PutFixed32(&index_blob_, bi.second);
       }
     } else if (schema_.roles[i] == AttrRole::ORDERED) {
-      vector<uint64_t>& cur_binning_policy =
-          std::get<vector<uint64_t>>(bitmap_index_.binning_policy[i]);
-      for (uint64_t bi : cur_binning_policy) PutFixed64(&index_blob_, bi);
+      std::get<BytesList>(bitmap_index_.binning_policy[i])
+          .Serialize(&index_blob_);
     } else {
       assert(false);
     }
@@ -438,10 +431,10 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   for (uint32_t bin_num : bitmap_index_.bitmap_nums)
     PutFixed32(&index_blob_, bin_num);
   PutFixed32(&index_blob_, index_entries_cnt_);
-  // v6: per-attr exact distinct counts (see the format comment in sabi.h).
+  // Per-attr exact distinct counts.
   for (uint64_t d : distinct_cnts_) PutFixed64(&index_blob_, d);
-  // v7: per-bin cardinalities (tombstone last) and exact frozen sizes; the
-  // padded offsets below no longer encode sizes by difference.
+  // Per-bin cardinalities (tombstone last) and exact frozen sizes (the
+  // padded offsets below do not encode sizes by difference).
   for (uint32_t c : bin_cardinalities) PutFixed32(&index_blob_, c);
   for (uint32_t sz : bitmap_sizes) PutFixed32(&index_blob_, sz);
   for (uint32_t& oi : policy_offsets) PutFixed32(&index_blob_, oi);

@@ -124,10 +124,11 @@ struct SABISchema {
 
 // ---- Row -> encoded attrs bridge ----
 
-// Per-attr extraction result handed to SABI: SQL NULL, an ORDERED okey, or
-// UNORDERED opaque bytes (a view into the row value; valid only during the
-// ExtractAll call that produced it).
-using EncodedAttr = std::variant<std::monostate, uint64_t, std::string_view>;
+// Per-attr extraction result handed to SABI: SQL NULL, or the attr's bytes
+// in SABI's memcmp domain -- an ORDERED numeric's okey in 8-byte big-endian
+// form, an UNORDERED attr's raw bytes. Views are valid only during the
+// ExtractAll call that produced them.
+using EncodedAttr = std::variant<std::monostate, std::string_view>;
 
 // SABI's only path from a row to attrs: one virtual ExtractAll call per row;
 // the implementation owns all remaining schema knowledge (layout, widths,
@@ -147,11 +148,13 @@ class AttrExtractor {
                           EncodedAttr* out) = 0;
 };
 
-// Default extractor over the BitLSM v3 row value format.
+// Default extractor over the BitLSM v3 row value format. Numeric attrs are
+// re-encoded into member scratch (8 bytes per attr), so the views handed out
+// stay valid for the whole ExtractAll call.
 class ValueLayoutExtractor : public AttrExtractor {
  public:
   explicit ValueLayoutExtractor(const BitLSMOptions& options)
-      : layout_(options) {}
+      : layout_(options), scratch_(options.attr_num * kOkeyBytes, '\0') {}
 
   void ExtractAll(std::string_view /*key*/, std::string_view row_value,
                   EncodedAttr* out) override {
@@ -159,16 +162,19 @@ class ValueLayoutExtractor : public AttrExtractor {
       AttrView v = DecodeAttr(layout_, row_value, i);
       if (std::holds_alternative<std::monostate>(v)) {
         out[i] = std::monostate{};
-      } else if (layout_.is_ordered[i]) {
-        out[i] = OrderedToOkey(v);
-      } else {
+      } else if (std::holds_alternative<std::string_view>(v)) {
         out[i] = std::get<std::string_view>(v);
+      } else {
+        char* p = scratch_.data() + i * kOkeyBytes;
+        OkeyToBytes(OrderedToOkey(v), p);
+        out[i] = std::string_view(p, kOkeyBytes);
       }
     }
   }
 
  private:
   ValueLayout layout_;
+  std::string scratch_;
 };
 
 }  // namespace bit_lsm

@@ -36,16 +36,16 @@ bool ConditionImpossible(const bit_lsm::SABICondition& cond,
   if (idx >= schema.attr_num()) return false;
 
   if (schema.roles[idx] == bit_lsm::AttrRole::ORDERED) {
-    if (!std::holds_alternative<std::vector<uint64_t>>(bm.binning_policy[idx]))
-      return false;
-    const auto& bounds =
-        std::get<std::vector<uint64_t>>(bm.binning_policy[idx]);
-    if (bounds.size() < 2) return false;
-    uint64_t mn = bounds.front(), mx = bounds.back();
+    const auto* bounds =
+        std::get_if<bit_lsm::BytesList>(&bm.binning_policy[idx]);
+    if (bounds == nullptr || bounds->size() < 2) return false;
+    const std::string_view mn = (*bounds)[0], mx = bounds->back();
     // Impossible iff the interval is empty or disjoint from [mn, mx].
-    return cond.win.Empty() || cond.win.hi < mn || cond.win.lo > mx;
+    const bit_lsm::ByteInterval& w = cond.win;
+    if (w.Empty() || w.lo > mx) return true;
+    if (w.hi_unbounded) return false;
+    return w.hi < mn || (w.hi == mn && w.hi_open);
   } else if (schema.roles[idx] == bit_lsm::AttrRole::UNORDERED) {
-    if (cond.op != bit_lsm::CompareOp::EQUAL) return false;
     if (!std::holds_alternative<std::vector<std::pair<std::string, uint32_t>>>(
             bm.binning_policy[idx]))
       return false;
@@ -145,18 +145,15 @@ SABIReader::SABIReader(Slice& index_block)
     : SABIReader(index_block, SABIReaderMode::kResident) {}
 
 SABIReader::SABIReader(Slice& index_block, SABIReaderMode mode) : mode_(mode) {
-  // 1. Read footer: [directory_off u32][version u32][magic u32]
-  // (magic/version/directory bounds already validated by
-  // SABIFactory::NewReader)
+  // 1. Footer: [directory_off u32][version u32][magic u32]; magic, version
+  // and directory bounds were validated by SABIFactory::NewReader.
   assert(index_block.size() >= 3 * sizeof(uint32_t) &&
          DecodeFixed32(index_block.data() + index_block.size() -
                        sizeof(uint32_t)) == kSABIFooterMagic);
-  const uint32_t version = DecodeFixed32(
-      index_block.data() + index_block.size() - 2 * sizeof(uint32_t));
   uint32_t directory_off = DecodeFixed32(
       index_block.data() + index_block.size() - 3 * sizeof(uint32_t));
 
-  // 2. Read directory forward: attr_num first, so every following array's
+  // 2. Directory, parsed forward from attr_num so every following array's
   // size is known. Roles reconstruct the schema residue without any binding.
   const char* dir = index_block.data() + directory_off;
   uint32_t attr_num = DecodeFixed32(dir);
@@ -174,54 +171,38 @@ SABIReader::SABIReader(Slice& index_block, SABIReaderMode mode) : mode_(mode) {
   }
   uint32_t index_entries_cnt_ = DecodeFixed32(dir);
   dir += sizeof(uint32_t);
-  // v6+: per-attr exact distinct counts. A v5 blob has no such array; leave
-  // zeros (= unknown, estimator floor disabled for this SST).
-  distinct_cnts.assign(attr_num, 0);
-  if (version >= 6) {
-    for (uint32_t i = 0; i < attr_num; ++i) {
-      distinct_cnts[i] = DecodeFixed64(dir);
-      dir += sizeof(uint64_t);
-    }
+  distinct_cnts.resize(attr_num);
+  for (uint32_t i = 0; i < attr_num; ++i) {
+    distinct_cnts[i] = DecodeFixed64(dir);
+    dir += sizeof(uint64_t);
   }
-  // v7+: per-bin cardinalities (tombstone last) and exact frozen sizes. A
-  // v5/v6 blob has neither; bin_cardinalities stays empty (= unknown, derive
-  // from decoded bitmaps) and bitmap_sizes_ is derived below from offsets.
-  bin_cardinalities.clear();
-  if (version >= 7) {
-    bin_cardinalities.resize(total_bins + 1);
-    for (uint32_t i = 0; i <= total_bins; ++i) {
-      bin_cardinalities[i] = DecodeFixed32(dir);
-      dir += sizeof(uint32_t);
-    }
-    bitmap_sizes_.resize(total_bins + 1);
-    for (uint32_t i = 0; i <= total_bins; ++i) {
-      bitmap_sizes_[i] = DecodeFixed32(dir);
-      dir += sizeof(uint32_t);
-    }
+  const uint32_t bitmaps_cnt = total_bins + 1;  // + tombstone bitmap
+  bin_cardinalities.resize(bitmaps_cnt);
+  for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
+    bin_cardinalities[i] = DecodeFixed32(dir);
+    dir += sizeof(uint32_t);
+  }
+  bitmap_sizes_.resize(bitmaps_cnt);
+  for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
+    bitmap_sizes_[i] = DecodeFixed32(dir);
+    dir += sizeof(uint32_t);
   }
   vector<uint32_t> policy_offsets(attr_num + 1);
   for (uint32_t i = 0; i <= attr_num; ++i) {
     policy_offsets[i] = DecodeFixed32(dir);
     dir += sizeof(uint32_t);
   }
-  uint32_t bitmaps_cnt = total_bins + 1;  // + tombstone bitmap
   bitmap_offsets_.resize(bitmaps_cnt + 1);
   for (uint32_t i = 0; i <= bitmaps_cnt; ++i) {
     bitmap_offsets_[i] = DecodeFixed32(dir);
     dir += sizeof(uint32_t);
   }
-  if (version < 7) {
-    // Pre-padding blobs: sizes are exactly the offset differences.
-    bitmap_sizes_.resize(bitmaps_cnt);
-    for (uint32_t i = 0; i < bitmaps_cnt; ++i)
-      bitmap_sizes_[i] = bitmap_offsets_[i + 1] - bitmap_offsets_[i];
-  }
 
   data_entries_cnt_psum.resize(index_entries_cnt_);
   block_handles.resize(index_entries_cnt_);
 
-  // 3. Read binning policies. ORDERED bodies are headerless (bin_count+1
-  // boundaries); UNORDERED bodies carry their entry count.
+  // 3. Binning policies. ORDERED bodies are a BytesList of bin_count+1
+  // boundaries; UNORDERED bodies carry their entry count.
   bitmap_index.binning_policy.resize(attr_num);
   for (uint32_t i = 0; i < attr_num; ++i) {
     const char* ptr = index_block.data() + policy_offsets[i];
@@ -243,11 +224,9 @@ SABIReader::SABIReader(Slice& index_block, SABIReaderMode mode) : mode_(mode) {
       }
       bitmap_index.binning_policy[i] = std::move(cur_binning_policy);
     } else if (schema_.roles[i] == AttrRole::ORDERED) {
-      uint32_t boundary_count = bitmap_index.bitmap_nums[i] + 1;
-      vector<uint64_t> cur_binning_policy(boundary_count);
-      for (uint32_t j = 0; j < boundary_count; ++j)
-        cur_binning_policy[j] = DecodeFixed64(ptr + j * sizeof(uint64_t));
-      bitmap_index.binning_policy[i] = std::move(cur_binning_policy);
+      BytesList boundaries;
+      boundaries.Parse(ptr);
+      bitmap_index.binning_policy[i] = std::move(boundaries);
     } else {
       assert(false);
     }
@@ -261,54 +240,29 @@ SABIReader::SABIReader(Slice& index_block, SABIReaderMode mode) : mode_(mode) {
   // out above and below, so nothing references index_block afterwards --
   // which is what RetainsIndexContents() == false promises.
   if (mode_ == SABIReaderMode::kResident) {
-    bitmap_index.bitmaps.resize(bitmaps_cnt - 1);  // tombstone kept separately
-    if (version >= 7) {
-      // v7 starts are 32B-aligned blob-relative, so one 32B-aligned copy of
-      // the whole region backs every view zero-copy: N allocs+copies -> 1.
-      const uint32_t region_off = bitmap_offsets_[0];
-      const uint32_t region_len = bitmap_offsets_[bitmaps_cnt] - region_off;
-      void* arena = nullptr;
-      if (posix_memalign(&arena, 32, region_len == 0 ? 32 : region_len) != 0) {
-        // No status channel here, and a silently-empty bin would under-return
-        // rows; treat allocation failure as fatal rather than degrade quietly.
-        std::abort();
-      }
-      AlignedPtr owned(static_cast<char*>(arena), std::free);
-      memcpy(owned.get(), index_block.data() + region_off, region_len);
-      for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
-        const char* p = owned.get() + (bitmap_offsets_[i] - region_off);
-        if (i < bitmaps_cnt - 1) {
-          bitmap_index.bitmaps[i] = Roaring::frozenView(p, bitmap_sizes_[i]);
-        } else {
-          bitmap_index.tombstone_bitmap =
-              Roaring::frozenView(p, bitmap_sizes_[i]);
-        }
-      }
-      managed_buffers_.push_back(std::move(owned));
-    } else {
-      for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
-        const uint32_t size = bitmap_sizes_[i];
-        const char* raw_ptr = index_block.data() + bitmap_offsets_[i];
-        void* aligned_ptr = nullptr;
-        if (posix_memalign(&aligned_ptr, 32, size == 0 ? 32 : size) != 0) {
-          // No status channel here, and a silently-empty bin would under-return
-          // rows; treat allocation failure as fatal rather than degrade
-          // quietly.
-          std::abort();
-        }
-        AlignedPtr managed_aligned_ptr(static_cast<char*>(aligned_ptr),
-                                       std::free);
-        memcpy(managed_aligned_ptr.get(), raw_ptr, size);
-        if (i < bitmaps_cnt - 1) {
-          bitmap_index.bitmaps[i] =
-              Roaring::frozenView(managed_aligned_ptr.get(), size);
-        } else {
-          bitmap_index.tombstone_bitmap =
-              Roaring::frozenView(managed_aligned_ptr.get(), size);
-        }
-        managed_buffers_.push_back(std::move(managed_aligned_ptr));
+    bitmap_index.bitmaps.resize(total_bins);  // tombstone kept separately
+    // Every bitmap start is 32B-aligned blob-relative, so one 32B-aligned
+    // copy of the whole region backs every view zero-copy.
+    const uint32_t region_off = bitmap_offsets_[0];
+    const uint32_t region_len = bitmap_offsets_[bitmaps_cnt] - region_off;
+    void* arena = nullptr;
+    if (posix_memalign(&arena, 32, region_len == 0 ? 32 : region_len) != 0) {
+      // No status channel here, and a silently-empty bin would under-return
+      // rows; treat allocation failure as fatal rather than degrade quietly.
+      std::abort();
+    }
+    AlignedPtr owned(static_cast<char*>(arena), std::free);
+    memcpy(owned.get(), index_block.data() + region_off, region_len);
+    for (uint32_t i = 0; i < bitmaps_cnt; ++i) {
+      const char* p = owned.get() + (bitmap_offsets_[i] - region_off);
+      if (i < total_bins) {
+        bitmap_index.bitmaps[i] = Roaring::frozenView(p, bitmap_sizes_[i]);
+      } else {
+        bitmap_index.tombstone_bitmap =
+            Roaring::frozenView(p, bitmap_sizes_[i]);
       }
     }
+    managed_buffers_.push_back(std::move(owned));
   }
 
   // 5. Read index block related information
@@ -339,9 +293,7 @@ uint32_t SABIReader::TotalBins() const {
 
 uint64_t SABIReader::BinCardinality(uint32_t flat_idx) const {
   assert(flat_idx <= TotalBins());
-  if (!bin_cardinalities.empty()) return bin_cardinalities[flat_idx];
-  return flat_idx == TotalBins() ? bitmap_index.tombstone_bitmap.cardinality()
-                                 : bitmap_index.bitmaps[flat_idx].cardinality();
+  return bin_cardinalities[flat_idx];
 }
 
 uint64_t SABIReader::TombstoneCardinality() const {
@@ -439,7 +391,7 @@ bool SABIReader::LoadRun(uint32_t a, uint32_t b, Cache* cache,
   for (uint32_t i = a; i <= b; ++i) {
     auto bin = make_unique<SABICachedBin>();
     bin->arena = arena;
-    // v7 32B-aligns every padded start, so the offset difference keeps each
+    // Every padded start is 32B-aligned, so the offset difference keeps each
     // in-arena view 32B-aligned as frozenView requires.
     const uint32_t rel = bitmap_offsets_[i] - bitmap_offsets_[a];
     bin->view = Roaring::frozenView(arena.get() + rel, bitmap_sizes_[i]);
@@ -554,8 +506,8 @@ size_t SABIReader::ApproximateMemoryUsage() const {
   usage += bitmap_index.binning_policy.capacity() *
            sizeof(decltype(bitmap_index.binning_policy)::value_type);
   for (const auto& policy : bitmap_index.binning_policy) {
-    if (const auto* ord = std::get_if<vector<uint64_t>>(&policy)) {
-      usage += ord->capacity() * sizeof(uint64_t);
+    if (const auto* ord = std::get_if<BytesList>(&policy)) {
+      usage += ord->arena.capacity() + ord->ends.capacity() * sizeof(uint32_t);
     } else if (const auto* cat =
                    std::get_if<vector<pair<string, uint32_t>>>(&policy)) {
       usage += cat->capacity() * sizeof(pair<string, uint32_t>);
@@ -610,7 +562,6 @@ bool SABIReader::SelectBins(const SABICondition& cond,
   const uint32_t bitmap_offset = AttrBinOffset(cond.attr_idx);
 
   if (role == AttrRole::UNORDERED) {
-    if (cond.op != CompareOp::EQUAL) assert(false);
     const auto& policy = get<vector<pair<string, uint32_t>>>(
         bitmap_index.binning_policy[cond.attr_idx]);
     auto it = std::lower_bound(
@@ -626,25 +577,28 @@ bool SABIReader::SelectBins(const SABICondition& cond,
   if (cond.win.Empty()) return false;
 
   const auto& boundaries =
-      get<vector<uint64_t>>(bitmap_index.binning_policy[cond.attr_idx]);
+      get<BytesList>(bitmap_index.binning_policy[cond.attr_idx]);
   const uint32_t num_bins = bitmap_index.bitmap_nums[cond.attr_idx];
+  const int32_t last = static_cast<int32_t>(num_bins) - 1;
 
-  // Bin holding `value`: index of the last boundary <= value. -1 when value
-  // sits below the leftmost boundary; the top bin is closed on the right,
-  // matching how the builder bins the maximum value. Strict bounds arrived
-  // canonicalized one okey step inward (OkeyInterval::FromOp), so a bound
-  // sitting exactly on a threshold lands in the correct neighbor bin here
-  // without any threshold-equality special case.
-  auto bin_of = [&](uint64_t value) -> int32_t {
-    auto it = std::upper_bound(boundaries.begin(), boundaries.end(), value);
-    if (it == boundaries.begin()) return -1;
-    if (it == boundaries.end()) return static_cast<int32_t>(num_bins) - 1;
-    return static_cast<int32_t>(std::distance(boundaries.begin(), it)) - 1;
+  // Bin b covers [boundary b, boundary b+1), the top bin closed on the right,
+  // matching how the builder bins the maximum. A closed bound resolves to
+  // the last boundary <= v (upper_bound), an open one to the last boundary
+  // strictly below v (lower_bound), so a bound sitting exactly on a
+  // threshold lands in the correct neighbour without special cases. -1 =
+  // below the leftmost boundary.
+  auto bin_of = [&](string_view v, bool open) -> int32_t {
+    const uint32_t i =
+        open ? boundaries.LowerBound(v) : boundaries.UpperBound(v);
+    if (i == 0) return -1;
+    if (i >= boundaries.size()) return last;
+    return static_cast<int32_t>(i) - 1;
   };
 
-  const int32_t end_bin = bin_of(cond.win.hi);
+  const int32_t end_bin =
+      cond.win.hi_unbounded ? last : bin_of(cond.win.hi, cond.win.hi_open);
   if (end_bin < 0) return false;  // whole interval below the leftmost bin
-  int32_t start_bin = bin_of(cond.win.lo);
+  int32_t start_bin = bin_of(cond.win.lo, /*open=*/false);
   if (start_bin < 0) start_bin = 0;
   // bin_of is monotone, so start_bin <= end_bin here; the extent is exactly
   // the bins the interval can touch, boundary bins included (their rows are
@@ -669,13 +623,22 @@ bool SABIReader::OrderedHistogram(uint32_t attr_idx,
     total += counts[b];
   }
   // Zero binned rows (e.g. every row NULL): the stored boundaries come from
-  // an empty t-digest and carry no information.
+  // an empty buffer and carry no information.
   if (total == 0) return false;
 
-  out->boundaries =
-      std::get<std::vector<uint64_t>>(bitmap_index.binning_policy[attr_idx]);
+  // Estimator bridge: its okey grid needs integer coordinates, which only
+  // 8-byte (okey) boundaries carry; an attr whose values are raw strings has
+  // no histogram in that domain.
+  const auto& bounds =
+      std::get<BytesList>(bitmap_index.binning_policy[attr_idx]);
+  out->boundaries.clear();
+  out->boundaries.reserve(bounds.size());
+  for (size_t b = 0; b < bounds.size(); ++b) {
+    if (bounds[b].size() != kOkeyBytes) return false;
+    out->boundaries.push_back(OkeyFromBytes(bounds[b]));
+  }
   out->counts = std::move(counts);
-  out->distinct = distinct_cnts[attr_idx];  // 0 on v5 blobs = unknown
+  out->distinct = distinct_cnts[attr_idx];
   return true;
 }
 

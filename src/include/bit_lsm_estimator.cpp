@@ -8,6 +8,7 @@
 #include "db/column_family.h"
 #include "db/db_impl/db_impl.h"
 #include "db/version_set.h"
+#include "bit_lsm_encoding.h"
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
 #include "table/format.h"
@@ -262,10 +263,43 @@ void CardinalityEstimator::Reconcile() {
 
 namespace {
 
-// Ordered conditions arrive from EncodeQuery as closed okey intervals
-// (OkeyInterval, bit_lsm_query.h) -- already merged per attr for
-// BETWEEN-shaped CNF. The per-attr map below re-intersects defensively for
-// hand-built SABIQuerys that skip EncodeQuery.
+// Recovers okey coordinates from a byte window whose bounds are okeys: an
+// 8-byte lo/hi, or lo = okey bytes + '\0' from a strict lower bound. A
+// window with a raw-string bound (a kVarBinary attr) has no okey
+// coordinates; the caller falls back. lo > hi on return means empty.
+bool WindowToOkeys(const bit_lsm::ByteInterval& w, uint64_t* lo,
+                   uint64_t* hi) {
+  if (w.lo.empty()) {
+    *lo = 0;
+  } else if (w.lo.size() == bit_lsm::kOkeyBytes) {
+    *lo = bit_lsm::OkeyFromBytes(w.lo);
+  } else if (w.lo.size() == bit_lsm::kOkeyBytes + 1 && w.lo.back() == '\0') {
+    const uint64_t k = bit_lsm::OkeyFromBytes(
+        std::string_view(w.lo).substr(0, bit_lsm::kOkeyBytes));
+    if (k == UINT64_MAX) {  // above every okey
+      *lo = 1;
+      *hi = 0;
+      return true;
+    }
+    *lo = k + 1;
+  } else {
+    return false;
+  }
+  if (w.hi_unbounded) {
+    *hi = UINT64_MAX;
+  } else if (w.hi.size() == bit_lsm::kOkeyBytes) {
+    const uint64_t k = bit_lsm::OkeyFromBytes(w.hi);
+    if (w.hi_open && k == 0) {  // below every okey
+      *lo = 1;
+      *hi = 0;
+      return true;
+    }
+    *hi = w.hi_open ? k - 1 : k;
+  } else {
+    return false;
+  }
+  return true;
+}
 
 // Standalone selectivity of one condition (used for OR-clause members).
 // Returns -1 when the condition is unestimatable (caller flags fallback).
@@ -275,11 +309,11 @@ double ConditionSelectivity(const SABICondition& cond, const GlobalStats& stats,
   if (roles[cond.attr_idx] == AttrRole::ORDERED) {
     const auto& ord = stats.ordered[cond.attr_idx];
     if (!ord.has_value()) return -1;
-    const OkeyInterval& w = cond.win;
-    if (w.Empty()) return 0;
-    return ord->PointAwareRangeMass(w.lo, w.hi) / phys;
+    uint64_t lo, hi;
+    if (!WindowToOkeys(cond.win, &lo, &hi)) return -1;
+    if (lo > hi) return 0;
+    return ord->PointAwareRangeMass(lo, hi) / phys;
   }
-  if (cond.op != CompareOp::EQUAL) return -1;
   const auto& uno = stats.unordered[cond.attr_idx];
   if (!uno.has_value()) return -1;
   auto it = uno->value_counts.find(cond.bytes);
@@ -297,9 +331,9 @@ double ConditionCandidate(const SABICondition& cond, const GlobalStats& stats,
                           double f) {
   if (roles[cond.attr_idx] == AttrRole::ORDERED) {
     const auto& ord = stats.ordered[cond.attr_idx];
-    const OkeyInterval& w = cond.win;
-    if (w.Empty()) return 0;
-    return std::min(1.0, ord->CandidateMass(w.lo, w.hi, f * phys) / phys);
+    uint64_t lo, hi;
+    if (!WindowToOkeys(cond.win, &lo, &hi) || lo > hi) return 0;
+    return std::min(1.0, ord->CandidateMass(lo, hi, f * phys) / phys);
   }
   // UNORDERED equality: provable absence prunes every SST at execution;
   // otherwise the value's whole balance-packed bin per SST is fetched, and
@@ -334,7 +368,7 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
   double phys = static_cast<double>(stats->physical_rows);
   double product = 1.0;
   double cand_product = 1.0;  // bin-rounded counterpart of `product`
-  std::map<uint32_t, OkeyInterval> windows;
+  std::map<uint32_t, ByteInterval> windows;
 
   for (const auto& clause : q.clause_groups) {
     if (clause.empty()) continue;  // trivially satisfiable
@@ -379,18 +413,19 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
 
   for (const auto& [attr_idx, w] : windows) {
     const auto& ord = stats->ordered[attr_idx];
-    if (!ord.has_value()) {
+    uint64_t lo, hi;
+    if (!ord.has_value() || !WindowToOkeys(w, &lo, &hi)) {
       fallback.insert(attr_idx);
       continue;
     }
-    if (w.Empty()) {
+    if (lo > hi) {
       product = 0;
       cand_product = 0;
     } else {
-      double match_mass = ord->PointAwareRangeMass(w.lo, w.hi);
+      double match_mass = ord->PointAwareRangeMass(lo, hi);
       product *= match_mass / phys;
       cand_product *=
-          std::min(1.0, ord->CandidateMass(w.lo, w.hi, match_mass) / phys);
+          std::min(1.0, ord->CandidateMass(lo, hi, match_mass) / phys);
     }
   }
 

@@ -126,39 +126,6 @@ struct BitLSMQuery {
   }
 };
 
-// Closed interval [lo, hi] on the okey domain; empty iff lo > hi. Strict
-// bounds canonicalize by moving one okey step inward (x > v ≡ okey(x) >=
-// okey(v)+1): exact on the discrete okey domain, no epsilon involved, so
-// open/closed distinctions exist only inside FromOp. Empty is absorbing
-// under Intersect (max/min keep lo > hi once it holds).
-struct OkeyInterval {
-  uint64_t lo = 0;
-  uint64_t hi = UINT64_MAX;
-
-  bool Empty() const { return lo > hi; }
-  void Intersect(const OkeyInterval& o) {
-    lo = std::max(lo, o.lo);
-    hi = std::min(hi, o.hi);
-  }
-  static OkeyInterval FromOp(CompareOp op, uint64_t okey) {
-    switch (op) {
-      case CompareOp::EQUAL:
-        return {okey, okey};
-      case CompareOp::GREATER_EQUAL:
-        return {okey, UINT64_MAX};
-      case CompareOp::GREATER:
-        // okey == UINT64_MAX has no successor: canonical empty.
-        return okey == UINT64_MAX ? OkeyInterval{1, 0}
-                                  : OkeyInterval{okey + 1, UINT64_MAX};
-      case CompareOp::LESS_EQUAL:
-        return {0, okey};
-      case CompareOp::LESS:
-        return okey == 0 ? OkeyInterval{1, 0} : OkeyInterval{0, okey - 1};
-    }
-    return {1, 0};
-  }
-};
-
 // Interval on the SABI byte domain (memcmp order). Closed below: "" is the
 // domain minimum, so lo == "" means unbounded below, and x > s canonicalizes
 // to lo = s + '\0' (the byte successor). The domain has no maximum and no
@@ -221,17 +188,16 @@ struct ByteInterval {
   }
 };
 
-// A query with comparands pre-encoded into the SABI domain: a closed okey
-// interval for ORDERED attrs, opaque bytes for UNORDERED. Built once per
-// query; SABI pruning and bin mapping never see native types or CompareOps
-// on ordered attrs -- EncodeQuery folds the operator into `win` and merges
-// same-attr single-condition clauses by interval intersection, so a
-// BETWEEN-shaped CNF reaches every consumer as one interval.
+// A query with comparands pre-encoded into the SABI byte domain: a
+// ByteInterval for ORDERED attrs (numeric comparands become 8-byte okeys, so
+// one interval type serves ints, floats and strings alike), opaque bytes for
+// UNORDERED equality. Built once per query; EncodeQuery folds the operator
+// into `win` and merges same-attr single-condition clauses by intersection,
+// so a BETWEEN-shaped CNF reaches every consumer as one interval.
 struct SABICondition {
   uint32_t attr_idx;
-  CompareOp op;       // UNORDERED comparisons only (always EQUAL)
-  OkeyInterval win;   // active when the attr is ORDERED
-  std::string bytes;  // active when the attr is UNORDERED
+  ByteInterval win;   // active when the attr is ORDERED
+  std::string bytes;  // active when the attr is UNORDERED (always EQUAL)
 };
 using SABIOrClause = std::vector<SABICondition>;
 struct SABIQuery {

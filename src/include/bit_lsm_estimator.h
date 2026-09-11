@@ -181,7 +181,7 @@ class CardinalityEstimator {
   void TEST_Refresh();
 
   // Cached-stats arithmetic only, no bitmap or row scans. Same-attr
-  // conditions intersect into one okey window (BETWEEN-shaped CNF is not
+  // conditions intersect into one byte window (BETWEEN-shaped CNF is not
   // squared); UNORDERED equality reads the value dictionary; OR clauses use
   // a union bound capped at 1; attrs combine as an independence product.
   EstimateResult Estimate(const SABIQuery& q);

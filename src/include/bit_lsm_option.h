@@ -62,13 +62,10 @@ struct BitLSMOptions {
 
   // Keep only the SABI directory resident per table and read bin bitmaps on
   // demand, caching the DECODED bin in the block cache keyed off RocksDB's
-  // own per-file cache key. Requires format v7 blobs (opening older SSTs
-  // fails with Corruption naming the rebuild). Off by default: the resident
-  // path stays the fastest while the index fits in memory.
-  // The version-naming Corruption lands in the RocksDB LOG; the surfaced
-  // Status is a generic UDI-reader Corruption for the file. On-demand bin
-  // reads bypass block checksums -- a corrupted bin aborts (CRoaring
-  // frozen-view validation) rather than returning a Status.
+  // own per-file cache key. Off by default: the resident path stays the
+  // fastest while the index fits in memory. On-demand bin reads bypass block
+  // checksums -- a corrupted bin aborts (CRoaring frozen-view validation)
+  // rather than returning a Status.
   bool ondemand_index = false;
 };
 }  // namespace bit_lsm

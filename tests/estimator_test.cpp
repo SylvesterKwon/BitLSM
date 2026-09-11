@@ -272,11 +272,12 @@ TEST_F(BitLSMTestBase, NdvCapDemotesToTopK) {
 namespace {
 
 SABICondition Ord(uint32_t attr, CompareOp op, int64_t v) {
-  return SABICondition{attr, op, OkeyInterval::FromOp(op, I64ToOkey(v)), ""};
+  return SABICondition{attr,
+                       ByteInterval::FromOp(op, OkeyToBytes(I64ToOkey(v))), ""};
 }
 
 SABICondition Uno(uint32_t attr, const std::string& v) {
-  return SABICondition{attr, CompareOp::EQUAL, {}, v};
+  return SABICondition{attr, {}, v};
 }
 
 double EstimatedRows(const EstimateResult& r) {
@@ -920,7 +921,7 @@ TEST_F(BitLSMTestBase, CandidateFieldsNeutralWhenDisabled) {
 //           year boundary; 10 rows per value.
 // Threat: the continuous-density grid smears point mass into the holes, so
 //         an equality reads ~total/span instead of ~total/ndv (the SF2 q1_2
-//         11x underestimate). The v6 NDV floor must pull it back to the
+//         11x underestimate). The NDV floor must pull it back to the
 //         per-value truth; RANGE estimates integrate over the holes and must
 //         stay uncorrected.
 TEST_F(BitLSMTestBase, SparseDomainEqualityNdvFloor) {

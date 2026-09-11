@@ -217,6 +217,14 @@ rocksdb::Status BitLSMQuery::Validate(const BitLSMOptions& options) const {
   return rocksdb::Status::OK();
 }
 
+// The comparand in SABI's byte domain: numeric comparands as their okey's
+// 8-byte big-endian form, string comparands as they are.
+static std::string ComparandBytes(
+    const std::variant<int64_t, uint64_t, double, std::string>& v) {
+  if (std::holds_alternative<std::string>(v)) return std::get<std::string>(v);
+  return OkeyToBytes(OrderedToOkey(v));
+}
+
 SABIQuery EncodeQuery(const BitLSMQuery& q, const BitLSMOptions& options) {
   SABIQuery out;
   out.clause_groups.reserve(q.clause_groups.size());
@@ -231,8 +239,8 @@ SABIQuery EncodeQuery(const BitLSMQuery& q, const BitLSMOptions& options) {
         options.attr_specs[clause[0].attr_idx].role == AttrRole::ORDERED;
     if (singleton_ordered) {
       const auto& c = clause[0];
-      const OkeyInterval win =
-          OkeyInterval::FromOp(c.op, OrderedToOkey(c.value));
+      const ByteInterval win =
+          ByteInterval::FromOp(c.op, ComparandBytes(c.value));
       auto it = merged_at.find(c.attr_idx);
       if (it != merged_at.end()) {
         out.clause_groups[it->second][0].win.Intersect(win);
@@ -240,8 +248,7 @@ SABIQuery EncodeQuery(const BitLSMQuery& q, const BitLSMOptions& options) {
         continue;
       }
       merged_at.emplace(c.attr_idx, out.clause_groups.size());
-      out.clause_groups.push_back(
-          {SABICondition{c.attr_idx, CompareOp::EQUAL, win, ""}});
+      out.clause_groups.push_back({SABICondition{c.attr_idx, win, ""}});
       if (win.Empty()) out.unsat = true;
       continue;
     }
@@ -250,9 +257,8 @@ SABIQuery EncodeQuery(const BitLSMQuery& q, const BitLSMOptions& options) {
     for (const auto& c : clause) {
       SABICondition sc;
       sc.attr_idx = c.attr_idx;
-      sc.op = c.op;
       if (options.attr_specs[c.attr_idx].role == AttrRole::ORDERED) {
-        sc.win = OkeyInterval::FromOp(c.op, OrderedToOkey(c.value));
+        sc.win = ByteInterval::FromOp(c.op, ComparandBytes(c.value));
         // An empty member contributes nothing to the OR; dropping it keeps
         // downstream consumers free of empty-interval special cases.
         if (sc.win.Empty()) continue;

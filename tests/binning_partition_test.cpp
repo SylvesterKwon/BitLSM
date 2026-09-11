@@ -150,12 +150,13 @@ TEST(BinningBoundarySnap, ThresholdsLandOnValuesThatOccur) {
   std::set<uint64_t> okeys;
   for (double v : values) okeys.insert(F64ToOkey(v));
 
-  const auto& boundaries = std::get<std::vector<uint64_t>>(
-      built.reader->bitmap_index.binning_policy[0]);
+  const auto& boundaries =
+      std::get<BytesList>(built.reader->bitmap_index.binning_policy[0]);
   ASSERT_FALSE(boundaries.empty());
   for (size_t j = 0; j < boundaries.size(); ++j) {
-    EXPECT_TRUE(okeys.count(boundaries[j]) > 0)
-        << "threshold " << j << " = " << OkeyToF64(boundaries[j])
+    const uint64_t okey = OkeyFromBytes(boundaries[j]);
+    EXPECT_TRUE(okeys.count(okey) > 0)
+        << "threshold " << j << " = " << OkeyToF64(okey)
         << " is not a value any row holds";
   }
 }

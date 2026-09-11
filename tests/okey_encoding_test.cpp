@@ -164,12 +164,13 @@ TEST(EncodeQuery, ComparandsLandInSabiDomain) {
   SABIQuery sq = EncodeQuery(q, o);
   ASSERT_EQ(sq.clause_groups.size(), 3u);
   EXPECT_FALSE(sq.unsat);
-  EXPECT_EQ(sq.clause_groups[0][0].win.lo, F64ToOkey(10.5));
-  EXPECT_EQ(sq.clause_groups[0][0].win.hi, UINT64_MAX);
+  EXPECT_EQ(sq.clause_groups[0][0].win.lo, OkeyToBytes(F64ToOkey(10.5)));
+  EXPECT_TRUE(sq.clause_groups[0][0].win.hi_unbounded);
   EXPECT_EQ(sq.clause_groups[1][0].bytes, "seoul");
-  // Strict bound canonicalized one okey step inward.
-  EXPECT_EQ(sq.clause_groups[2][0].win.lo, 0u);
-  EXPECT_EQ(sq.clause_groups[2][0].win.hi, I64ToOkey(-3) - 1);
+  // Strict upper bound stays on the comparand with the open flag.
+  EXPECT_EQ(sq.clause_groups[2][0].win.lo, "");
+  EXPECT_EQ(sq.clause_groups[2][0].win.hi, OkeyToBytes(I64ToOkey(-3)));
+  EXPECT_TRUE(sq.clause_groups[2][0].win.hi_open);
 }
 
 // Workload: BETWEEN-shaped CNF -- b >= 10.5 AND b < 20.5 as two clauses, the
@@ -187,8 +188,9 @@ TEST(EncodeQuery, SameAttrClausesMergeToOneInterval) {
   ASSERT_EQ(sq.clause_groups.size(), 2u);  // both bounds fold into clause 0
   EXPECT_FALSE(sq.unsat);
   EXPECT_EQ(sq.clause_groups[0][0].attr_idx, 0u);
-  EXPECT_EQ(sq.clause_groups[0][0].win.lo, F64ToOkey(10.5));
-  EXPECT_EQ(sq.clause_groups[0][0].win.hi, F64ToOkey(20.5) - 1);
+  EXPECT_EQ(sq.clause_groups[0][0].win.lo, OkeyToBytes(F64ToOkey(10.5)));
+  EXPECT_EQ(sq.clause_groups[0][0].win.hi, OkeyToBytes(F64ToOkey(20.5)));
+  EXPECT_TRUE(sq.clause_groups[0][0].win.hi_open);
   EXPECT_EQ(sq.clause_groups[1][0].bytes, "seoul");
 }
 
@@ -204,15 +206,21 @@ TEST(EncodeQuery, ContradictionSetsUnsat) {
 }
 
 // Workload: a strict bound at the okey domain edge (i64 > INT64_MAX).
-// Threat: okey+1 overflow would wrap the interval around to [0, MAX] and
-//         match everything instead of nothing.
-TEST(EncodeQuery, StrictBoundOffDomainEdgeIsUnsat) {
+// Threat: in the okey domain this needed overflow handling; in the byte
+//         domain the successor of the maximal okey is a 9-byte string above
+//         every 8-byte value, so the interval must be non-empty here and
+//         above every okey (min/max pruning then rejects each SST).
+TEST(EncodeQuery, StrictBoundAboveDomainMaxExceedsEveryOkey) {
   BitLSMOptions o = MakeOpts3();
   BitLSMQuery q(std::vector<QueryCondition>{
       {2, CompareOp::GREATER, std::numeric_limits<int64_t>::max()}});
   ASSERT_EQ(I64ToOkey(std::numeric_limits<int64_t>::max()), UINT64_MAX);
   SABIQuery sq = EncodeQuery(q, o);
-  EXPECT_TRUE(sq.unsat);
+  EXPECT_FALSE(sq.unsat);
+  const ByteInterval& w = sq.clause_groups[0][0].win;
+  EXPECT_EQ(w.lo, OkeyToBytes(UINT64_MAX) + std::string(1, '\0'));
+  EXPECT_GT(w.lo, OkeyToBytes(UINT64_MAX));
+  EXPECT_TRUE(w.hi_unbounded);
 }
 
 // Workload: an OR clause mixing two ordered members on the same attr.
@@ -227,9 +235,9 @@ TEST(EncodeQuery, OrClauseMembersAreNotMerged) {
   ASSERT_EQ(sq.clause_groups.size(), 2u);
   EXPECT_FALSE(sq.unsat);
   ASSERT_EQ(sq.clause_groups[0].size(), 2u);
-  EXPECT_EQ(sq.clause_groups[0][0].win.lo, F64ToOkey(1.0));
-  EXPECT_EQ(sq.clause_groups[0][0].win.hi, F64ToOkey(1.0));
-  EXPECT_EQ(sq.clause_groups[0][1].win.lo, F64ToOkey(9.0));
+  EXPECT_EQ(sq.clause_groups[0][0].win.lo, OkeyToBytes(F64ToOkey(1.0)));
+  EXPECT_EQ(sq.clause_groups[0][0].win.hi, OkeyToBytes(F64ToOkey(1.0)));
+  EXPECT_EQ(sq.clause_groups[0][1].win.lo, OkeyToBytes(F64ToOkey(9.0)));
   ASSERT_EQ(sq.clause_groups[1].size(), 1u);
-  EXPECT_EQ(sq.clause_groups[1][0].win.hi, F64ToOkey(5.0));
+  EXPECT_EQ(sq.clause_groups[1][0].win.hi, OkeyToBytes(F64ToOkey(5.0)));
 }

@@ -112,9 +112,9 @@ TEST(SabiPlaceholderBinning, OrderedValueBinsHoldOnlyDataRows) {
 
   // Boundaries stay pinned to the data bounds despite the placeholders.
   const auto& boundaries =
-      std::get<std::vector<uint64_t>>(reader.bitmap_index.binning_policy[0]);
-  EXPECT_EQ(boundaries.front(), I64ToOkey(0));
-  EXPECT_EQ(boundaries.back(), I64ToOkey(99));
+      std::get<BytesList>(reader.bitmap_index.binning_policy[0]);
+  EXPECT_EQ(boundaries[0], OkeyToBytes(I64ToOkey(0)));
+  EXPECT_EQ(boundaries.back(), OkeyToBytes(I64ToOkey(99)));
 }
 
 // Workload: the same blob; inspect the UNORDERED attr's binning policy and

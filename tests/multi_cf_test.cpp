@@ -39,11 +39,12 @@ BitLSMOptions FourAttrOptions() {
 // SABI-domain conditions for the estimator API. Both schemas here leave
 // AttrSpec at its f64 default, so ORDERED comparands encode through F64ToOkey.
 SABICondition OrdF64(uint32_t attr, CompareOp op, double v) {
-  return SABICondition{attr, op, OkeyInterval::FromOp(op, F64ToOkey(v)), ""};
+  return SABICondition{attr,
+                       ByteInterval::FromOp(op, OkeyToBytes(F64ToOkey(v))), ""};
 }
 
 SABICondition Uno(uint32_t attr, const std::string& v) {
-  return SABICondition{attr, CompareOp::EQUAL, {}, v};
+  return SABICondition{attr, {}, v};
 }
 }  // namespace
 

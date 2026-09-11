@@ -82,9 +82,11 @@ void ExpectBinsActuallyPartition(const SABIReader& reader, size_t row_cnt) {
   ASSERT_GT(bins, 1u) << "budget must allocate >1 bin for this workload";
 
   const auto& boundaries =
-      std::get<std::vector<uint64_t>>(reader.bitmap_index.binning_policy[0]);
+      std::get<BytesList>(reader.bitmap_index.binning_policy[0]);
   ASSERT_EQ(boundaries.size(), bins + 1);
-  std::set<uint64_t> distinct(boundaries.begin(), boundaries.end());
+  std::set<std::string> distinct;
+  for (size_t j = 0; j < boundaries.size(); ++j)
+    distinct.insert(std::string(boundaries[j]));
   EXPECT_GE(distinct.size(), bins / 2 + 2)
       << "interior boundaries collapsed to a single okey";
 
@@ -112,10 +114,10 @@ TEST(SabiBinningPrecision, NarrowInt64SpanSpreadsAcrossBins) {
   const SABIReader& reader = *built.reader;
 
   const auto& boundaries =
-      std::get<std::vector<uint64_t>>(reader.bitmap_index.binning_policy[0]);
+      std::get<BytesList>(reader.bitmap_index.binning_policy[0]);
   // Outer thresholds stay pinned to the exact data bounds.
-  EXPECT_EQ(boundaries.front(), I64ToOkey(0));
-  EXPECT_EQ(boundaries.back(), I64ToOkey(999));
+  EXPECT_EQ(boundaries[0], OkeyToBytes(I64ToOkey(0)));
+  EXPECT_EQ(boundaries.back(), OkeyToBytes(I64ToOkey(999)));
 
   ExpectBinsActuallyPartition(reader, values.size());
 }
@@ -135,10 +137,10 @@ TEST(SabiBinningPrecision, TombstonesDoNotSkewBinning) {
   const SABIReader& reader = *built.reader;
 
   const auto& boundaries =
-      std::get<std::vector<uint64_t>>(reader.bitmap_index.binning_policy[0]);
+      std::get<BytesList>(reader.bitmap_index.binning_policy[0]);
   // The pin must reflect the data minimum, not the tombstone placeholder 0.
-  EXPECT_EQ(boundaries.front(), I64ToOkey(0));
-  EXPECT_EQ(boundaries.back(), I64ToOkey(999));
+  EXPECT_EQ(boundaries[0], OkeyToBytes(I64ToOkey(0)));
+  EXPECT_EQ(boundaries.back(), OkeyToBytes(I64ToOkey(999)));
 
   ExpectBinsActuallyPartition(reader, values.size());
 }

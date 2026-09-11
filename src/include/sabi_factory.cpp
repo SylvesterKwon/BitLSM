@@ -38,8 +38,7 @@ unique_ptr<UserDefinedIndexReader> SABIFactory::NewReader(
   // Ungated public entry point (part of the base UserDefinedIndexFactory
   // interface): always kResident. Only the validating overload below -- the
   // path RocksDB actually calls to open an SST -- may mint a kMetadata
-  // reader, because the v7 gate lives there. This keeps "kMetadata reader
-  // over a v5/v6 blob with empty bin_cardinalities" unrepresentable.
+  // reader, because the version gate lives there.
   return unique_ptr<SABIReader>(
       new SABIReader(index_block_, SABIReaderMode::kResident));
 }
@@ -61,16 +60,11 @@ Status SABIFactory::NewReader(
   }
   uint32_t version = DecodeFixed32(index_block.data() + index_block.size() -
                                    2 * sizeof(uint32_t));
-  if (version < kBitLSMMinReadFormatVersion || version > kBitLSMFormatVersion) {
+  if (version != kBitLSMFormatVersion) {
     return Status::Corruption("unsupported BitLSM format version " +
                               to_string(version) + " (this build reads v" +
-                              to_string(kBitLSMMinReadFormatVersion) + "..v" +
-                              to_string(kBitLSMFormatVersion) + ")");
-  }
-  if (options_.ondemand_index && version < 7) {
-    return Status::Corruption(
-        "ondemand_index requires BitLSM format v7 blobs (found v" +
-        to_string(version) + "); rebuild the DB");
+                              to_string(kBitLSMFormatVersion) +
+                              "); rebuild the DB");
   }
 
   // Validate the directory prefix (attr_num + roles) this method interprets;
@@ -108,9 +102,9 @@ Status SABIFactory::NewReader(
                               RolesToString(schema_.roles) +
                               "; rebuild the DB or fix the schema");
   }
-  // Mode selection happens here, after the v7 gate above, not in the
+  // Mode selection happens here, after the version gate above, not in the
   // ungated single-arg NewReader(): a kMetadata reader can only be minted
-  // once this method has confirmed the blob is v7.
+  // once this method has confirmed the blob's version.
   reader = std::make_unique<SABIReader>(
       index_block, options_.ondemand_index ? SABIReaderMode::kMetadata
                                            : SABIReaderMode::kResident);

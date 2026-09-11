@@ -167,7 +167,7 @@ TEST_F(BitLSMTestBase, MultiAttrColdRunsPlanSpanPrefetch) {
   SABIBinCacheStats cold = GetSABIBinCacheStats();
   // The plan/submit path engaged on every build: at least attr 0's run and
   // attr 1's were computed and handed to submission. The tombstone bin is
-  // absent from the plan: this table has no deletes, the v7 cardinality
+  // absent from the plan: this table has no deletes, the cardinality
   // directory proves it empty, and the load is skipped outright.
   EXPECT_GE(cold.spans_planned, 2u)
       << "multi-attr cold query did not engage the span-prefetch plan";
@@ -213,7 +213,8 @@ TEST_F(BitLSMTestBase, MultiAttrColdRunsPlanSpanPrefetch) {
   EXPECT_GT(warm.hits, cold.hits);
 }
 
-// Threat: pre-v7 the estimator counted rows by decoding every bin of every
+// Threat: without the cardinality directory the estimator counted rows by
+// decoding every bin of every
 // SST. If any consumer regresses to that, stats rebuild in ondemand mode
 // pages the whole index back in.
 TEST_F(BitLSMTestBase, EstimatorRebuildLoadsNoBitmaps) {
