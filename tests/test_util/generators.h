@@ -18,8 +18,9 @@ namespace bit_lsm {
 // CI and dev both use libstdc++.
 using Rng = std::mt19937_64;
 
-// Random BitLSMOptions: attr_num 1-5, random type mix, rho in
-// {0.5, 0.2, 0.05} (coarse rho = bin-collision pressure, fine = many bins).
+// Random BitLSMOptions: attr_num 1-5, each attr a random index type x
+// physical type (widths drawn per type), rho in {0.5, 0.2, 0.05} (coarse rho
+// = bin-collision pressure, fine = many bins).
 BitLSMOptions GenerateSchema(Rng& rng);
 
 struct WorkloadParams {
@@ -35,15 +36,16 @@ OpKind PickOp(Rng& rng);
 // Biased key draw (hot keys) from the pool: "k0".."k<pool-1>".
 std::string GenerateKey(Rng& rng, const WorkloadParams& p);
 
-// Attr vector for a Put. Ordered values mix: exact repeats of stored
-// values (EQUAL hits), near-stored offsets (bin-boundary pressure), uniform.
+// Attr vector for a Put. Values mix exact repeats of stored values (EQUAL
+// hits), near-stored offsets for numerics (bin-boundary pressure), and fresh
+// draws per physical type.
 std::vector<Attr> GenerateAttrs(Rng& rng, const BitLSMOptions& schema,
                                 const WorkloadParams& p,
                                 const ReferenceDB& oracle);
 
 // Random full-CNF query: 0-3 clauses (0 = empty query -> full scan), 1-3
 // conditions each, attr drawn independently per condition (cross-attr and
-// mixed-type clauses arise naturally). Unordered conditions are EQUAL-only
+// mixed-type clauses arise naturally). kEquality conditions are EQUAL-only
 // (engine contract). Always Validate()-clean by construction.
 BitLSMQuery GenerateQuery(Rng& rng, const BitLSMOptions& schema,
                           const WorkloadParams& p, const ReferenceDB& oracle);

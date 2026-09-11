@@ -270,7 +270,7 @@ SABIQuery EncodeQuery(const BitLSMQuery& q, const BitLSMOptions& options) {
         // downstream consumers free of empty-interval special cases.
         if (sc.win.Empty()) continue;
       } else {
-        sc.bytes = std::get<std::string>(c.value);
+        sc.bytes = ComparandBytes(c.value);
       }
       enc.push_back(std::move(sc));
     }
