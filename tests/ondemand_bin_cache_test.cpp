@@ -75,7 +75,7 @@ TEST_F(BitLSMTestBase, RangeQueryCoalescesBinReads) {
   Rng rng(3);
   BitLSMOptions schema;
   schema.attr_num = 1;
-  schema.attr_specs = {AttrSpec{IndexType::kRange}};
+  schema.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)};
   schema.rho = 0.05;  // finest binning tier: ~20 bins on one attr
   schema.read_seqno = 0;
   schema.ondemand_index = true;
@@ -132,8 +132,8 @@ TEST_F(BitLSMTestBase, MultiAttrColdRunsPlanSpanPrefetch) {
   Rng rng(4);
   BitLSMOptions schema;
   schema.attr_num = 2;
-  schema.attr_specs = {AttrSpec{IndexType::kRange},
-                       AttrSpec{IndexType::kRange}};
+  schema.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+                       AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)};
   schema.rho = 0.05;  // finest binning tier: ~20 bins per attr
   schema.read_seqno = 0;
   schema.ondemand_index = true;
@@ -298,7 +298,7 @@ TEST_F(BitLSMTestBase, TinyCacheStaysCorrect) {
   Rng rng(2);
   BitLSMOptions schema;
   schema.attr_num = 1;
-  schema.attr_specs = {AttrSpec{IndexType::kRange}};
+  schema.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)};
   schema.rho = 0.5;  // coarsest binning: fewest, largest bins
   schema.read_seqno = 0;
   schema.ondemand_index = true;

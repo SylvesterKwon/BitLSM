@@ -133,9 +133,9 @@ TEST(OkeyBytes, RoundTrip) {
 static BitLSMOptions MakeOpts3() {
   BitLSMOptions o;
   o.attr_num = 3;
-  o.attr_specs = {AttrSpec(IndexType::kRange, 8, true, true, true),
-                  AttrSpec(IndexType::kEquality),
-                  AttrSpec(IndexType::kRange, 4, true, false, false)};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/true),
+                  AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),
+                  AttrSpec(IndexType::kRange, PhysicalType::kInt, 4, /*nullable=*/false)};
   o.rho = 0.2;
   return o;
 }

@@ -23,9 +23,8 @@ std::set<std::string> ScanKeys(BitLSM& db, BitLSMQuery& query) {
 BitLSMOptions IntSchema() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(IndexType::kRange, 4, /*is_signed=*/true,
-                           /*is_float=*/false),
-                  AttrSpec{IndexType::kEquality}};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kInt, 4),
+                  AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;
@@ -89,8 +88,7 @@ TEST_F(BitLSMTestBase, NativeIntRangeAfterFlush) {
 TEST_F(BitLSMTestBase, NativeUintEqualityAfterFlush) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec(IndexType::kRange, 4, /*is_signed=*/false,
-                           /*is_float=*/false)};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kUint, 4)};
   o.read_seqno = 0;
   o.rho = 0.5;
   auto& db = OpenDB(o);
@@ -113,8 +111,8 @@ TEST_F(BitLSMTestBase, NativeUintEqualityAfterFlush) {
 TEST_F(BitLSMTestBase, NullRowsExcludedFromQueries) {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(IndexType::kRange, 8, true, true, /*nullable=*/true),
-                  AttrSpec{IndexType::kEquality}};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/true),
+                  AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   o.read_seqno = 0;
   o.rho = 0.5;
   auto& db = OpenDB(o);

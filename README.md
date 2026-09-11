@@ -66,9 +66,9 @@ int main() {
   BitLSMOptions opts;
   opts.attr_num = 3;
   opts.attr_specs = {
-      AttrSpec(IndexType::kRange, 8, /*is_signed=*/true, /*is_float=*/false),  // a0: int64
-      AttrSpec(IndexType::kRange, 8, /*is_signed=*/true, /*is_float=*/true),   // a1: double
-      AttrSpec(IndexType::kEquality),                                          // a2: bytes
+      AttrSpec(IndexType::kRange, PhysicalType::kInt, 8),        // a0: BIGINT
+      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),      // a1: DOUBLE
+      AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),  // a2: VARCHAR, = only
   };
   opts.rho = 0.001;
 
@@ -108,8 +108,13 @@ int main() {
 ### Core Concepts
 
 - **Schema.** A row is a primary key, a fixed set of indexed attributes, and an
-opaque payload. Each attribute is `kRange` — a native number, range queries —
-or `kEquality`, opaque bytes matched by equality only.
+opaque payload. Each attribute has an index type and a physical type. The index
+type says which predicates the index serves: `kRange` (=, <, <=, >, >=; equal-mass
+bins) or `kEquality` (= only; value-dictionary bins). The physical type says how
+the value is stored and compared: `kInt`/`kUint`/`kFloat` in fixed slots,
+`kBinary` (fixed `width` bytes), `kVarBinary` (variable bytes). Any combination
+is valid, so a `kRange kVarBinary` attribute serves string range predicates.
+Bytes compare in memcmp order; collation is the caller's concern.
 
 - **Rho** sets the granularity of the bitmap bins: `rho = 0.1` gives roughly ten
 bins per attribute.

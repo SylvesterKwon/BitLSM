@@ -25,9 +25,8 @@ namespace {
 BitLSMOptions EstOptions() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(IndexType::kRange, 8, /*is_signed=*/true,
-                           /*is_float=*/false),
-                  AttrSpec{IndexType::kEquality}};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kInt, 8),
+                  AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   o.read_seqno = 0;
   o.rho = 0.1;
   o.enable_estimator = true;

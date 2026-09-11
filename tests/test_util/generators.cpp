@@ -44,10 +44,11 @@ bool SampleStored(Rng& rng, const ReferenceDB& oracle, uint32_t idx,
 BitLSMOptions GenerateSchema(Rng& rng) {
   BitLSMOptions o;
   o.attr_num = std::uniform_int_distribution<uint32_t>(1, 5)(rng);
-  o.attr_specs.resize(o.attr_num);
-  for (auto& t : o.attr_specs)
-    t = (rng() % 2 == 0) ? AttrSpec{IndexType::kRange}
-                         : AttrSpec{IndexType::kEquality};
+  o.attr_specs.reserve(o.attr_num);
+  for (uint32_t i = 0; i < o.attr_num; ++i)
+    o.attr_specs.push_back(
+        rng() % 2 == 0 ? AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)
+                       : AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary));
   static constexpr double kRhos[] = {0.5, 0.2, 0.05};
   o.rho = kRhos[rng() % 3];
   o.read_seqno = 0;

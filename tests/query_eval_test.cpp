@@ -29,7 +29,7 @@ std::string Encode2(const BitLSMOptions& options, double cont,
 }  // namespace
 
 TEST(QueryEval, EmptyQueryMatchesAll) {
-  BitLSMOptions options = MakeOptions({AttrSpec{IndexType::kRange}});
+  BitLSMOptions options = MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)});
   std::string out;
   EncodeValue(options, {42.0}, "p", out);
 
@@ -39,7 +39,7 @@ TEST(QueryEval, EmptyQueryMatchesAll) {
 
 TEST(QueryEval, OrderedGreaterEqual) {
   BitLSMOptions options =
-      MakeOptions({AttrSpec{IndexType::kRange}, AttrSpec{IndexType::kEquality}});
+      MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8), AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)});
   BitLSMQuery query(
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.0}});
 
@@ -53,7 +53,7 @@ TEST(QueryEval, OrderedGreaterEqual) {
 }
 
 TEST(QueryEval, OrClauseSameAttribute) {
-  BitLSMOptions options = MakeOptions({AttrSpec{IndexType::kRange}});
+  BitLSMOptions options = MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)});
   // (a0 == 1.0 OR a0 == 2.0)
   OrClause clause = {{0, CompareOp::EQUAL, 1.0}, {0, CompareOp::EQUAL, 2.0}};
   BitLSMQuery query(std::vector<OrClause>{clause});
@@ -74,7 +74,7 @@ TEST(QueryEval, OrClauseSameAttribute) {
 
 TEST(QueryEval, AndOfClausesMixedTypes) {
   BitLSMOptions options =
-      MakeOptions({AttrSpec{IndexType::kRange}, AttrSpec{IndexType::kEquality}});
+      MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8), AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)});
   // (a0 >= 10) AND (a1 == "apple")
   BitLSMQuery query(std::vector<OrClause>{
       OrClause{{0, CompareOp::GREATER_EQUAL, 10.0}},
@@ -96,7 +96,7 @@ TEST(QueryEval, AndOfClausesMixedTypes) {
 //         from the reference semantics, silently corrupting engine results.
 TEST(QueryEval, CompiledQueryMatchesCheckCondition) {
   BitLSMOptions options =
-      MakeOptions({AttrSpec{IndexType::kRange}, AttrSpec{IndexType::kEquality}});
+      MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8), AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)});
 
   std::vector<BitLSMQuery> queries;
   queries.emplace_back();  // empty query matches all

@@ -23,9 +23,8 @@ BitLSMOptions MixedOptions() {
   BitLSMOptions o;
   o.attr_num = 2;
   o.attr_specs = {
-      AttrSpec(IndexType::kRange, 8, /*is_signed=*/true, /*is_float=*/false,
-               /*nullable=*/true),
-      AttrSpec(IndexType::kEquality)};
+      AttrSpec(IndexType::kRange, PhysicalType::kInt, 8, /*nullable=*/true),
+      AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   o.read_seqno = 0;
   o.rho = 0.25;
   return o;

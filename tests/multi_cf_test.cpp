@@ -29,8 +29,8 @@ BitLSMOptions FourAttrOptions() {
   BitLSMOptions options;
   options.attr_num = 4;
   options.attr_specs = {
-      AttrSpec{IndexType::kRange}, AttrSpec{IndexType::kRange},
-      AttrSpec{IndexType::kRange}, AttrSpec{IndexType::kEquality}};
+      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8), AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8), AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   options.read_seqno = 0;
   options.rho = 0.5;
   return options;

@@ -15,7 +15,7 @@ namespace {
 BitLSMOptions ContOpt() {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec{IndexType::kRange}};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;

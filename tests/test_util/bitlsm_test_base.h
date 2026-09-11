@@ -97,8 +97,9 @@ class BitLSMTestBase : public ::testing::Test {
   BitLSMOptions DefaultOptions() {
     BitLSMOptions options;
     options.attr_num = 2;
-    options.attr_specs = {AttrSpec{IndexType::kRange},
-                          AttrSpec{IndexType::kEquality}};
+    options.attr_specs = {
+        AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+        AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
     options.read_seqno = 0;
     options.rho = 0.5;
     return options;

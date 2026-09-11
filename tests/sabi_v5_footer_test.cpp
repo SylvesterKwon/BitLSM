@@ -16,8 +16,8 @@ namespace {
 BitLSMOptions TwoAttrOpts() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(IndexType::kRange, 8, true, true, false),
-                  AttrSpec(IndexType::kEquality)};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/false),
+                  AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   o.rho = 0.5;
   return o;
 }
@@ -88,7 +88,7 @@ TEST(SabiV5Footer, SelfDescribesWithoutSchema) {
 TEST(SabiV5Footer, RejectsRoleFlip) {
   BitLSMOptions build_o = TwoAttrOpts();
   BitLSMOptions read_o = TwoAttrOpts();
-  read_o.attr_specs[1] = AttrSpec(IndexType::kRange);  // kEquality->kRange
+  read_o.attr_specs[1] = AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8);  // kEquality->kRange
   rocksdb::Status s = OpenViaFactory(SABIFactory(read_o), BuildBlob(build_o));
   EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 }
@@ -126,7 +126,7 @@ TEST(SabiV5Footer, RejectsUnknownRoleByte) {
   EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 }
 
-// Workload: reopen a blob with width/is_float/nullable changed but index_types
+// Workload: reopen a blob with physical type/nullable changed but index_types
 //           identical.
 // Threat: validating adapter-private spec fields would invalidate every
 //         existing SST on changes that don't affect blob interpretation
@@ -134,7 +134,8 @@ TEST(SabiV5Footer, RejectsUnknownRoleByte) {
 TEST(SabiV5Footer, IgnoresAdapterPrivateSpecChanges) {
   BitLSMOptions build_o = TwoAttrOpts();
   BitLSMOptions read_o = TwoAttrOpts();
-  read_o.attr_specs[0].is_float = false;  // same schema in the okey domain
+  read_o.attr_specs[0] = AttrSpec(IndexType::kRange, PhysicalType::kInt,
+                                  8);  // same index types
   read_o.attr_specs[0].nullable = true;   // NULL is a dynamic signal, unhashed
   EXPECT_TRUE(OpenViaFactory(SABIFactory(read_o), BuildBlob(build_o)).ok());
 }

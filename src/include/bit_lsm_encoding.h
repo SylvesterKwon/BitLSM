@@ -1,9 +1,8 @@
 #pragma once
 
-// Order-preserving uint64 ("okey") domain for SABI: the adapter encodes each
-// kRange native scalar through a monotone injection so the core orders
-// attributes with a single unsigned comparison; kEquality attrs stay opaque
-// bytes.
+// Order-preserving uint64 ("okey") domain: the adapter encodes each numeric
+// scalar through a monotone injection, then hands SABI its 8-byte big-endian
+// form so every attribute -- numeric or binary -- is ordered by one memcmp.
 
 #include <cmath>
 #include <cstdint>
@@ -81,8 +80,8 @@ inline uint64_t OkeyFromBytes(std::string_view bytes) {
 // ---- dispatch helpers (adapter side; the only spec-aware entry points) ----
 
 // Decoded row scalar (AttrView from DecodeAttr) -> okey. Caller guarantees a
-// non-NULL kRange input.
-inline uint64_t OrderedToOkey(const AttrView& v) {
+// non-NULL numeric input.
+inline uint64_t NumericToOkey(const AttrView& v) {
   if (std::holds_alternative<int64_t>(v))
     return I64ToOkey(std::get<int64_t>(v));
   if (std::holds_alternative<uint64_t>(v))
@@ -90,8 +89,9 @@ inline uint64_t OrderedToOkey(const AttrView& v) {
   return F64ToOkey(std::get<double>(v));
 }
 
-// Query comparand -> okey (string alternative unreachable past Validate()).
-inline uint64_t OrderedToOkey(
+// Query comparand -> okey (the string alternative belongs to binary attrs
+// and never reaches here).
+inline uint64_t NumericToOkey(
     const std::variant<int64_t, uint64_t, double, std::string>& v) {
   if (std::holds_alternative<int64_t>(v))
     return I64ToOkey(std::get<int64_t>(v));
@@ -166,7 +166,7 @@ class ValueLayoutExtractor : public AttrExtractor {
         out[i] = std::get<std::string_view>(v);
       } else {
         char* p = scratch_.data() + i * kOkeyBytes;
-        OkeyToBytes(OrderedToOkey(v), p);
+        OkeyToBytes(NumericToOkey(v), p);
         out[i] = std::string_view(p, kOkeyBytes);
       }
     }

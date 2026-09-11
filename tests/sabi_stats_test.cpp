@@ -24,8 +24,7 @@ namespace {
 BitLSMOptions I64Options(bool nullable = false) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec(IndexType::kRange, 8, /*is_signed=*/true,
-                           /*is_float=*/false, nullable)};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kInt, 8, /*nullable=*/nullable)};
   o.read_seqno = 0;
   o.rho = 0.1;
   return o;
@@ -36,11 +35,9 @@ BitLSMOptions I64Options(bool nullable = false) {
 BitLSMOptions MixedOptions() {
   BitLSMOptions o;
   o.attr_num = 3;
-  o.attr_specs = {AttrSpec{IndexType::kEquality},
-                  AttrSpec(IndexType::kRange, 8, /*is_signed=*/true,
-                           /*is_float=*/false),
-                  AttrSpec(IndexType::kRange, 8, /*is_signed=*/true,
-                           /*is_float=*/false)};
+  o.attr_specs = {AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),
+                  AttrSpec(IndexType::kRange, PhysicalType::kInt, 8),
+                  AttrSpec(IndexType::kRange, PhysicalType::kInt, 8)};
   o.read_seqno = 0;
   o.rho = 0.1;
   return o;
@@ -234,8 +231,7 @@ namespace {
 BitLSMOptions UnorderedOptions(bool nullable = false) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec(IndexType::kEquality, 8, /*is_signed=*/true,
-                           /*is_float=*/true, nullable)};
+  o.attr_specs = {AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary, 0, /*nullable=*/nullable)};
   o.read_seqno = 0;
   o.rho = 0.1;
   return o;
@@ -246,9 +242,8 @@ BitLSMOptions UnorderedOptions(bool nullable = false) {
 BitLSMOptions OrderedThenUnorderedOptions() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(IndexType::kRange, 8, /*is_signed=*/true,
-                           /*is_float=*/false),
-                  AttrSpec{IndexType::kEquality}};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kInt, 8),
+                  AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   o.read_seqno = 0;
   o.rho = 0.1;
   return o;

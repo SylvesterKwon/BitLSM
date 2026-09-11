@@ -16,17 +16,17 @@ bool ReferenceDB::MatchCondition(const QueryCondition& cond,
   const Attr& a = attrs[cond.attr_idx];
   // 3VL: a NULL attr makes every comparison UNKNOWN, i.e. not a match.
   if (std::holds_alternative<std::monostate>(a)) return false;
-  if (options_.attr_specs[cond.attr_idx].index_type == IndexType::kRange) {
-    // Compare in the native domain fixed by the attr's spec.
-    if (std::holds_alternative<int64_t>(a))
-      return ApplyCompareOp(cond.op, std::get<int64_t>(a),
-                            std::get<int64_t>(cond.value));
-    if (std::holds_alternative<uint64_t>(a))
-      return ApplyCompareOp(cond.op, std::get<uint64_t>(a),
-                            std::get<uint64_t>(cond.value));
+  // Compare in the domain the stored alternative fixes: numerics natively,
+  // bytes (kBinary/kVarBinary) in memcmp order.
+  if (std::holds_alternative<int64_t>(a))
+    return ApplyCompareOp(cond.op, std::get<int64_t>(a),
+                          std::get<int64_t>(cond.value));
+  if (std::holds_alternative<uint64_t>(a))
+    return ApplyCompareOp(cond.op, std::get<uint64_t>(a),
+                          std::get<uint64_t>(cond.value));
+  if (std::holds_alternative<double>(a))
     return ApplyCompareOp(cond.op, std::get<double>(a),
                           std::get<double>(cond.value));
-  }
   return ApplyCompareOp(cond.op, std::get<std::string>(a),
                         std::get<std::string>(cond.value));
 }

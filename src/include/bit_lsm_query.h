@@ -41,13 +41,14 @@ inline bool ApplyCompareOp(CompareOp op, const T& lhs, const T& rhs) {
   return false;
 }
 
-// Query condition. For kRange attrs the comparand is a native scalar matching
-// the attr's AttrSpec (double for float/double, int64 for signed, uint64 for
-// unsigned); for kEquality attrs it is the comparand string.
+// Query condition. The comparand alternative follows the attr's physical
+// type: int64 for kInt, uint64 for kUint, double for kFloat, string for
+// kBinary/kVarBinary.
 struct QueryCondition {
+  using value_type = std::variant<int64_t, uint64_t, double, std::string>;
   uint32_t attr_idx;
   CompareOp op;
-  std::variant<int64_t, uint64_t, double, std::string> value;
+  value_type value;
 };
 
 // A clause is a group of conditions combined with OR.
@@ -74,8 +75,8 @@ struct BitLSMQuery {
   bool CheckCondition(rocksdb::Slice slice, const BitLSMOptions& options) const;
 
   // Structural validation against a schema: rejects empty clauses,
-  // out-of-range attr_idx, value/attr type mismatches, and non-EQUAL
-  // operators on unordered attributes. OK() means safe to evaluate.
+  // out-of-range attr_idx, comparand/physical-type mismatches, and non-EQUAL
+  // operators on kEquality attributes. OK() means safe to evaluate.
   rocksdb::Status Validate(const BitLSMOptions& options) const;
 
   // Human-readable query string (e.g., "(a0='2' OR a0='7') AND (a2>='10.5')")
@@ -228,15 +229,15 @@ class CompiledQuery {
 
  private:
   struct Pred {
-    uint8_t is_ordered;
+    uint8_t is_numeric;
     CompareOp op;
     int32_t null_bit;  // attr's null-bitmap bit position, or -1 if not nullable
-    uint32_t slot;  // ordered: absolute byte offset / unordered: var_end rank
-    AttrSpec spec;  // ordered: physical decode spec (width/signed/float)
-    int64_t ival;   // ordered comparand; the one matching spec is active
+    uint32_t slot;  // fixed: absolute byte offset / kVarBinary: var_end rank
+    AttrSpec spec;  // physical type / width
+    int64_t ival;   // numeric comparand; the one matching spec is active
     uint64_t uval;
     double dval;
-    uint32_t soff;  // unordered comparand: offset into arena_
+    uint32_t soff;  // binary comparand: offset into arena_
     uint32_t slen;
   };
   struct ClauseRange {
@@ -245,11 +246,11 @@ class CompiledQuery {
   };
   std::vector<Pred> preds_;
   std::vector<ClauseRange> clauses_;
-  uint32_t unordered_base_ = 0;
+  uint32_t variable_base_ = 0;
   uint32_t null_bitmap_bytes_ =
       0;  // leading null bitmap; var_end array follows
-  // Owns unordered comparand bytes; preds address it by offset, so copies
-  // and moves of CompiledQuery stay valid.
+  // Owns binary comparand bytes; preds address it by offset, so copies and
+  // moves of CompiledQuery stay valid.
   std::string arena_;
 };
 

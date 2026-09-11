@@ -11,42 +11,26 @@ using namespace rocksdb;
 
 namespace bit_lsm {
 
-// Evaluate a single condition against a decoded attribute value
-static bool EvalCondition(const QueryCondition& cond, IndexType attr_type,
-                          AttrView attr_val) {
+// Evaluate a single condition against a decoded attribute value. Binary
+// attrs (kBinary/kVarBinary decode to a string_view) compare in memcmp order;
+// numeric attrs compare in their native domain, where the decoded value and
+// the comparand share the alternative fixed by the physical type.
+static bool EvalCondition(const QueryCondition& cond, AttrView attr_val) {
   // 3VL: a NULL attr makes every comparison UNKNOWN, i.e. not a match.
   if (std::holds_alternative<std::monostate>(attr_val)) return false;
-  if (attr_type == IndexType::kEquality) {
-    std::string_view target_str = std::get<std::string_view>(attr_val);
-    const string& query_val = std::get<string>(cond.value);
-    int cmp = target_str.compare(query_val);
-    switch (cond.op) {
-      case CompareOp::EQUAL:
-        return cmp == 0;
-      case CompareOp::GREATER_EQUAL:
-        return cmp >= 0;
-      case CompareOp::LESS_EQUAL:
-        return cmp <= 0;
-      case CompareOp::GREATER:
-        return cmp > 0;
-      case CompareOp::LESS:
-        return cmp < 0;
-      default:
-        assert(false);
-        return false;
-    }
-  } else {
-    // kRange: compare in the attr's native domain (int64/uint64/double). The
-    // decoded value and the comparand share the alternative fixed by the spec.
-    if (std::holds_alternative<int64_t>(attr_val))
-      return ApplyCompareOp(cond.op, std::get<int64_t>(attr_val),
-                            std::get<int64_t>(cond.value));
-    if (std::holds_alternative<uint64_t>(attr_val))
-      return ApplyCompareOp(cond.op, std::get<uint64_t>(attr_val),
-                            std::get<uint64_t>(cond.value));
-    return ApplyCompareOp(cond.op, std::get<double>(attr_val),
-                          std::get<double>(cond.value));
+  if (std::holds_alternative<std::string_view>(attr_val)) {
+    const std::string_view target = std::get<std::string_view>(attr_val);
+    return ApplyCompareOp(cond.op, target.compare(std::get<string>(cond.value)),
+                          0);
   }
+  if (std::holds_alternative<int64_t>(attr_val))
+    return ApplyCompareOp(cond.op, std::get<int64_t>(attr_val),
+                          std::get<int64_t>(cond.value));
+  if (std::holds_alternative<uint64_t>(attr_val))
+    return ApplyCompareOp(cond.op, std::get<uint64_t>(attr_val),
+                          std::get<uint64_t>(cond.value));
+  return ApplyCompareOp(cond.op, std::get<double>(attr_val),
+                        std::get<double>(cond.value));
 }
 
 // CNF evaluation: all clause_groups (AND) must pass,
@@ -64,15 +48,13 @@ bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
     // NewIterator sorts each clause by attr_idx, so caching the last decoded
     // attribute keeps same-attr clauses at one decode per clause.
     uint32_t cached_idx = UINT32_MAX;
-    IndexType cached_type = IndexType::kEquality;
     AttrView cached_val;
     for (const auto& cond : clause) {
       if (cond.attr_idx != cached_idx) {
         cached_idx = cond.attr_idx;
-        cached_type = options.attr_specs[cond.attr_idx].index_type;
         cached_val = DecodeAttr(layout, buffer, cond.attr_idx);
       }
-      if (EvalCondition(cond, cached_type, cached_val)) {
+      if (EvalCondition(cond, cached_val)) {
         clause_pass = true;
         break;  // OR short-circuit
       }
@@ -85,29 +67,40 @@ bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
 CompiledQuery::CompiledQuery(const BitLSMQuery& query,
                              const BitLSMOptions& options) {
   const ValueLayout layout(options);
-  unordered_base_ = layout.unordered_base;
+  variable_base_ = layout.variable_base;
   null_bitmap_bytes_ = layout.null_bitmap_bytes;
   for (const OrClause& clause : query.clause_groups) {
     uint32_t begin = static_cast<uint32_t>(preds_.size());
     for (const QueryCondition& cond : clause) {
-      Pred p{};
-      p.is_ordered = layout.is_ordered[cond.attr_idx];
-      p.op = cond.op;
-      p.null_bit = layout.null_bit[cond.attr_idx];
-      p.slot = layout.slot[cond.attr_idx];
-      if (p.is_ordered) {
-        p.spec = layout.specs[cond.attr_idx];
-        if (p.spec.is_float)
+      const AttrSpec& spec = layout.specs[cond.attr_idx];
+      Pred p{static_cast<uint8_t>(spec.IsNumeric()),
+             cond.op,
+             layout.null_bit[cond.attr_idx],
+             layout.slot[cond.attr_idx],
+             spec,
+             0,
+             0,
+             0.0,
+             0,
+             0};
+      switch (p.spec.physical_type) {
+        case PhysicalType::kFloat:
           p.dval = std::get<double>(cond.value);
-        else if (p.spec.is_signed)
+          break;
+        case PhysicalType::kInt:
           p.ival = std::get<int64_t>(cond.value);
-        else
+          break;
+        case PhysicalType::kUint:
           p.uval = std::get<uint64_t>(cond.value);
-      } else {
-        const std::string& s = std::get<std::string>(cond.value);
-        p.soff = static_cast<uint32_t>(arena_.size());
-        p.slen = static_cast<uint32_t>(s.size());
-        arena_ += s;
+          break;
+        case PhysicalType::kBinary:
+        case PhysicalType::kVarBinary: {
+          const std::string& str = std::get<std::string>(cond.value);
+          p.soff = static_cast<uint32_t>(arena_.size());
+          p.slen = static_cast<uint32_t>(str.size());
+          arena_ += str;
+          break;
+        }
       }
       preds_.push_back(p);
     }
@@ -141,31 +134,40 @@ bool CompiledQuery::Eval(rocksdb::Slice value) const {
       if (p.null_bit >= 0 && IsNullBitSet(base, p.null_bit)) {
         // 3VL: NULL attr → comparison is UNKNOWN, treated as no-match.
         ok = false;
-      } else if (p.is_ordered) {
+      } else if (p.is_numeric) {
         // Fast path: 8-byte double (the common experiment schema) compares
         // straight from the slot with no variant construction.
-        if (p.spec.is_float && p.spec.width == 8) {
+        if (p.spec.physical_type == PhysicalType::kFloat &&
+            p.spec.width == 8) {
           double v;
           std::memcpy(&v, base + p.slot, sizeof(double));
           ok = ApplyCompareOp(p.op, v, p.dval);
         } else {
-          AttrView v = DecodeOrdered(base + p.slot, p.spec);
-          if (p.spec.is_float)
+          AttrView v = DecodeFixed(base + p.slot, p.spec);
+          if (p.spec.physical_type == PhysicalType::kFloat)
             ok = ApplyCompareOp(p.op, std::get<double>(v), p.dval);
-          else if (p.spec.is_signed)
+          else if (p.spec.physical_type == PhysicalType::kInt)
             ok = ApplyCompareOp(p.op, std::get<int64_t>(v), p.ival);
           else
             ok = ApplyCompareOp(p.op, std::get<uint64_t>(v), p.uval);
         }
       } else {
-        const char* ve = base + null_bitmap_bytes_;
-        uint32_t end;
-        std::memcpy(&end, ve + p.slot * sizeof(uint32_t), sizeof(uint32_t));
-        uint32_t start = 0;
-        if (p.slot > 0)
-          std::memcpy(&start, ve + (p.slot - 1) * sizeof(uint32_t),
-                      sizeof(uint32_t));
-        std::string_view attr(base + unordered_base_ + start, end - start);
+        // Binary: the bytes sit in a fixed slot (kBinary) or in the variable
+        // region at the rank's var_end extent (kVarBinary); either way the
+        // comparison is memcmp order against the arena-held comparand.
+        std::string_view attr;
+        if (p.spec.IsFixed()) {
+          attr = std::string_view(base + p.slot, p.spec.width);
+        } else {
+          const char* ve = base + null_bitmap_bytes_;
+          uint32_t end;
+          std::memcpy(&end, ve + p.slot * sizeof(uint32_t), sizeof(uint32_t));
+          uint32_t start = 0;
+          if (p.slot > 0)
+            std::memcpy(&start, ve + (p.slot - 1) * sizeof(uint32_t),
+                        sizeof(uint32_t));
+          attr = std::string_view(base + variable_base_ + start, end - start);
+        }
         std::string_view want(arena_.data() + p.soff, p.slen);
         ok = PassOp(p.op, attr.compare(want));
       }
@@ -192,26 +194,31 @@ rocksdb::Status BitLSMQuery::Validate(const BitLSMOptions& options) const {
             " out of range (attr_num=" +
             std::to_string(options.attr_specs.size()) + ")");
       const AttrSpec& spec = options.attr_specs[cond.attr_idx];
-      IndexType type = spec.index_type;
-      if (type == IndexType::kRange) {
-        bool type_ok =
-            spec.is_float    ? std::holds_alternative<double>(cond.value)
-            : spec.is_signed ? std::holds_alternative<int64_t>(cond.value)
-                             : std::holds_alternative<uint64_t>(cond.value);
-        if (!type_ok)
-          return rocksdb::Status::InvalidArgument(
-              "attr " + std::to_string(cond.attr_idx) +
-              " kRange comparand type does not match its physical spec");
-      } else if (type == IndexType::kEquality) {
-        if (!std::holds_alternative<std::string>(cond.value))
-          return rocksdb::Status::InvalidArgument(
-              "attr " + std::to_string(cond.attr_idx) +
-              " is kEquality but value is not string");
-        if (cond.op != CompareOp::EQUAL)
-          return rocksdb::Status::InvalidArgument(
-              "kEquality attr " + std::to_string(cond.attr_idx) +
-              " supports only EQUAL");
+      bool type_ok = false;
+      switch (spec.physical_type) {
+        case PhysicalType::kInt:
+          type_ok = std::holds_alternative<int64_t>(cond.value);
+          break;
+        case PhysicalType::kUint:
+          type_ok = std::holds_alternative<uint64_t>(cond.value);
+          break;
+        case PhysicalType::kFloat:
+          type_ok = std::holds_alternative<double>(cond.value);
+          break;
+        case PhysicalType::kBinary:
+        case PhysicalType::kVarBinary:
+          type_ok = std::holds_alternative<std::string>(cond.value);
+          break;
       }
+      if (!type_ok)
+        return rocksdb::Status::InvalidArgument(
+            "attr " + std::to_string(cond.attr_idx) +
+            " comparand type does not match its physical type");
+      if (spec.index_type == IndexType::kEquality &&
+          cond.op != CompareOp::EQUAL)
+        return rocksdb::Status::InvalidArgument(
+            "kEquality attr " + std::to_string(cond.attr_idx) +
+            " supports only EQUAL");
     }
   }
   return rocksdb::Status::OK();
@@ -222,7 +229,7 @@ rocksdb::Status BitLSMQuery::Validate(const BitLSMOptions& options) const {
 static std::string ComparandBytes(
     const std::variant<int64_t, uint64_t, double, std::string>& v) {
   if (std::holds_alternative<std::string>(v)) return std::get<std::string>(v);
-  return OkeyToBytes(OrderedToOkey(v));
+  return OkeyToBytes(NumericToOkey(v));
 }
 
 SABIQuery EncodeQuery(const BitLSMQuery& q, const BitLSMOptions& options) {

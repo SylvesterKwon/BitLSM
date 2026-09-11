@@ -21,8 +21,8 @@ namespace {
 BitLSMOptions MakeOptions() {
   BitLSMOptions options;
   options.attr_num = 2;
-  options.attr_specs = {AttrSpec{IndexType::kRange},
-                        AttrSpec{IndexType::kEquality}};
+  options.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+                        AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   options.read_seqno = 0;
   options.rho = 0.5;  // 전체 bin 예산 = attr_num/rho = 4 (속성별 할당은 동적)
   return options;

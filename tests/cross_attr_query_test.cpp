@@ -14,8 +14,8 @@ namespace {
 BitLSMOptions ThreeAttrOptions() {
   BitLSMOptions o;
   o.attr_num = 3;
-  o.attr_specs = {AttrSpec{IndexType::kRange}, AttrSpec{IndexType::kEquality},
-                  AttrSpec{IndexType::kRange}};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8), AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),
+                  AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;

@@ -10,15 +10,15 @@ using namespace bit_lsm;
 
 // Workload: a v3 row with [kRange double, kEquality bytes, kRange i64]
 //           attrs, extracted through ValueLayoutExtractor.
-// Threat: extractor output diverging from DecodeAttr + OrderedToOkey (as
+// Threat: extractor output diverging from DecodeAttr + NumericToOkey (as
 //         8-byte okey bytes) would put rows into different bins than the
 //         query path expects.
 TEST(ValueLayoutExtractor, MatchesDecodeAttr) {
   BitLSMOptions o;
   o.attr_num = 3;
-  o.attr_specs = {AttrSpec(IndexType::kRange, 8, true, true, true),  // double
-                  AttrSpec(IndexType::kEquality),                     // bytes
-                  AttrSpec(IndexType::kRange, 8, true, false, false)};  // i64
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/true),  // double
+                  AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),                     // bytes
+                  AttrSpec(IndexType::kRange, PhysicalType::kInt, 8, /*nullable=*/false)};  // i64
 
   std::vector<Attr> attrs = {Attr(3.25), Attr(std::string("seoul")),
                              Attr(int64_t(-42))};
@@ -40,8 +40,8 @@ TEST(ValueLayoutExtractor, MatchesDecodeAttr) {
 TEST(ValueLayoutExtractor, NullBecomesMonostate) {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(IndexType::kRange, 8, true, true, true),
-                  AttrSpec(IndexType::kEquality)};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/true),
+                  AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   std::vector<Attr> attrs = {Attr(std::monostate{}), Attr(std::string("x"))};
   std::string row;
   EncodeValue(o, attrs, "", row);
