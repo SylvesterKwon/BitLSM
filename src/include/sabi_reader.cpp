@@ -627,8 +627,7 @@ bool SABIReader::RangeHistogram(uint32_t attr_idx,
   // an empty buffer and carry no information.
   if (total == 0) return false;
 
-  out->boundaries =
-      std::get<BytesList>(bitmap_index.binning_policy[attr_idx]);
+  out->boundaries = std::get<BytesList>(bitmap_index.binning_policy[attr_idx]);
   out->counts = std::move(counts);
   out->distinct = distinct_cnts[attr_idx];
   return true;
