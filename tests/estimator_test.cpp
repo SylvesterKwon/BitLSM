@@ -36,6 +36,16 @@ BitLSMOptions EstOptions() {
 
 // Flush/compact and force one synchronous stats reconcile, so tests observe
 // deterministic freshness regardless of listener timing.
+// Closed okey interval [a, b] placed on the attr's axis.
+GlobalRangeStats::Window Between(const GlobalRangeStats& ord, int64_t a,
+                                 int64_t b) {
+  ByteInterval w = ByteInterval::FromOp(CompareOp::GREATER_EQUAL,
+                                        OkeyToBytes(I64ToOkey(a)));
+  w.Intersect(
+      ByteInterval::FromOp(CompareOp::LESS_EQUAL, OkeyToBytes(I64ToOkey(b))));
+  return ord.Place(w);
+}
+
 void FlushDB(BitLSM& db) {
   ASSERT_TRUE(db.GetInternalDB()->Flush(rocksdb::FlushOptions()).ok());
   if (db.Estimator()) db.Estimator()->TEST_Refresh();
@@ -70,12 +80,12 @@ TEST_F(BitLSMTestBase, OrderedRangeMassMatchesUniformData) {
 
   ASSERT_TRUE(stats->range[0].has_value());
   const GlobalRangeStats& ord = *stats->range[0];
-  EXPECT_EQ(ord.min_okey, I64ToOkey(0));
-  EXPECT_EQ(ord.max_okey, I64ToOkey(999));
+  EXPECT_EQ(ord.min, OkeyToBytes(I64ToOkey(0)));
+  EXPECT_EQ(ord.max, OkeyToBytes(I64ToOkey(999)));
   EXPECT_NEAR(ord.total, 1000.0, 1e-6);
-  EXPECT_NEAR(ord.RangeMass(I64ToOkey(0), I64ToOkey(999)), 1000.0, 1e-6);
-  EXPECT_NEAR(ord.RangeMass(I64ToOkey(0), I64ToOkey(499)), 500.0, 40.0);
-  EXPECT_NEAR(ord.RangeMass(I64ToOkey(750), I64ToOkey(999)), 250.0, 40.0);
+  EXPECT_NEAR(ord.RangeMass(Between(ord, 0, 999)), 1000.0, 1e-6);
+  EXPECT_NEAR(ord.RangeMass(Between(ord, 0, 499)), 500.0, 40.0);
+  EXPECT_NEAR(ord.RangeMass(Between(ord, 750, 999)), 250.0, 40.0);
 
   ASSERT_TRUE(stats->equality[1].has_value());
   const GlobalEqualityStats& uno = *stats->equality[1];
@@ -131,7 +141,7 @@ TEST_F(BitLSMTestBase, ChurnKeepsEstimatesStable) {
   std::shared_ptr<const GlobalStats> pre = db.Estimator()->Stats();
   ASSERT_TRUE(pre->range[0].has_value());
   EXPECT_NEAR(pre->range[0]->total, 1000.0, 1e-6);
-  EXPECT_NEAR(pre->range[0]->RangeMass(I64ToOkey(0), I64ToOkey(249)), 250.0,
+  EXPECT_NEAR(pre->range[0]->RangeMass(Between(*pre->range[0], 0, 249)), 250.0,
               35.0);
 
   CompactAllDB(db);
@@ -139,7 +149,7 @@ TEST_F(BitLSMTestBase, ChurnKeepsEstimatesStable) {
   ASSERT_TRUE(post->range[0].has_value());
   EXPECT_NEAR(post->range[0]->total, 1000.0, 1e-6);
   EXPECT_EQ(post->physical_rows, pre->physical_rows);
-  EXPECT_NEAR(post->range[0]->RangeMass(I64ToOkey(0), I64ToOkey(249)), 250.0,
+  EXPECT_NEAR(post->range[0]->RangeMass(Between(*post->range[0], 0, 249)), 250.0,
               35.0);
 }
 
@@ -189,11 +199,11 @@ TEST_F(BitLSMTestBase, SingleValueAttrKeepsPointMass) {
   std::shared_ptr<const GlobalStats> stats = db.Estimator()->Stats();
   ASSERT_TRUE(stats->range[0].has_value());
   const GlobalRangeStats& ord = *stats->range[0];
-  EXPECT_EQ(ord.min_okey, I64ToOkey(42));
-  EXPECT_EQ(ord.max_okey, I64ToOkey(42));
-  EXPECT_DOUBLE_EQ(ord.RangeMass(I64ToOkey(42), I64ToOkey(42)), 200.0);
-  EXPECT_DOUBLE_EQ(ord.RangeMass(I64ToOkey(43), I64ToOkey(1000)), 0.0);
-  EXPECT_DOUBLE_EQ(ord.RangeMass(I64ToOkey(-10), I64ToOkey(41)), 0.0);
+  EXPECT_EQ(ord.min, OkeyToBytes(I64ToOkey(42)));
+  EXPECT_EQ(ord.max, OkeyToBytes(I64ToOkey(42)));
+  EXPECT_DOUBLE_EQ(ord.RangeMass(Between(ord, 42, 42)), 200.0);
+  EXPECT_DOUBLE_EQ(ord.RangeMass(Between(ord, 43, 1000)), 0.0);
+  EXPECT_DOUBLE_EQ(ord.RangeMass(Between(ord, -10, 41)), 0.0);
 }
 
 // Workload: 100 puts in SST1, 20 tombstones for them in SST2, then 20
@@ -939,10 +949,10 @@ TEST_F(BitLSMTestBase, SparseDomainEqualityNdvFloor) {
   const GlobalRangeStats& ord = *stats->range[0];
   EXPECT_EQ(ord.ndv, 84u);
   // The raw grid smears the point into the holes (~840/611 per okey unit).
-  EXPECT_LT(ord.RangeMass(I64ToOkey(199401), I64ToOkey(199401)), 5.0);
+  EXPECT_LT(ord.RangeMass(Between(ord, 199401, 199401)), 5.0);
   // The floor restores the per-value truth (840/84 = 10).
-  EXPECT_NEAR(ord.PointAwareRangeMass(I64ToOkey(199401), I64ToOkey(199401)),
+  EXPECT_NEAR(ord.PointAwareRangeMass(Between(ord, 199401, 199401)),
               10.0, 2.0);
   // Whole-domain range: mass conserved, no correction.
-  EXPECT_NEAR(ord.RangeMass(I64ToOkey(199201), I64ToOkey(199812)), 840.0, 1e-6);
+  EXPECT_NEAR(ord.RangeMass(Between(ord, 199201, 199812)), 840.0, 1e-6);
 }

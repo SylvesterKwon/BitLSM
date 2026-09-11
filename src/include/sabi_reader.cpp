@@ -627,17 +627,8 @@ bool SABIReader::RangeHistogram(uint32_t attr_idx,
   // an empty buffer and carry no information.
   if (total == 0) return false;
 
-  // Estimator bridge: its okey grid needs integer coordinates, which only
-  // 8-byte (okey) boundaries carry; an attr whose values are raw strings has
-  // no histogram in that domain.
-  const auto& bounds =
+  out->boundaries =
       std::get<BytesList>(bitmap_index.binning_policy[attr_idx]);
-  out->boundaries.clear();
-  out->boundaries.reserve(bounds.size());
-  for (size_t b = 0; b < bounds.size(); ++b) {
-    if (bounds[b].size() != kOkeyBytes) return false;
-    out->boundaries.push_back(OkeyFromBytes(bounds[b]));
-  }
   out->counts = std::move(counts);
   out->distinct = distinct_cnts[attr_idx];
   return true;

@@ -88,15 +88,13 @@ struct BinSelection {
 };
 
 // Per-SST histogram of one kRange attribute, the raw material for DB-level
-// cardinality estimation: bin i covers okeys [boundaries[i], boundaries[i+1])
-// (the last bin also includes its upper edge), counts[i] is that bin's row
-// count. NULL and tombstone rows sit in no value bin, so they are excluded by
-// construction. Boundaries are recovered from the persisted 8-byte boundary
-// bytes; an attr whose values are raw strings has no histogram in this
-// domain (SABIReader::RangeHistogram returns false).
+// cardinality estimation: bin i covers values in [boundaries[i],
+// boundaries[i+1]) in memcmp order (the last bin also includes its upper
+// edge), counts[i] is that bin's row count. NULL and tombstone rows sit in no
+// value bin, so they are excluded by construction.
 struct RangeAttrHistogram {
-  std::vector<uint64_t> boundaries;  // absolute okeys, bin_count + 1
-  std::vector<uint64_t> counts;      // bin_count
+  BytesList boundaries;          // bin_count + 1, SABI byte domain
+  std::vector<uint64_t> counts;  // bin_count
   // Exact distinct values in this SST. Feeds the estimator's equality floor
   // on sparse integer domains.
   uint64_t distinct = 0;
@@ -411,10 +409,9 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   // (safe to skip all bitmap work and block fetches). Never returns false
   // for a query that could actually match a row.
   bool QueryCanMatch(const SABIQuery& q) const;
-  // Fills `out` with attr_idx's histogram in absolute okey coordinates.
-  // Returns false when the attr is out of range, not kRange, has zero
-  // binned rows (its stored boundaries are meaningless then), or holds
-  // boundaries that are not 8-byte okeys (raw-string values).
+  // Fills `out` with attr_idx's histogram. Returns false when the attr is
+  // out of range, not kRange, or has zero binned rows (its stored boundaries
+  // are meaningless then).
   bool RangeHistogram(uint32_t attr_idx, RangeAttrHistogram* out) const;
   // Fills `out` with attr_idx's per-value counts (see EqualityAttrValueCounts
   // for exactness). Returns false when the attr is out of range, not

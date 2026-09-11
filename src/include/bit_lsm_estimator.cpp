@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <map>
 #include <set>
 
@@ -18,14 +19,99 @@ using namespace rocksdb;
 
 namespace bit_lsm {
 
-double GlobalRangeStats::CumBelow(uint64_t okey) const {
-  if (okey <= min_okey || total == 0) return 0;
-  uint64_t span = max_okey - min_okey;
-  uint64_t s = okey - min_okey;
-  if (span == 0 || s > span) return total;
-  // Position on the [0, cells] axis, computed on the min-shifted span so
-  // narrow spans at large okey magnitudes keep double precision.
-  double p = static_cast<double>(s) / static_cast<double>(span) *
+namespace {
+
+uint64_t SatAdd(uint64_t a, uint64_t b) {
+  return a > UINT64_MAX - b ? UINT64_MAX : a + b;
+}
+
+size_t CommonPrefixLength(std::string_view a, std::string_view b) {
+  const size_t n = std::min(a.size(), b.size());
+  size_t k = 0;
+  while (k < n && a[k] == b[k]) ++k;
+  return k;
+}
+
+}  // namespace
+
+ByteAxis ByteAxis::Fit(std::string_view min, std::string_view max,
+                       uint8_t lo_char, uint8_t hi_char, size_t shortest) {
+  ByteAxis axis;
+  const size_t k = CommonPrefixLength(min, max);
+  axis.prefix = std::string(min.substr(0, k));
+  axis.lo_char = lo_char;
+  axis.radix = std::max<uint32_t>(2, uint32_t{hi_char} - lo_char + 1);
+  // As many digits as fit in 64 bits.
+  axis.digits = 0;
+  const unsigned __int128 limit = static_cast<unsigned __int128>(1) << 64;
+  for (unsigned __int128 p = 1; p * axis.radix <= limit; p *= axis.radix)
+    ++axis.digits;
+  axis.base = axis.Window(min);
+  axis.span = axis.Window(max) - axis.base;
+  // One value step: a step in the last real digit of the shortest boundary
+  // (the digits past it are padding), never wider than the window itself.
+  const size_t pad =
+      k + axis.digits > shortest ? k + axis.digits - shortest : 0;
+  axis.unit = 1;
+  for (size_t i = 0; i < std::min(pad, axis.digits - 1); ++i)
+    axis.unit *= axis.radix;
+  return axis;
+}
+
+uint64_t ByteAxis::Window(std::string_view s) const {
+  uint64_t acc = 0;
+  for (size_t i = 0; i < digits; ++i) {
+    const size_t pos = prefix.size() + i;
+    uint32_t d = 0;
+    if (pos < s.size()) {
+      const uint8_t c = static_cast<uint8_t>(s[pos]);
+      d = c <= lo_char ? 0 : std::min<uint32_t>(c - lo_char, radix - 1);
+    }
+    acc = acc * radix + d;
+  }
+  return acc;
+}
+
+uint64_t ByteAxis::End() const { return SatAdd(span, unit); }
+
+uint64_t ByteAxis::Rel(std::string_view s) const {
+  const int c = s.substr(0, prefix.size()).compare(prefix);
+  if (c < 0) return 0;
+  if (c > 0) return End();
+  const uint64_t w = Window(s);
+  if (w < base) return 0;
+  const uint64_t r = w - base;
+  return r > span ? End() : r;
+}
+
+GlobalRangeStats::Window GlobalRangeStats::Place(const ByteInterval& w) const {
+  Window out;
+  // Ends outside [min, max] are settled by bytes, so the axis never has to
+  // represent "below min" (a strict bound there must not step inward) or
+  // "above max".
+  if (w.lo < min)
+    out.lo = 0;
+  else if (w.lo > max)
+    out.lo = axis.End();
+  else
+    out.lo = SatAdd(axis.Rel(w.lo), w.lo_open ? axis.unit : 0);
+  if (w.hi_unbounded || w.hi > max)
+    out.hi = axis.End();
+  else if (w.hi < min)
+    out.hi = 0;
+  else
+    out.hi = SatAdd(axis.Rel(w.hi), w.hi_open ? 0 : axis.unit);
+  out.point = out.hi > out.lo && out.hi - out.lo <= axis.unit;
+  out.in_span = !(w.lo < min) && out.lo <= axis.span;
+  return out;
+}
+
+double GlobalRangeStats::CumBelow(uint64_t rel) const {
+  if (rel == 0 || total == 0) return 0;
+  if (axis.span == 0 || rel > axis.span) return total;
+  // Position on the [0, cells] axis; coordinates are already min-relative,
+  // so narrow spans at large magnitudes keep double precision.
+  double p = static_cast<double>(rel) / static_cast<double>(axis.span) *
              static_cast<double>(cell_psum.size());
   uint32_t cell = std::min(static_cast<uint32_t>(p),
                            static_cast<uint32_t>(cell_psum.size() - 1));
@@ -34,40 +120,41 @@ double GlobalRangeStats::CumBelow(uint64_t okey) const {
   return below + cell_mass * (p - cell);
 }
 
-double GlobalRangeStats::RangeMass(uint64_t lo, uint64_t hi) const {
-  if (hi < lo || total == 0) return 0;
-  // Inclusive upper edge: okeys are integers, so "<= hi" is "< hi + 1".
-  double upper = hi >= max_okey ? total : CumBelow(hi + 1);
-  return std::max(0.0, upper - CumBelow(lo));
+double GlobalRangeStats::RangeMass(const Window& w) const {
+  if (w.hi <= w.lo || total == 0) return 0;
+  double upper = w.hi > axis.span ? total : CumBelow(w.hi);
+  return std::max(0.0, upper - CumBelow(w.lo));
 }
 
-double GlobalRangeStats::PointAwareRangeMass(uint64_t lo, uint64_t hi) const {
-  double mass = RangeMass(lo, hi);
+double GlobalRangeStats::PointAwareRangeMass(const Window& w) const {
+  double mass = RangeMass(w);
   // NDV equality floor, point windows INSIDE the live span only: the grid
-  // smears mass uniformly over the okey span, so on a sparse domain an
-  // existing point reads ~total/span_used instead of ~total/ndv. Points
-  // OUTSIDE [min_okey, max_okey] keep their zero -- there it is proof of
-  // absence, not smear. (In-span holes do get floored: NDV alone cannot
-  // tell a hole from a value, and overestimating a hole is the conservative
-  // direction.) Range windows integrate over the holes and need no
-  // correction (verified exact on SF2 BETWEENs).
-  if (lo == hi && ndv > 0 && lo >= min_okey && lo <= max_okey)
+  // smears mass uniformly over the span, so on a sparse domain an existing
+  // point reads ~total/span_used instead of ~total/ndv. Points OUTSIDE
+  // [min, max] keep their zero -- there it is proof of absence, not smear.
+  // (In-span holes do get floored: NDV alone cannot tell a hole from a
+  // value, and overestimating a hole is the conservative direction.) Range
+  // windows integrate over the holes and need no correction (verified exact
+  // on SF2 BETWEENs).
+  if (w.point && ndv > 0 && w.in_span)
     mass = std::max(mass, total / double(ndv));
   return std::min(mass, total);
 }
 
-double GlobalRangeStats::CandidateMass(uint64_t lo, uint64_t hi,
+double GlobalRangeStats::CandidateMass(const Window& w,
                                        double match_mass) const {
-  if (hi < lo || sst_bins.empty()) return match_mass;
+  if (w.hi <= w.lo || sst_bins.empty()) return match_mass;
+  const double unit = static_cast<double>(axis.unit);
   // Pass 1: span-uniform overlap mass per covering SST -- the weight that
   // apportions the caller's GLOBAL matching mass across SSTs (the per-SST
   // stats keep no histogram, only span + bin mass; mass is conserved).
   double overlap_total = 0;
   for (const SSTBins& s : sst_bins) {
-    if (hi < s.lo || lo > s.hi || s.total <= 0) continue;
-    double span_len = static_cast<double>(s.hi - s.lo) + 1.0;
+    const uint64_t s_end = SatAdd(s.hi, axis.unit);
+    if (w.hi <= s.lo || w.lo >= s_end || s.total <= 0) continue;
+    double span_len = static_cast<double>(s.hi - s.lo) + unit;
     double ov_len =
-        static_cast<double>(std::min(hi, s.hi) - std::max(lo, s.lo)) + 1.0;
+        static_cast<double>(std::min(w.hi, s_end) - std::max(w.lo, s.lo));
     overlap_total += s.total * (ov_len / span_len);
   }
   // Pass 2: per covering SST, round the matching share out to prune-bin
@@ -78,21 +165,22 @@ double GlobalRangeStats::CandidateMass(uint64_t lo, uint64_t hi,
   // SST's binned rows.
   double cand = 0;
   for (const SSTBins& s : sst_bins) {
-    if (hi < s.lo || lo > s.hi || s.total <= 0) continue;
-    uint64_t c_lo = std::max(lo, s.lo);
-    uint64_t c_hi = std::min(hi, s.hi);
-    double span_len = static_cast<double>(s.hi - s.lo) + 1.0;
-    double ov_len = static_cast<double>(c_hi - c_lo) + 1.0;
+    const uint64_t s_end = SatAdd(s.hi, axis.unit);
+    if (w.hi <= s.lo || w.lo >= s_end || s.total <= 0) continue;
+    uint64_t c_lo = std::max(w.lo, s.lo);
+    uint64_t c_hi = std::min(w.hi, s_end);
+    double span_len = static_cast<double>(s.hi - s.lo) + unit;
+    double ov_len = static_cast<double>(c_hi - c_lo);
     double match_s =
         overlap_total > 0
             ? match_mass * (s.total * (ov_len / span_len)) / overlap_total
             : 0;
     double c;
-    if (lo == hi) {
+    if (w.point) {
       c = std::max(s.binmass, match_s);
     } else {
       double smear =
-          ((c_lo > s.lo ? 0.5 : 0.0) + (c_hi < s.hi ? 0.5 : 0.0)) * s.binmass;
+          ((c_lo > s.lo ? 0.5 : 0.0) + (c_hi < s_end ? 0.5 : 0.0)) * s.binmass;
       c = std::max(s.binmass, match_s + smear);
     }
     cand += std::min(c, s.total);
@@ -102,13 +190,12 @@ double GlobalRangeStats::CandidateMass(uint64_t lo, uint64_t hi,
 
 namespace {
 
-// Projects one per-SST histogram onto the uniform grid over [min_okey,
-// max_okey]: each source bin's count is spread over the cells it overlaps,
-// proportional to overlap length (uniform-within-bin assumption), in
-// min_okey-shifted coordinates.
-void ProjectHistogram(const RangeAttrHistogram& hist, uint64_t min_okey,
-                      uint64_t max_okey, vector<double>& cells) {
-  uint64_t span = max_okey - min_okey;
+// Projects one per-SST histogram onto the uniform grid over the attr's axis:
+// each source bin's count is spread over the cells it overlaps, proportional
+// to overlap length (uniform-within-bin assumption).
+void ProjectHistogram(const RangeAttrHistogram& hist, const ByteAxis& axis,
+                      vector<double>& cells) {
+  const uint64_t span = axis.span;
   const size_t n = cells.size();
   if (span == 0) {
     for (uint64_t c : hist.counts) cells[0] += static_cast<double>(c);
@@ -118,8 +205,8 @@ void ProjectHistogram(const RangeAttrHistogram& hist, uint64_t min_okey,
   for (size_t b = 0; b + 1 < hist.boundaries.size(); ++b) {
     double count = static_cast<double>(hist.counts[b]);
     if (count == 0) continue;
-    double s = static_cast<double>(hist.boundaries[b] - min_okey);
-    double e = static_cast<double>(hist.boundaries[b + 1] - min_okey);
+    double s = static_cast<double>(axis.Rel(hist.boundaries[b]));
+    double e = static_cast<double>(axis.Rel(hist.boundaries[b + 1]));
     if (e <= s) {  // zero-width bin: all mass at one point
       size_t cell = std::min(static_cast<size_t>(s / cell_w), n - 1);
       cells[cell] += count;
@@ -263,40 +350,6 @@ void CardinalityEstimator::Reconcile() {
 
 namespace {
 
-// Recovers okey coordinates from a byte window whose bounds are okeys: an
-// 8-byte lo/hi, or lo = okey bytes + '\0' from a strict lower bound. A
-// window with a raw-string bound (a kVarBinary attr) has no okey
-// coordinates; the caller falls back. lo > hi on return means empty.
-bool WindowToOkeys(const bit_lsm::ByteInterval& w, uint64_t* lo, uint64_t* hi) {
-  if (w.lo.empty() && !w.lo_open) {
-    *lo = 0;
-  } else if (w.lo.size() == bit_lsm::kOkeyBytes) {
-    const uint64_t k = bit_lsm::OkeyFromBytes(w.lo);
-    if (w.lo_open && k == UINT64_MAX) {  // above every okey
-      *lo = 1;
-      *hi = 0;
-      return true;
-    }
-    *lo = w.lo_open ? k + 1 : k;
-  } else {
-    return false;
-  }
-  if (w.hi_unbounded) {
-    *hi = UINT64_MAX;
-  } else if (w.hi.size() == bit_lsm::kOkeyBytes) {
-    const uint64_t k = bit_lsm::OkeyFromBytes(w.hi);
-    if (w.hi_open && k == 0) {  // below every okey
-      *lo = 1;
-      *hi = 0;
-      return true;
-    }
-    *hi = w.hi_open ? k - 1 : k;
-  } else {
-    return false;
-  }
-  return true;
-}
-
 // Standalone selectivity of one condition (used for OR-clause members).
 // Returns -1 when the condition is unestimatable (caller flags fallback).
 double ConditionSelectivity(const SABICondition& cond, const GlobalStats& stats,
@@ -306,10 +359,9 @@ double ConditionSelectivity(const SABICondition& cond, const GlobalStats& stats,
   if (index_types[cond.attr_idx] == IndexType::kRange) {
     const auto& ord = stats.range[cond.attr_idx];
     if (!ord.has_value()) return -1;
-    uint64_t lo, hi;
-    if (!WindowToOkeys(cond.win, &lo, &hi)) return -1;
-    if (lo > hi) return 0;
-    return ord->PointAwareRangeMass(lo, hi) / phys;
+    const GlobalRangeStats::Window win = ord->Place(cond.win);
+    if (win.hi <= win.lo) return 0;
+    return ord->PointAwareRangeMass(win) / phys;
   }
   const auto& uno = stats.equality[cond.attr_idx];
   if (!uno.has_value()) return -1;
@@ -328,9 +380,9 @@ double ConditionCandidate(const SABICondition& cond, const GlobalStats& stats,
                           double phys, double f) {
   if (index_types[cond.attr_idx] == IndexType::kRange) {
     const auto& ord = stats.range[cond.attr_idx];
-    uint64_t lo, hi;
-    if (!WindowToOkeys(cond.win, &lo, &hi) || lo > hi) return 0;
-    return std::min(1.0, ord->CandidateMass(lo, hi, f * phys) / phys);
+    const GlobalRangeStats::Window win = ord->Place(cond.win);
+    if (win.hi <= win.lo) return 0;
+    return std::min(1.0, ord->CandidateMass(win, f * phys) / phys);
   }
   // kEquality equality: provable absence prunes every SST at execution;
   // otherwise the value's whole balance-packed bin per SST is fetched, and
@@ -413,19 +465,18 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
 
   for (const auto& [attr_idx, w] : windows) {
     const auto& ord = stats->range[attr_idx];
-    uint64_t lo, hi;
-    if (!ord.has_value() || !WindowToOkeys(w, &lo, &hi)) {
+    if (!ord.has_value()) {
       fallback.insert(attr_idx);
       continue;
     }
-    if (lo > hi) {
+    const GlobalRangeStats::Window win = ord->Place(w);
+    if (win.hi <= win.lo) {
       product = 0;
       cand_product = 0;
     } else {
-      double match_mass = ord->PointAwareRangeMass(lo, hi);
+      double match_mass = ord->PointAwareRangeMass(win);
       product *= match_mass / phys;
-      cand_product *=
-          std::min(1.0, ord->CandidateMass(lo, hi, match_mass) / phys);
+      cand_product *= std::min(1.0, ord->CandidateMass(win, match_mass) / phys);
     }
   }
 
@@ -454,8 +505,8 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
   stats->range.resize(attr_num);
   stats->equality.resize(attr_num);
 
-  // Ordered histograms are buffered so the grid domain can be derived from
-  // the live min/max okey before projecting; unordered counts merge inline.
+  // Range histograms are buffered so the axis can be derived from the live
+  // global bounds before projecting; equality counts merge inline.
   vector<vector<RangeAttrHistogram>> hists(attr_num);
   vector<unordered_map<string, double>> value_maps(attr_num);
   vector<double> unordered_totals(attr_num, 0);
@@ -536,25 +587,47 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
     if (schema_.index_types[a] == IndexType::kRange) {
       if (hists[a].empty()) continue;
       GlobalRangeStats ord;
-      ord.min_okey = UINT64_MAX;
-      ord.max_okey = 0;
-      ord.sst_bins.reserve(hists[a].size());
+      // Axis first: exact global bounds, the byte range the boundaries use
+      // past their common prefix, and the shortest boundary (one value step).
+      bool first = true;
       for (const auto& h : hists[a]) {
-        ord.min_okey = std::min(ord.min_okey, h.boundaries.front());
-        ord.max_okey = std::max(ord.max_okey, h.boundaries.back());
+        if (first || h.boundaries[0] < ord.min)
+          ord.min = std::string(h.boundaries[0]);
+        if (first || h.boundaries.back() > ord.max)
+          ord.max = std::string(h.boundaries.back());
+        first = false;
         // Union NDV >= any per-SST distinct count: a safe lower bound (and
         // exact when every SST sees the full value set, e.g. uniform data).
         ord.ndv = std::max(ord.ndv, h.distinct);
+      }
+      const size_t k = CommonPrefixLength(ord.min, ord.max);
+      uint8_t lo_char = 255, hi_char = 0;
+      size_t shortest = SIZE_MAX;
+      for (const auto& h : hists[a]) {
+        for (size_t b = 0; b < h.boundaries.size(); ++b) {
+          const std::string_view v = h.boundaries[b];
+          shortest = std::min(shortest, v.size());
+          for (size_t i = k; i < v.size(); ++i) {
+            const uint8_t c = static_cast<uint8_t>(v[i]);
+            lo_char = std::min(lo_char, c);
+            hi_char = std::max(hi_char, c);
+          }
+        }
+      }
+      if (lo_char > hi_char) lo_char = hi_char = 0;  // no byte past the prefix
+      ord.axis = ByteAxis::Fit(ord.min, ord.max, lo_char, hi_char, shortest);
+
+      ord.sst_bins.reserve(hists[a].size());
+      for (const auto& h : hists[a]) {
         GlobalRangeStats::SSTBins b;
-        b.lo = h.boundaries.front();
-        b.hi = h.boundaries.back();
+        b.lo = ord.axis.Rel(h.boundaries[0]);
+        b.hi = ord.axis.Rel(h.boundaries.back());
         for (uint64_t c : h.counts) b.total += static_cast<double>(c);
         if (!h.counts.empty()) b.binmass = b.total / h.counts.size();
         ord.sst_bins.push_back(b);
       }
       vector<double> cells(grid_cells_, 0);
-      for (const auto& h : hists[a])
-        ProjectHistogram(h, ord.min_okey, ord.max_okey, cells);
+      for (const auto& h : hists[a]) ProjectHistogram(h, ord.axis, cells);
       ord.cell_psum.resize(cells.size());
       double acc = 0;
       for (size_t c = 0; c < cells.size(); ++c) {

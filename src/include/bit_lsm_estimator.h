@@ -7,6 +7,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -29,49 +30,99 @@ namespace bit_lsm {
 // compaction churn. The memtable is excluded: before the first flush every
 // attr slot is empty and physical_rows is 0.
 
+// Coordinate axis of one kRange attr over its live [min, max] byte strings
+// (PostgreSQL's convert_string_to_scalar, on bytes). The common prefix of
+// min and max orders nothing inside the span, so the window starts after
+// it; each window byte is a digit in the base spanned by the byte values the
+// boundaries actually use (digits only -> base 10, 19 digits; arbitrary
+// bytes -> base 256, 8 digits), so the coordinate is uniform over the
+// characters that occur instead of over all 256 byte values. Strings inside
+// the window keep their memcmp order; longer ones sharing a window collapse
+// onto one coordinate (only estimates depend on it, never pruning). For
+// okeys whose low byte spans 0..255 -- every realistic numeric attr -- the
+// window is the okey scaled by a power of two, so every ratio the grid and
+// the candidate model compute is bit-identical to okey arithmetic. `unit` is
+// one value step: exactly one okey for numerics, one step in the last real
+// digit of the shortest boundary otherwise.
+struct ByteAxis {
+  std::string prefix;
+  uint8_t lo_char = 0;   // smallest byte value after the prefix
+  uint32_t radix = 256;  // hi_char - lo_char + 1, at least 2
+  size_t digits = 8;     // window length: radix^digits <= 2^64
+  uint64_t base = 0;     // window of min
+  uint64_t span = 0;     // window of max, minus base
+  uint64_t unit = 1;
+
+  // Axis over [min, max] whose boundaries use bytes in [lo_char, hi_char]
+  // after the common prefix; `shortest` is the shortest boundary length.
+  static ByteAxis Fit(std::string_view min, std::string_view max,
+                      uint8_t lo_char, uint8_t hi_char, size_t shortest);
+  // s[k, k+digits) as a base-`radix` number, bytes clamped into the radix
+  // and missing trailing bytes read as the lowest digit.
+  uint64_t Window(std::string_view s) const;
+  // Coordinate of a string inside [min, max]; saturates to 0 / End() when
+  // handed something outside.
+  uint64_t Rel(std::string_view s) const;
+  // One unit past the last coordinate: a half-open end there covers max.
+  uint64_t End() const;
+};
+
 // One kRange attr: per-SST equi-depth histograms projected onto a uniform
-// okey grid over the live [min_okey, max_okey] span, kept as a prefix sum.
-// Mass is treated as a density over the continuous okey line, so point mass
-// sitting exactly on a queried boundary is smeared, never lost.
+// grid over the attr's byte axis, kept as a prefix sum. Mass is treated as a
+// density over the continuous coordinate line, so point mass sitting exactly
+// on a queried boundary is smeared, never lost.
 struct GlobalRangeStats {
-  uint64_t min_okey = 0;
-  uint64_t max_okey = 0;
+  ByteAxis axis;
+  std::string min;  // exact global bounds, SABI byte domain
+  std::string max;
   std::vector<double> cell_psum;  // cell_psum[i] = mass of cells [0, i]
   double total = 0;               // binned-row mass (NULLs excluded)
-  // Attr NDV lower bound: max per-SST exact distinct count (v6 blobs; 0 =
-  // unknown -> floor disabled). Equality floor: a point's mass is at least
-  // total/ndv. Sparse integer domains (yyyymm-style value holes) otherwise
-  // smear point mass into the holes; a lower-bound NDV can only raise the
-  // floor above truth = overestimate = the conservative direction.
+  // Attr NDV lower bound: max per-SST exact distinct count (0 = unknown ->
+  // floor disabled). Equality floor: a point's mass is at least total/ndv.
+  // Sparse integer domains (yyyymm-style value holes) otherwise smear point
+  // mass into the holes; a lower-bound NDV can only raise the floor above
+  // truth = overestimate = the conservative direction.
   uint64_t ndv = 0;
 
   // Per-SST prune-bin geometry for the candidate (FPR) model: what the read
   // path's bin-granular pruning admits is the matching mass rounded OUT to
   // bin boundaries, and both the rounding unit (an equi-depth bin's mass)
-  // and the reach (the okey span) are per-SST facts. 24 bytes per SST per
+  // and the reach (the axis span) are per-SST facts. 24 bytes per SST per
   // attr; kept flat so planning stays an O(live SSTs) arithmetic scan.
   struct SSTBins {
-    uint64_t lo = 0;  // attr okey span in this SST (exact data bounds)
+    uint64_t lo = 0;  // attr span in this SST, axis coordinates (exact bounds)
     uint64_t hi = 0;
     double binmass = 0;  // binned rows / prune-bin count (equi-depth)
     double total = 0;    // binned rows of this attr in this SST
   };
   std::vector<SSTBins> sst_bins;
 
-  // Estimated mass with okey in [lo, hi], both inclusive.
-  double RangeMass(uint64_t lo, uint64_t hi) const;
-  // RangeMass with the NDV equality floor applied to POINT windows.
-  double PointAwareRangeMass(uint64_t lo, uint64_t hi) const;
+  // A ByteInterval placed on the axis as half-open coordinates [lo, hi).
+  // `point`: the window spans at most one value step (x = v, or strict
+  // bounds enclosing exactly one value); `in_span`: its lower end lies
+  // inside [min, max]. Empty windows come out with hi <= lo.
+  struct Window {
+    uint64_t lo = 0;
+    uint64_t hi = 0;
+    bool point = false;
+    bool in_span = false;
+  };
+  Window Place(const ByteInterval& w) const;
+
+  // Estimated mass inside the window.
+  double RangeMass(const Window& w) const;
+  // RangeMass with the NDV equality floor applied to in-span points.
+  double PointAwareRangeMass(const Window& w) const;
   // Expected CANDIDATE mass for the window: per covering SST, the matching
   // share rounded out to prune-bin boundaries -- whole bin for a point,
   // half a bin per free (unclipped) edge for a range -- floored at one bin,
   // capped at the SST's binned rows. match_mass is the caller's global
   // matching-mass estimate for the same window (apportioned span-uniformly).
-  double CandidateMass(uint64_t lo, uint64_t hi, double match_mass) const;
+  double CandidateMass(const Window& w, double match_mass) const;
 
  private:
-  // Estimated mass with okey strictly below `okey`.
-  double CumBelow(uint64_t okey) const;
+  // Estimated mass with coordinate strictly below `rel`.
+  double CumBelow(uint64_t rel) const;
 };
 
 // One kEquality attr: value -> row-count dictionary merged across live SSTs.

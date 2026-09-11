@@ -91,8 +91,11 @@ BuiltIndex BuildIndex(const BitLSMOptions& options,
 // Semantic ground truth for bin membership: bin i covers okeys in
 // [boundaries[i], boundaries[i+1]), and the last bin also includes rows
 // equal to the top boundary.
-std::vector<uint64_t> CountPerBin(const std::vector<uint64_t>& boundaries,
+std::vector<uint64_t> CountPerBin(const BytesList& bytes,
                                   const std::vector<int64_t>& values) {
+  std::vector<uint64_t> boundaries;
+  for (size_t i = 0; i < bytes.size(); ++i)
+    boundaries.push_back(OkeyFromBytes(bytes[i]));
   size_t bins = boundaries.size() - 1;
   std::vector<uint64_t> counts(bins, 0);
   for (int64_t v : values) {
@@ -135,10 +138,11 @@ TEST(SabiHistogram, SingleAttrHistogramMatchesData) {
   ASSERT_EQ(h.counts.size(), h.boundaries.size() - 1);
   ASSERT_GT(h.counts.size(), 1u) << "budget must allocate >1 bin";
 
-  // Absolute okey coordinates, pinned to the exact data bounds.
-  EXPECT_EQ(h.boundaries.front(), I64ToOkey(0));
-  EXPECT_EQ(h.boundaries.back(), I64ToOkey(999));
-  EXPECT_TRUE(std::is_sorted(h.boundaries.begin(), h.boundaries.end()));
+  // Okey bytes, pinned to the exact data bounds.
+  EXPECT_EQ(h.boundaries[0], OkeyToBytes(I64ToOkey(0)));
+  EXPECT_EQ(h.boundaries.back(), OkeyToBytes(I64ToOkey(999)));
+  for (size_t i = 1; i < h.boundaries.size(); ++i)
+    EXPECT_LE(h.boundaries[i - 1], h.boundaries[i]);
 
   EXPECT_EQ(Sum(h.counts), values.size());
   EXPECT_EQ(h.counts, CountPerBin(h.boundaries, values));
@@ -165,10 +169,10 @@ TEST(SabiHistogram, MixedSchemaAttrsKeepTheirOwnCounts) {
   ASSERT_TRUE(built.reader->RangeHistogram(1, &h1));
   ASSERT_TRUE(built.reader->RangeHistogram(2, &h2));
 
-  EXPECT_EQ(h1.boundaries.front(), I64ToOkey(0));
-  EXPECT_EQ(h1.boundaries.back(), I64ToOkey(499));
-  EXPECT_EQ(h2.boundaries.front(), I64ToOkey(1000));
-  EXPECT_EQ(h2.boundaries.back(), I64ToOkey(1499));
+  EXPECT_EQ(h1.boundaries[0], OkeyToBytes(I64ToOkey(0)));
+  EXPECT_EQ(h1.boundaries.back(), OkeyToBytes(I64ToOkey(499)));
+  EXPECT_EQ(h2.boundaries[0], OkeyToBytes(I64ToOkey(1000)));
+  EXPECT_EQ(h2.boundaries.back(), OkeyToBytes(I64ToOkey(1499)));
 
   EXPECT_EQ(Sum(h1.counts), a1_values.size());
   EXPECT_EQ(Sum(h2.counts), a2_values.size());
