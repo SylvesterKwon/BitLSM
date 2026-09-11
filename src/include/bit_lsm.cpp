@@ -30,6 +30,21 @@ rocksdb::ColumnFamilyOptions BuildCFOptions(
   cf_opts.level_compaction_dynamic_level_bytes = true;
   return cf_opts;
 }
+// A kBinary attr occupies exactly `width` bytes of its row; a value of any
+// other length would either truncate silently or spill into the next slot.
+Status CheckFixedBinaryWidths(const BitLSMOptions& options,
+                              const vector<Attr>& attrs) {
+  for (size_t i = 0; i < attrs.size(); ++i) {
+    const AttrSpec& s = options.attr_specs[i];
+    if (s.physical_type == PhysicalType::kBinary &&
+        !std::holds_alternative<std::monostate>(attrs[i]) &&
+        std::get<string>(attrs[i]).size() != s.width)
+      return Status::InvalidArgument("attr " + to_string(i) +
+                                     ": kBinary value must be exactly " +
+                                     to_string(s.width) + " bytes");
+  }
+  return Status::OK();
+}
 }  // namespace
 
 BitLSM::BitLSM(const string& db_path, const BitLSMOptions& bit_lsm_options,
@@ -58,6 +73,12 @@ BitLSM::BitLSM(const string& db_path, const Options& rocksdb_options,
   if (!has_default)
     throw std::invalid_argument(
         "descriptors must include the default column family");
+  for (const auto& d : descriptors) {
+    Status vs = ValidateAttrSpecs(d.options);
+    if (!vs.ok())
+      throw std::invalid_argument("column family " + d.name + ": " +
+                                  vs.ToString());
+  }
 
   // Before Open: RocksDB decides whether a file gets io_uring rings when the
   // file is opened, so async reads -- the scan prefetch queue's, and in
@@ -145,6 +166,8 @@ Status BitLSM::CreateColumnFamily(const string& name,
   std::lock_guard<std::mutex> lock(cf_mu_);
   if (cf_registry_.count(name))
     return Status::InvalidArgument("column family already exists: " + name);
+  Status vs = ValidateAttrSpecs(options);
+  if (!vs.ok()) return vs;
   // The io_uring latch is read when a file is opened, and every file of a CF
   // created here is opened after this point, so opting in now is in time.
   if (options.scan_prefetch_depth > 0 || options.ondemand_index)
@@ -194,6 +217,8 @@ Status BitLSM::Put(ColumnFamilyHandle* cf, const string& pk,
     return Status::InvalidArgument(
         "The number of attrs does not match with db configuration.");
   }
+  Status ws = CheckFixedBinaryWidths(cf->options(), attrs);
+  if (!ws.ok()) return ws;
 
   // 2. Serialize value (thread_local for concurrent Put safety)
   thread_local string serialized_value_buf;
@@ -219,6 +244,8 @@ Status BitLSM::PutBatch(ColumnFamilyHandle* cf, const vector<string>& pks,
           "PutBatch error: attrs size at index " + to_string(i) +
           " does not match the configured attr_num.");
     }
+    Status ws = CheckFixedBinaryWidths(cf->options(), attrs_list[i]);
+    if (!ws.ok()) return ws;
 
     string serialized_value;
     EncodeValue(cf->layout_, attrs_list[i], payloads[i], serialized_value);

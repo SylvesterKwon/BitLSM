@@ -19,12 +19,11 @@ using UDIB = rocksdb::UserDefinedIndexBuilder;
 
 namespace {
 
-// Single ORDERED int64 attr; rho 0.1 -> bin budget 10.
+// Single kRange int64 attr; rho 0.1 -> bin budget 10.
 BitLSMOptions I64Options() {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {
-      AttrSpec(AttrRole::ORDERED, 8, /*is_signed=*/true, /*is_float=*/false)};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kInt, 8)};
   o.read_seqno = 0;
   o.rho = 0.1;
   return o;
@@ -82,9 +81,11 @@ void ExpectBinsActuallyPartition(const SABIReader& reader, size_t row_cnt) {
   ASSERT_GT(bins, 1u) << "budget must allocate >1 bin for this workload";
 
   const auto& boundaries =
-      std::get<std::vector<uint64_t>>(reader.bitmap_index.binning_policy[0]);
+      std::get<BytesList>(reader.bitmap_index.binning_policy[0]);
   ASSERT_EQ(boundaries.size(), bins + 1);
-  std::set<uint64_t> distinct(boundaries.begin(), boundaries.end());
+  std::set<std::string> distinct;
+  for (size_t j = 0; j < boundaries.size(); ++j)
+    distinct.insert(std::string(boundaries[j]));
   EXPECT_GE(distinct.size(), bins / 2 + 2)
       << "interior boundaries collapsed to a single okey";
 
@@ -112,17 +113,17 @@ TEST(SabiBinningPrecision, NarrowInt64SpanSpreadsAcrossBins) {
   const SABIReader& reader = *built.reader;
 
   const auto& boundaries =
-      std::get<std::vector<uint64_t>>(reader.bitmap_index.binning_policy[0]);
+      std::get<BytesList>(reader.bitmap_index.binning_policy[0]);
   // Outer thresholds stay pinned to the exact data bounds.
-  EXPECT_EQ(boundaries.front(), I64ToOkey(0));
-  EXPECT_EQ(boundaries.back(), I64ToOkey(999));
+  EXPECT_EQ(boundaries[0], OkeyToBytes(I64ToOkey(0)));
+  EXPECT_EQ(boundaries.back(), OkeyToBytes(I64ToOkey(999)));
 
   ExpectBinsActuallyPartition(reader, values.size());
 }
 
 // Workload: the same narrow int64 span plus a few deletion entries in the
 //           same blob (any real SST with deletes).
-// Threat: tombstone rows push a placeholder okey 0 into the ORDERED buffer;
+// Threat: tombstone rows push a placeholder okey 0 into the kRange buffer;
 //         if it leaks into the binning stats, min_okey becomes 0 (the okey
 //         domain minimum), which both skews the min/max pin and re-collapses
 //         the shifted t-digest projection back to absolute magnitude.
@@ -135,10 +136,10 @@ TEST(SabiBinningPrecision, TombstonesDoNotSkewBinning) {
   const SABIReader& reader = *built.reader;
 
   const auto& boundaries =
-      std::get<std::vector<uint64_t>>(reader.bitmap_index.binning_policy[0]);
+      std::get<BytesList>(reader.bitmap_index.binning_policy[0]);
   // The pin must reflect the data minimum, not the tombstone placeholder 0.
-  EXPECT_EQ(boundaries.front(), I64ToOkey(0));
-  EXPECT_EQ(boundaries.back(), I64ToOkey(999));
+  EXPECT_EQ(boundaries[0], OkeyToBytes(I64ToOkey(0)));
+  EXPECT_EQ(boundaries.back(), OkeyToBytes(I64ToOkey(999)));
 
   ExpectBinsActuallyPartition(reader, values.size());
 }

@@ -93,35 +93,71 @@ TEST(OkeyEncoding, RoundTrip) {
   for (double v : dvals) EXPECT_EQ(OkeyToF64(F64ToOkey(v)), v);
 }
 
+// ---- okey <-> SABI byte domain ----
+
+// Workload: the uint64 domain endpoints plus 100k random okey pairs through
+//           OkeyToBytes, compared in memcmp order (std::string <).
+// Threat: a little-endian or partial write lets a smaller okey sort above a
+//         larger one in the byte domain, mis-binning every numeric attribute.
+TEST(OkeyBytes, MemcmpOrderMatchesOkeyOrder) {
+  const uint64_t edges[] = {0,
+                            1,
+                            0x7fffffffffffffffull,
+                            0x8000000000000000ull,
+                            UINT64_MAX - 1,
+                            UINT64_MAX};
+  for (uint64_t a : edges)
+    for (uint64_t b : edges) ASSERT_EQ(a < b, OkeyToBytes(a) < OkeyToBytes(b));
+  std::mt19937_64 rng(7);
+  for (int i = 0; i < 100000; ++i) {
+    uint64_t a = rng(), b = rng();
+    ASSERT_EQ(a < b, OkeyToBytes(a) < OkeyToBytes(b));
+  }
+}
+
+// Workload: representative okeys through OkeyToBytes and OkeyFromBytes.
+// Threat: a lossy round trip corrupts the okey coordinates the estimator
+//         recovers from persisted boundary bytes.
+TEST(OkeyBytes, RoundTrip) {
+  const uint64_t vals[] = {0, 1, 0x0123456789abcdefull, 0x8000000000000000ull,
+                           UINT64_MAX};
+  for (uint64_t v : vals) {
+    std::string s = OkeyToBytes(v);
+    ASSERT_EQ(s.size(), kOkeyBytes);
+    EXPECT_EQ(OkeyFromBytes(s), v);
+  }
+}
+
 // ---- SABISchema: the schema residue visible to SABI ----
 
 static BitLSMOptions MakeOpts3() {
   BitLSMOptions o;
   o.attr_num = 3;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, true, true, true),
-                  AttrSpec(AttrRole::UNORDERED),
-                  AttrSpec(AttrRole::ORDERED, 4, true, false, false)};
+  o.attr_specs = {
+      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/true),
+      AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),
+      AttrSpec(IndexType::kRange, PhysicalType::kInt, 4, /*nullable=*/false)};
   o.rho = 0.2;
   return o;
 }
 
 // Workload: derive SABISchema from a 3-attr BitLSMOptions.
-// Threat: dropping or reordering roles during derivation would make SABI
+// Threat: dropping or reordering index_types during derivation would make SABI
 //         parse bins with the wrong binning-policy variant.
 TEST(SABISchema, FromOptionsKeepsOnlyRoles) {
   SABISchema s = SABISchema::FromOptions(MakeOpts3());
   ASSERT_EQ(s.attr_num(), 3u);
-  EXPECT_EQ(s.roles[0], AttrRole::ORDERED);
-  EXPECT_EQ(s.roles[1], AttrRole::UNORDERED);
+  EXPECT_EQ(s.index_types[0], IndexType::kRange);
+  EXPECT_EQ(s.index_types[1], IndexType::kEquality);
   EXPECT_DOUBLE_EQ(s.rho, 0.2);
 }
 
-// Workload: a 3-clause query over [ORDERED f64, UNORDERED, ORDERED i64]
+// Workload: a 3-clause query over [kRange f64, kEquality, kRange i64]
 //           through the standalone adapter's EncodeQuery.
 // Threat: a comparand encoded with the wrong AttrSpec (or left native) makes
 //         every downstream bin comparison meaningless.
 TEST(EncodeQuery, ComparandsLandInSabiDomain) {
-  BitLSMOptions o = MakeOpts3();  // [ORDERED f64, UNORDERED, ORDERED i64]
+  BitLSMOptions o = MakeOpts3();  // [kRange f64, kEquality, kRange i64]
   BitLSMQuery q(
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 10.5},
                                   {1, CompareOp::EQUAL, std::string("seoul")},
@@ -129,12 +165,13 @@ TEST(EncodeQuery, ComparandsLandInSabiDomain) {
   SABIQuery sq = EncodeQuery(q, o);
   ASSERT_EQ(sq.clause_groups.size(), 3u);
   EXPECT_FALSE(sq.unsat);
-  EXPECT_EQ(sq.clause_groups[0][0].win.lo, F64ToOkey(10.5));
-  EXPECT_EQ(sq.clause_groups[0][0].win.hi, UINT64_MAX);
+  EXPECT_EQ(sq.clause_groups[0][0].win.lo, OkeyToBytes(F64ToOkey(10.5)));
+  EXPECT_TRUE(sq.clause_groups[0][0].win.hi_unbounded);
   EXPECT_EQ(sq.clause_groups[1][0].bytes, "seoul");
-  // Strict bound canonicalized one okey step inward.
-  EXPECT_EQ(sq.clause_groups[2][0].win.lo, 0u);
-  EXPECT_EQ(sq.clause_groups[2][0].win.hi, I64ToOkey(-3) - 1);
+  // Strict upper bound stays on the comparand with the open flag.
+  EXPECT_EQ(sq.clause_groups[2][0].win.lo, "");
+  EXPECT_EQ(sq.clause_groups[2][0].win.hi, OkeyToBytes(I64ToOkey(-3)));
+  EXPECT_TRUE(sq.clause_groups[2][0].win.hi_open);
 }
 
 // Workload: BETWEEN-shaped CNF -- b >= 10.5 AND b < 20.5 as two clauses, the
@@ -152,8 +189,9 @@ TEST(EncodeQuery, SameAttrClausesMergeToOneInterval) {
   ASSERT_EQ(sq.clause_groups.size(), 2u);  // both bounds fold into clause 0
   EXPECT_FALSE(sq.unsat);
   EXPECT_EQ(sq.clause_groups[0][0].attr_idx, 0u);
-  EXPECT_EQ(sq.clause_groups[0][0].win.lo, F64ToOkey(10.5));
-  EXPECT_EQ(sq.clause_groups[0][0].win.hi, F64ToOkey(20.5) - 1);
+  EXPECT_EQ(sq.clause_groups[0][0].win.lo, OkeyToBytes(F64ToOkey(10.5)));
+  EXPECT_EQ(sq.clause_groups[0][0].win.hi, OkeyToBytes(F64ToOkey(20.5)));
+  EXPECT_TRUE(sq.clause_groups[0][0].win.hi_open);
   EXPECT_EQ(sq.clause_groups[1][0].bytes, "seoul");
 }
 
@@ -169,15 +207,21 @@ TEST(EncodeQuery, ContradictionSetsUnsat) {
 }
 
 // Workload: a strict bound at the okey domain edge (i64 > INT64_MAX).
-// Threat: okey+1 overflow would wrap the interval around to [0, MAX] and
-//         match everything instead of nothing.
-TEST(EncodeQuery, StrictBoundOffDomainEdgeIsUnsat) {
+// Threat: in the okey domain this needed overflow handling; in the byte
+//         domain the bound stays on the comparand with the open flag, so the
+//         interval is non-empty here and every SST prunes it through its
+//         max (lo == max, open) in ConditionImpossible.
+TEST(EncodeQuery, StrictBoundAboveDomainMaxStaysOpenOnComparand) {
   BitLSMOptions o = MakeOpts3();
   BitLSMQuery q(std::vector<QueryCondition>{
       {2, CompareOp::GREATER, std::numeric_limits<int64_t>::max()}});
   ASSERT_EQ(I64ToOkey(std::numeric_limits<int64_t>::max()), UINT64_MAX);
   SABIQuery sq = EncodeQuery(q, o);
-  EXPECT_TRUE(sq.unsat);
+  EXPECT_FALSE(sq.unsat);
+  const ByteInterval& w = sq.clause_groups[0][0].win;
+  EXPECT_EQ(w.lo, OkeyToBytes(UINT64_MAX));
+  EXPECT_TRUE(w.lo_open);
+  EXPECT_TRUE(w.hi_unbounded);
 }
 
 // Workload: an OR clause mixing two ordered members on the same attr.
@@ -192,9 +236,9 @@ TEST(EncodeQuery, OrClauseMembersAreNotMerged) {
   ASSERT_EQ(sq.clause_groups.size(), 2u);
   EXPECT_FALSE(sq.unsat);
   ASSERT_EQ(sq.clause_groups[0].size(), 2u);
-  EXPECT_EQ(sq.clause_groups[0][0].win.lo, F64ToOkey(1.0));
-  EXPECT_EQ(sq.clause_groups[0][0].win.hi, F64ToOkey(1.0));
-  EXPECT_EQ(sq.clause_groups[0][1].win.lo, F64ToOkey(9.0));
+  EXPECT_EQ(sq.clause_groups[0][0].win.lo, OkeyToBytes(F64ToOkey(1.0)));
+  EXPECT_EQ(sq.clause_groups[0][0].win.hi, OkeyToBytes(F64ToOkey(1.0)));
+  EXPECT_EQ(sq.clause_groups[0][1].win.lo, OkeyToBytes(F64ToOkey(9.0)));
   ASSERT_EQ(sq.clause_groups[1].size(), 1u);
-  EXPECT_EQ(sq.clause_groups[1][0].win.hi, F64ToOkey(5.0));
+  EXPECT_EQ(sq.clause_groups[1][0].win.hi, OkeyToBytes(F64ToOkey(5.0)));
 }

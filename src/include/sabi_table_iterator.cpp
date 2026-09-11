@@ -274,7 +274,7 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
 // reader-owned bitmaps where possible and materializing into bitmap_pool_
 // only when a union/intersection/tombstone-filter result must be computed.
 void SABITableIterator::BuildQueryBitmap(const SABIQuery& query) {
-  // A metadata-proven empty tombstone (v7 cardinality directory) skips the
+  // A metadata-proven empty tombstone (cardinality directory) skips the
   // bin load entirely -- one fewer cold read per SST on delete-free tables.
   const roaring::Roaring& tombstone =
       sabi_reader_->TombstoneCardinality() == 0 ? EmptyBitmap() : Tombstone();

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -23,7 +24,8 @@ BitLSMOptions MakeOptions(std::vector<AttrSpec> types) {
 // 연속형 + 범주형 혼합 값이 왕복(encode→decode)에서 보존되는지.
 TEST(EncodeDecode, RoundTripMixedAttrs) {
   BitLSMOptions options =
-      MakeOptions({AttrSpec{AttrRole::ORDERED}, AttrSpec{AttrRole::UNORDERED}});
+      MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+                   AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)});
   std::string out;
   EncodeValue(options, {3.14, std::string("apple")}, "payload", out);
 
@@ -37,8 +39,9 @@ TEST(EncodeDecode, RoundTripMixedAttrs) {
 // 가변 길이 범주형 두 개(마지막이 아닌 범주형의 길이 계산)와 빈 payload.
 TEST(EncodeDecode, RoundTripMultipleUnorderedEmptyPayload) {
   BitLSMOptions options =
-      MakeOptions({AttrSpec{AttrRole::UNORDERED}, AttrSpec{AttrRole::UNORDERED},
-                   AttrSpec{AttrRole::ORDERED}});
+      MakeOptions({AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),
+                   AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),
+                   AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)});
   std::string out;
   EncodeValue(options, {std::string("ab"), std::string("cdef"), 2.5}, "", out);
 
@@ -50,18 +53,19 @@ TEST(EncodeDecode, RoundTripMultipleUnorderedEmptyPayload) {
   EXPECT_EQ(DecodePayload(layout, buf), "");
 }
 
-// Workload: all-ordered schema (n_unordered == 0) with a payload.
+// Workload: all-fixed schema (n_variable == 0) with a payload.
 // Threat: the v2 header is zero bytes in this case — payload start must be
 //         derived purely from the schema (8B x n_cont), and an off-by-one
 //         there corrupts every attribute and the payload.
 TEST(EncodeDecode, RoundTripAllOrderedZeroHeader) {
   BitLSMOptions options =
-      MakeOptions({AttrSpec{AttrRole::ORDERED}, AttrSpec{AttrRole::ORDERED}});
+      MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+                   AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)});
   std::string out;
   EncodeValue(options, {1.5, -2.5}, "tail", out);
 
   ValueLayout layout(options);
-  EXPECT_EQ(layout.unordered_base, 2 * sizeof(double));
+  EXPECT_EQ(layout.variable_base, 2 * sizeof(double));
   EXPECT_EQ(out.size(), 2 * sizeof(double) + 4);
 
   std::string_view buf(out);
@@ -75,7 +79,8 @@ TEST(EncodeDecode, RoundTripAllOrderedZeroHeader) {
 // Threat: v3's width-based layout drifts from v2's hardcoded 8B for doubles.
 TEST(EncodeDecode, DoubleSchemaByteIdenticalToV2) {
   BitLSMOptions options =
-      MakeOptions({AttrSpec{AttrRole::ORDERED}, AttrSpec{AttrRole::UNORDERED}});
+      MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+                   AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)});
   std::string out;
   EncodeValue(options, {3.14, std::string("apple")}, "pay", out);
   // v2 layout for {double, string}: [var_end u32][double 8B][cat
@@ -89,7 +94,7 @@ TEST(EncodeDecode, DoubleSchemaByteIdenticalToV2) {
   EXPECT_DOUBLE_EQ(d, 3.14);
 }
 
-// Workload: native fixed-width ORDERED types (int32/int64/uint32) round-trip
+// Workload: native fixed-width kRange types (int32/int64/uint32) round-trip
 // through the width-based slots, including negative sign-extension and a
 // narrow slot that shrinks the row.
 // Threat: wrong slot width, missing sign-extension, or endian mishandling.
@@ -98,14 +103,13 @@ TEST(EncodeDecode, RoundTripNativeIntegers) {
   options.attr_num = 3;
   options.read_seqno = 0;
   options.rho = 0.5;
-  options.attr_specs = {
-      AttrSpec(AttrRole::ORDERED, 4, /*signed=*/true, /*is_float=*/false),
-      AttrSpec(AttrRole::ORDERED, 8, /*signed=*/true, /*is_float=*/false),
-      AttrSpec(AttrRole::ORDERED, 4, /*signed=*/false, /*is_float=*/false)};
+  options.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kInt, 4),
+                        AttrSpec(IndexType::kRange, PhysicalType::kInt, 8),
+                        AttrSpec(IndexType::kRange, PhysicalType::kUint, 4)};
 
   ValueLayout layout(options);
   // 4B + 8B + 4B fixed region, no unordered, no payload.
-  EXPECT_EQ(layout.unordered_base, 16u);
+  EXPECT_EQ(layout.variable_base, 16u);
 
   std::string out;
   EncodeValue(layout,
@@ -121,7 +125,7 @@ TEST(EncodeDecode, RoundTripNativeIntegers) {
             4000000000ULL);  // uint32 > INT32_MAX
 }
 
-// Workload: nullable ORDERED + nullable UNORDERED; a NULL in each position
+// Workload: nullable kRange + nullable kEquality; a NULL in each position
 // round-trips as monostate while the sibling non-null value survives, and a
 // NULL unordered is distinguished from an empty-string unordered.
 // Threat: null-bitmap offset math, or a NULL reading back as 0 / "".
@@ -131,8 +135,9 @@ TEST(EncodeDecode, RoundTripNullAttrs) {
   options.read_seqno = 0;
   options.rho = 0.5;
   options.attr_specs = {
-      AttrSpec(AttrRole::ORDERED, 8, true, true, /*nullable=*/true),
-      AttrSpec(AttrRole::UNORDERED, 8, true, true, /*nullable=*/true)};
+      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/true),
+      AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary, 0,
+               /*nullable=*/true)};
 
   ValueLayout layout(options);
   EXPECT_EQ(layout.null_bitmap_bytes, 1u);  // 2 nullable attrs -> 1 byte
@@ -164,21 +169,46 @@ TEST(EncodeDecode, RoundTripNullAttrs) {
   EXPECT_EQ(std::get<std::string_view>(cat), "");
 }
 
-// Workload: 4-byte float ORDERED round-trip.
+// Workload: 4-byte float kRange round-trip.
 // Threat: float stored as truncated double bytes instead of IEEE754 single.
 TEST(EncodeDecode, RoundTripFloat) {
   BitLSMOptions options;
   options.attr_num = 1;
   options.read_seqno = 0;
   options.rho = 0.5;
-  options.attr_specs = {
-      AttrSpec(AttrRole::ORDERED, 4, /*signed=*/true, /*is_float=*/true)};
+  options.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 4)};
 
   ValueLayout layout(options);
-  EXPECT_EQ(layout.unordered_base, 4u);
+  EXPECT_EQ(layout.variable_base, 4u);
   std::string out;
   EncodeValue(layout, {1.5}, "", out);
   EXPECT_EQ(out.size(), 4u);
   EXPECT_DOUBLE_EQ(
       std::get<double>(DecodeAttr(layout, std::string_view(out), 0)), 1.5);
+}
+
+// Workload: {kRange kBinary 4, kEquality kInt 8, kRange kVarBinary} with a
+//           payload; encode, inspect the exact byte layout, decode.
+// Threat: the layout must key on physical type, not index type: the
+//         kEquality int must occupy a fixed slot with no per-row length and
+//         the kRange string must ride the variable region.
+TEST(EncodeDecode, LayoutKeysOnPhysicalType) {
+  BitLSMOptions o =
+      MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kBinary, 4),
+                   AttrSpec(IndexType::kEquality, PhysicalType::kInt, 8),
+                   AttrSpec(IndexType::kRange, PhysicalType::kVarBinary)});
+  std::string out;
+  EncodeValue(o, {std::string("abcd"), int64_t(-2), std::string("xyz")}, "PAY",
+              out);
+  // [var_end u32 = 3][abcd][int64 -2 LE][xyz][PAY]
+  ASSERT_EQ(out.size(), 4u + 4u + 8u + 3u + 3u);
+  uint32_t var_end;
+  std::memcpy(&var_end, out.data(), 4);
+  EXPECT_EQ(var_end, 3u);
+  EXPECT_EQ(out.substr(4, 4), "abcd");
+  EXPECT_EQ(out.substr(16, 3), "xyz");
+  EXPECT_EQ(std::get<std::string_view>(DecodeAttr(o, out, 0)), "abcd");
+  EXPECT_EQ(std::get<int64_t>(DecodeAttr(o, out, 1)), -2);
+  EXPECT_EQ(std::get<std::string_view>(DecodeAttr(o, out, 2)), "xyz");
+  EXPECT_EQ(DecodePayload(ValueLayout(o), out), "PAY");
 }

@@ -1,14 +1,14 @@
 #pragma once
 
-// Order-preserving uint64 ("okey") domain for SABI: the adapter encodes each
-// ORDERED native scalar through a monotone injection so the core orders
-// attributes with a single unsigned comparison; UNORDERED attrs stay opaque
-// bytes.
+// Order-preserving uint64 ("okey") domain: the adapter encodes each numeric
+// scalar through a monotone injection, then hands SABI its 8-byte big-endian
+// form so every attribute -- numeric or binary -- is ordered by one memcmp.
 
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <variant>
 #include <vector>
@@ -51,11 +51,35 @@ inline double OkeyToF64(uint64_t okey) {
   return d;
 }
 
+// ---- okey <-> SABI byte domain ----
+// SABI orders every range-indexed attribute by memcmp over bytes. An okey
+// enters that domain as its 8-byte big-endian form, which memcmp orders
+// exactly like the unsigned integer.
+inline constexpr size_t kOkeyBytes = 8;
+
+inline void OkeyToBytes(uint64_t okey, char* out) {
+  const uint64_t be = __builtin_bswap64(okey);  // host is little-endian
+  std::memcpy(out, &be, kOkeyBytes);
+}
+
+inline std::string OkeyToBytes(uint64_t okey) {
+  std::string s(kOkeyBytes, '\0');
+  OkeyToBytes(okey, s.data());
+  return s;
+}
+
+// Precondition: bytes.size() == kOkeyBytes.
+inline uint64_t OkeyFromBytes(std::string_view bytes) {
+  uint64_t be;
+  std::memcpy(&be, bytes.data(), kOkeyBytes);
+  return __builtin_bswap64(be);
+}
+
 // ---- dispatch helpers (adapter side; the only spec-aware entry points) ----
 
 // Decoded row scalar (AttrView from DecodeAttr) -> okey. Caller guarantees a
-// non-NULL ORDERED input.
-inline uint64_t OrderedToOkey(const AttrView& v) {
+// non-NULL numeric input.
+inline uint64_t NumericToOkey(const AttrView& v) {
   if (std::holds_alternative<int64_t>(v))
     return I64ToOkey(std::get<int64_t>(v));
   if (std::holds_alternative<uint64_t>(v))
@@ -63,8 +87,9 @@ inline uint64_t OrderedToOkey(const AttrView& v) {
   return F64ToOkey(std::get<double>(v));
 }
 
-// Query comparand -> okey (string alternative unreachable past Validate()).
-inline uint64_t OrderedToOkey(
+// Query comparand -> okey (the string alternative belongs to binary attrs
+// and never reaches here).
+inline uint64_t NumericToOkey(
     const std::variant<int64_t, uint64_t, double, std::string>& v) {
   if (std::holds_alternative<int64_t>(v))
     return I64ToOkey(std::get<int64_t>(v));
@@ -81,15 +106,17 @@ inline uint64_t OrderedToOkey(
 // Width/signedness/collation are absorbed by the adapter; NULL arrives as a
 // per-row monostate from the extractor, never as a static flag.
 struct SABISchema {
-  std::vector<AttrRole> roles;
+  std::vector<IndexType> index_types;
   double rho = 0.001;  // bitmap budget knob; only the builder consumes it
 
-  uint32_t attr_num() const { return static_cast<uint32_t>(roles.size()); }
+  uint32_t attr_num() const {
+    return static_cast<uint32_t>(index_types.size());
+  }
 
   static SABISchema FromOptions(const BitLSMOptions& o) {
     SABISchema s;
-    s.roles.reserve(o.attr_num);
-    for (const auto& sp : o.attr_specs) s.roles.push_back(sp.role);
+    s.index_types.reserve(o.attr_num);
+    for (const auto& sp : o.attr_specs) s.index_types.push_back(sp.index_type);
     s.rho = o.rho;
     return s;
   }
@@ -97,10 +124,11 @@ struct SABISchema {
 
 // ---- Row -> encoded attrs bridge ----
 
-// Per-attr extraction result handed to SABI: SQL NULL, an ORDERED okey, or
-// UNORDERED opaque bytes (a view into the row value; valid only during the
-// ExtractAll call that produced it).
-using EncodedAttr = std::variant<std::monostate, uint64_t, std::string_view>;
+// Per-attr extraction result handed to SABI: SQL NULL, or the attr's bytes
+// in SABI's memcmp domain -- an kRange numeric's okey in 8-byte big-endian
+// form, an kEquality attr's raw bytes. Views are valid only during the
+// ExtractAll call that produced them.
+using EncodedAttr = std::variant<std::monostate, std::string_view>;
 
 // SABI's only path from a row to attrs: one virtual ExtractAll call per row;
 // the implementation owns all remaining schema knowledge (layout, widths,
@@ -120,11 +148,13 @@ class AttrExtractor {
                           EncodedAttr* out) = 0;
 };
 
-// Default extractor over the BitLSM v3 row value format.
+// Default extractor over the BitLSM v3 row value format. Numeric attrs are
+// re-encoded into member scratch (8 bytes per attr), so the views handed out
+// stay valid for the whole ExtractAll call.
 class ValueLayoutExtractor : public AttrExtractor {
  public:
   explicit ValueLayoutExtractor(const BitLSMOptions& options)
-      : layout_(options) {}
+      : layout_(options), scratch_(options.attr_num * kOkeyBytes, '\0') {}
 
   void ExtractAll(std::string_view /*key*/, std::string_view row_value,
                   EncodedAttr* out) override {
@@ -132,16 +162,19 @@ class ValueLayoutExtractor : public AttrExtractor {
       AttrView v = DecodeAttr(layout_, row_value, i);
       if (std::holds_alternative<std::monostate>(v)) {
         out[i] = std::monostate{};
-      } else if (layout_.is_ordered[i]) {
-        out[i] = OrderedToOkey(v);
-      } else {
+      } else if (std::holds_alternative<std::string_view>(v)) {
         out[i] = std::get<std::string_view>(v);
+      } else {
+        char* p = scratch_.data() + i * kOkeyBytes;
+        OkeyToBytes(NumericToOkey(v), p);
+        out[i] = std::string_view(p, kOkeyBytes);
       }
     }
   }
 
  private:
   ValueLayout layout_;
+  std::string scratch_;
 };
 
 }  // namespace bit_lsm

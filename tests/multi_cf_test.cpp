@@ -29,21 +29,24 @@ BitLSMOptions FourAttrOptions() {
   BitLSMOptions options;
   options.attr_num = 4;
   options.attr_specs = {
-      AttrSpec{AttrRole::ORDERED}, AttrSpec{AttrRole::ORDERED},
-      AttrSpec{AttrRole::ORDERED}, AttrSpec{AttrRole::UNORDERED}};
+      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+      AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   options.read_seqno = 0;
   options.rho = 0.5;
   return options;
 }
 
 // SABI-domain conditions for the estimator API. Both schemas here leave
-// AttrSpec at its f64 default, so ORDERED comparands encode through F64ToOkey.
+// AttrSpec at its f64 default, so kRange comparands encode through F64ToOkey.
 SABICondition OrdF64(uint32_t attr, CompareOp op, double v) {
-  return SABICondition{attr, op, OkeyInterval::FromOp(op, F64ToOkey(v)), ""};
+  return SABICondition{attr,
+                       ByteInterval::FromOp(op, OkeyToBytes(F64ToOkey(v))), ""};
 }
 
 SABICondition Uno(uint32_t attr, const std::string& v) {
-  return SABICondition{attr, CompareOp::EQUAL, {}, v};
+  return SABICondition{attr, {}, v};
 }
 }  // namespace
 

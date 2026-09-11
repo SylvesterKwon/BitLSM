@@ -16,6 +16,7 @@ TEST(Generators, SchemasAreWellFormed) {
     EXPECT_GE(s.attr_num, 1u);
     EXPECT_LE(s.attr_num, 5u);
     EXPECT_EQ(s.attr_specs.size(), s.attr_num);
+    for (const AttrSpec& a : s.attr_specs) EXPECT_TRUE(a.Valid());
     EXPECT_GT(s.rho, 0.0);
   }
 }

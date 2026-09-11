@@ -13,7 +13,7 @@ namespace {
 BitLSMOptions ContOpt(double rho) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec{AttrRole::ORDERED}};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)};
   o.read_seqno = 0;
   o.rho = rho;
   return o;
@@ -22,7 +22,7 @@ BitLSMOptions ContOpt(double rho) {
 BitLSMOptions CatOpt(double rho) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec{AttrRole::UNORDERED}};
+  o.attr_specs = {AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   o.read_seqno = 0;
   o.rho = rho;
   return o;

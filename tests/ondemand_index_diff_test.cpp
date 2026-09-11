@@ -20,7 +20,7 @@ class OnDemandIndexDiffTest
 //           Compact plus periodic CNF query batteries against the oracle),
 //           run with BitLSMOptions::ondemand_index on.
 // Threat: the on-demand read path decodes the blob a second way -- extents
-//         and counts from the v7 directory, bitmaps read per bin and
+//         and counts from the directory, bitmaps read per bin and
 //         frozen-viewed over cache-owned aligned buffers -- so any drift
 //         from the resident reader shows up as missing or extra rows.
 //         Compaction churn exercises reader teardown: a stale pin would

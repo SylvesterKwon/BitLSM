@@ -20,7 +20,8 @@ using UDIB = rocksdb::UserDefinedIndexBuilder;
 TEST(OkeyZeroRegression, NegZeroRowSurvivesEqPosZeroPruning) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, true, true, false)};
+  o.attr_specs = {
+      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/false)};
   o.rho = 0.5;
 
   SABIBuilder builder(SABISchema::FromOptions(o),
@@ -65,7 +66,8 @@ TEST(OkeyZeroRegression, NegZeroRowSurvivesEqPosZeroPruning) {
 TEST(OkeyZeroRegression, EqOnExactMinMaxIsNotPruned) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec(AttrRole::ORDERED, 8, true, false, false)};  // i64
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kInt, 8,
+                           /*nullable=*/false)};  // i64
   o.rho = 0.5;
 
   SABIBuilder builder(SABISchema::FromOptions(o),

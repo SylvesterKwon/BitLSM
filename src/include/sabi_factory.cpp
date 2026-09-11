@@ -9,11 +9,12 @@ using namespace roaring;
 
 namespace {
 
-string RolesToString(const vector<bit_lsm::AttrRole>& roles) {
+string IndexTypesToString(const vector<bit_lsm::IndexType>& index_types) {
   string out = "[";
-  for (size_t i = 0; i < roles.size(); ++i) {
+  for (size_t i = 0; i < index_types.size(); ++i) {
     if (i) out += ",";
-    out += roles[i] == bit_lsm::AttrRole::ORDERED ? "ORDERED" : "UNORDERED";
+    out +=
+        index_types[i] == bit_lsm::IndexType::kRange ? "kRange" : "kEquality";
   }
   return out + "]";
 }
@@ -38,8 +39,7 @@ unique_ptr<UserDefinedIndexReader> SABIFactory::NewReader(
   // Ungated public entry point (part of the base UserDefinedIndexFactory
   // interface): always kResident. Only the validating overload below -- the
   // path RocksDB actually calls to open an SST -- may mint a kMetadata
-  // reader, because the v7 gate lives there. This keeps "kMetadata reader
-  // over a v5/v6 blob with empty bin_cardinalities" unrepresentable.
+  // reader, because the version gate lives there.
   return unique_ptr<SABIReader>(
       new SABIReader(index_block_, SABIReaderMode::kResident));
 }
@@ -61,21 +61,16 @@ Status SABIFactory::NewReader(
   }
   uint32_t version = DecodeFixed32(index_block.data() + index_block.size() -
                                    2 * sizeof(uint32_t));
-  if (version < kBitLSMMinReadFormatVersion || version > kBitLSMFormatVersion) {
+  if (version != kBitLSMFormatVersion) {
     return Status::Corruption("unsupported BitLSM format version " +
                               to_string(version) + " (this build reads v" +
-                              to_string(kBitLSMMinReadFormatVersion) + "..v" +
-                              to_string(kBitLSMFormatVersion) + ")");
-  }
-  if (options_.ondemand_index && version < 7) {
-    return Status::Corruption(
-        "ondemand_index requires BitLSM format v7 blobs (found v" +
-        to_string(version) + "); rebuild the DB");
+                              to_string(kBitLSMFormatVersion) +
+                              "); rebuild the DB");
   }
 
-  // Validate the directory prefix (attr_num + roles) this method interprets;
-  // the rest of the directory is parsed by SABIReader against a blob that
-  // already passed RocksDB's block checksum.
+  // Validate the directory prefix (attr_num + index_types) this method
+  // interprets; the rest of the directory is parsed by SABIReader against a
+  // blob that already passed RocksDB's block checksum.
   uint32_t directory_off = DecodeFixed32(
       index_block.data() + index_block.size() - 3 * sizeof(uint32_t));
   uint64_t body_end = index_block.size() - kFooterSize;
@@ -87,30 +82,32 @@ Status SABIFactory::NewReader(
   if (uint64_t{directory_off} + sizeof(uint32_t) + attr_num > body_end) {
     return Status::Corruption("SABI directory is truncated");
   }
-  vector<AttrRole> roles(attr_num);
+  vector<IndexType> index_types(attr_num);
   for (uint32_t i = 0; i < attr_num; ++i) {
-    uint8_t role_byte = static_cast<uint8_t>(dir[sizeof(uint32_t) + i]);
-    if (role_byte != AttrRole::UNORDERED && role_byte != AttrRole::ORDERED) {
-      return Status::Corruption("SABI directory has unknown attr role " +
-                                to_string(role_byte) + " for attr " +
+    uint8_t type_byte = static_cast<uint8_t>(dir[sizeof(uint32_t) + i]);
+    if (type_byte != static_cast<uint8_t>(IndexType::kEquality) &&
+        type_byte != static_cast<uint8_t>(IndexType::kRange)) {
+      return Status::Corruption("SABI directory has unknown index type " +
+                                to_string(type_byte) + " for attr " +
                                 to_string(i));
     }
-    roles[i] = static_cast<AttrRole>(role_byte);
+    index_types[i] = static_cast<IndexType>(type_byte);
   }
 
   // A schema-bound factory (standalone BitLSM) still rejects mismatches
-  // loudly: parsing would succeed with the SST's own roles, but queries
-  // encoded under the configured roles would silently prune wrong. A
+  // loudly: parsing would succeed with the SST's own index_types, but queries
+  // encoded under the configured index_types would silently prune wrong. A
   // schema-less factory (MyRocks reader path) trusts the directory.
-  if (!schema_.roles.empty() && schema_.roles != roles) {
-    return Status::Corruption("SABI schema mismatch: SST roles " +
-                              RolesToString(roles) + " vs configured " +
-                              RolesToString(schema_.roles) +
+  if (!schema_.index_types.empty() && schema_.index_types != index_types) {
+    return Status::Corruption("SABI schema mismatch: SST index_types " +
+                              IndexTypesToString(index_types) +
+                              " vs configured " +
+                              IndexTypesToString(schema_.index_types) +
                               "; rebuild the DB or fix the schema");
   }
-  // Mode selection happens here, after the v7 gate above, not in the
+  // Mode selection happens here, after the version gate above, not in the
   // ungated single-arg NewReader(): a kMetadata reader can only be minted
-  // once this method has confirmed the blob is v7.
+  // once this method has confirmed the blob's version.
   reader = std::make_unique<SABIReader>(
       index_block, options_.ondemand_index ? SABIReaderMode::kMetadata
                                            : SABIReaderMode::kResident);

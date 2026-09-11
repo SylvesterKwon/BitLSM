@@ -11,7 +11,8 @@
 TEST(Smoke, BitLSMOptionsConstructs) {
   bit_lsm::BitLSMOptions options;
   options.attr_num = 1;
-  options.attr_specs = {bit_lsm::AttrSpec{bit_lsm::AttrRole::ORDERED}};
+  options.attr_specs = {bit_lsm::AttrSpec(bit_lsm::IndexType::kRange,
+                                          bit_lsm::PhysicalType::kFloat, 8)};
   options.read_seqno = 0;
   options.rho = 0.5;
   EXPECT_EQ(options.attr_num, 1u);
@@ -24,7 +25,8 @@ TEST(Smoke, BitLSMOptionsConstructs) {
 TEST(Smoke, BitLSMConstructorLinksAndThrowsOnBadOpen) {
   bit_lsm::BitLSMOptions options;
   options.attr_num = 1;
-  options.attr_specs = {bit_lsm::AttrSpec{bit_lsm::AttrRole::ORDERED}};
+  options.attr_specs = {bit_lsm::AttrSpec(bit_lsm::IndexType::kRange,
+                                          bit_lsm::PhysicalType::kFloat, 8)};
   options.read_seqno = 0;
   options.rho = 0.5;
   EXPECT_THROW(

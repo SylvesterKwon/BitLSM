@@ -28,7 +28,8 @@ constexpr size_t kExpectedMatches = 500;
 BitLSMOptions TwoAttrOptions() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec{AttrRole::UNORDERED}, AttrSpec{AttrRole::ORDERED}};
+  o.attr_specs = {AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),
+                  AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)};
   o.read_seqno = 0;  // each iterator overwrites this from its snapshot
   o.rho = 0.1;       // only affects bin counts; any sane value works here
   return o;
