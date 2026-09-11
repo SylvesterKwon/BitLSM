@@ -268,19 +268,16 @@ namespace {
 // window with a raw-string bound (a kVarBinary attr) has no okey
 // coordinates; the caller falls back. lo > hi on return means empty.
 bool WindowToOkeys(const bit_lsm::ByteInterval& w, uint64_t* lo, uint64_t* hi) {
-  if (w.lo.empty()) {
+  if (w.lo.empty() && !w.lo_open) {
     *lo = 0;
   } else if (w.lo.size() == bit_lsm::kOkeyBytes) {
-    *lo = bit_lsm::OkeyFromBytes(w.lo);
-  } else if (w.lo.size() == bit_lsm::kOkeyBytes + 1 && w.lo.back() == '\0') {
-    const uint64_t k = bit_lsm::OkeyFromBytes(
-        std::string_view(w.lo).substr(0, bit_lsm::kOkeyBytes));
-    if (k == UINT64_MAX) {  // above every okey
+    const uint64_t k = bit_lsm::OkeyFromBytes(w.lo);
+    if (w.lo_open && k == UINT64_MAX) {  // above every okey
       *lo = 1;
       *hi = 0;
       return true;
     }
-    *lo = k + 1;
+    *lo = w.lo_open ? k + 1 : k;
   } else {
     return false;
   }

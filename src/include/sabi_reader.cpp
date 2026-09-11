@@ -42,7 +42,7 @@ bool ConditionImpossible(const bit_lsm::SABICondition& cond,
     const std::string_view mn = (*bounds)[0], mx = bounds->back();
     // Impossible iff the interval is empty or disjoint from [mn, mx].
     const bit_lsm::ByteInterval& w = cond.win;
-    if (w.Empty() || w.lo > mx) return true;
+    if (w.Empty() || w.lo > mx || (w.lo == mx && w.lo_open)) return true;
     if (w.hi_unbounded) return false;
     return w.hi < mn || (w.hi == mn && w.hi_open);
   } else if (schema.index_types[idx] == bit_lsm::IndexType::kEquality) {

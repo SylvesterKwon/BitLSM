@@ -21,8 +21,10 @@ TEST(ByteInterval, FromOpShapes) {
   EXPECT_TRUE(ge.hi_unbounded);
 
   ByteInterval gt = ByteInterval::FromOp(CompareOp::GREATER, "abc");
-  EXPECT_EQ(gt.lo, std::string("abc\0", 4));
+  EXPECT_EQ(gt.lo, "abc");
+  EXPECT_TRUE(gt.lo_open);
   EXPECT_TRUE(gt.hi_unbounded);
+  EXPECT_FALSE(ge.lo_open);
 
   ByteInterval le = ByteInterval::FromOp(CompareOp::LESS_EQUAL, "abc");
   EXPECT_EQ(le.lo, "");
@@ -75,6 +77,26 @@ TEST(ByteInterval, IntersectKeepsTighterBound) {
   ByteInterval o2 = ByteInterval::FromOp(CompareOp::LESS, "c");
   o2.Intersect(ByteInterval::FromOp(CompareOp::LESS_EQUAL, "c"));
   EXPECT_TRUE(o2.hi_open);
+}
+
+// Workload: strict lower bounds meeting closed ones on the same comparand:
+//           x > "b" with x >= "b" (either order), x > "b" with x <= "b".
+// Threat: a tie on lo that drops the open flag turns x > b into x >= b; a
+//         point closed on one side and open on the other is empty.
+TEST(ByteInterval, StrictLowerBoundTies) {
+  ByteInterval a = ByteInterval::FromOp(CompareOp::GREATER_EQUAL, "b");
+  a.Intersect(ByteInterval::FromOp(CompareOp::GREATER, "b"));
+  EXPECT_TRUE(a.lo_open);
+  ByteInterval b = ByteInterval::FromOp(CompareOp::GREATER, "b");
+  b.Intersect(ByteInterval::FromOp(CompareOp::GREATER_EQUAL, "b"));
+  EXPECT_TRUE(b.lo_open);
+  ByteInterval c = ByteInterval::FromOp(CompareOp::GREATER, "b");
+  c.Intersect(ByteInterval::FromOp(CompareOp::LESS_EQUAL, "b"));
+  EXPECT_TRUE(c.Empty());
+  ByteInterval d = ByteInterval::FromOp(CompareOp::GREATER, "b");
+  d.Intersect(ByteInterval::FromOp(CompareOp::GREATER_EQUAL, "c"));
+  EXPECT_EQ(d.lo, "c");
+  EXPECT_FALSE(d.lo_open);
 }
 
 // Workload: contradictory bounds x > "z" AND x < "a"; and an empty interval

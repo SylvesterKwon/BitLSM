@@ -208,10 +208,10 @@ TEST(EncodeQuery, ContradictionSetsUnsat) {
 
 // Workload: a strict bound at the okey domain edge (i64 > INT64_MAX).
 // Threat: in the okey domain this needed overflow handling; in the byte
-//         domain the successor of the maximal okey is a 9-byte string above
-//         every 8-byte value, so the interval must be non-empty here and
-//         above every okey (min/max pruning then rejects each SST).
-TEST(EncodeQuery, StrictBoundAboveDomainMaxExceedsEveryOkey) {
+//         domain the bound stays on the comparand with the open flag, so the
+//         interval is non-empty here and every SST prunes it through its
+//         max (lo == max, open) in ConditionImpossible.
+TEST(EncodeQuery, StrictBoundAboveDomainMaxStaysOpenOnComparand) {
   BitLSMOptions o = MakeOpts3();
   BitLSMQuery q(std::vector<QueryCondition>{
       {2, CompareOp::GREATER, std::numeric_limits<int64_t>::max()}});
@@ -219,8 +219,8 @@ TEST(EncodeQuery, StrictBoundAboveDomainMaxExceedsEveryOkey) {
   SABIQuery sq = EncodeQuery(q, o);
   EXPECT_FALSE(sq.unsat);
   const ByteInterval& w = sq.clause_groups[0][0].win;
-  EXPECT_EQ(w.lo, OkeyToBytes(UINT64_MAX) + std::string(1, '\0'));
-  EXPECT_GT(w.lo, OkeyToBytes(UINT64_MAX));
+  EXPECT_EQ(w.lo, OkeyToBytes(UINT64_MAX));
+  EXPECT_TRUE(w.lo_open);
   EXPECT_TRUE(w.hi_unbounded);
 }
 

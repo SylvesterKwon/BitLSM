@@ -127,13 +127,15 @@ struct BitLSMQuery {
   }
 };
 
-// Interval on the SABI byte domain (memcmp order). Closed below: "" is the
-// domain minimum, so lo == "" means unbounded below, and x > s canonicalizes
-// to lo = s + '\0' (the byte successor). The domain has no maximum and no
-// predecessor, so hi carries explicit unbounded and open flags. Empty is
+// Interval on the SABI byte domain (memcmp order). "" is the domain minimum,
+// so lo == "" closed means unbounded below; the domain has no maximum, so hi
+// carries an explicit unbounded flag. Both ends carry an open flag (bytes
+// have no predecessor and a successor -- s + '\0' -- with no room between,
+// so strict bounds stay on the comparand instead of stepping). Empty is
 // absorbing under Intersect.
 struct ByteInterval {
   std::string lo;
+  bool lo_open = false;
   std::string hi;
   bool hi_open = false;
   bool hi_unbounded = true;
@@ -141,10 +143,16 @@ struct ByteInterval {
   bool Empty() const {
     if (hi_unbounded) return false;
     const int c = lo.compare(hi);
-    return c > 0 || (c == 0 && hi_open);
+    return c > 0 || (c == 0 && (lo_open || hi_open));
   }
   void Intersect(const ByteInterval& o) {
-    if (o.lo > lo) lo = o.lo;
+    const int lc = o.lo.compare(lo);
+    if (lc > 0) {
+      lo = o.lo;
+      lo_open = o.lo_open;
+    } else if (lc == 0) {
+      lo_open = lo_open || o.lo_open;
+    }
     if (o.hi_unbounded) return;
     if (hi_unbounded) {
       hi = o.hi;
@@ -173,7 +181,7 @@ struct ByteInterval {
         break;
       case CompareOp::GREATER:
         w.lo.assign(bytes);
-        w.lo.push_back('\0');
+        w.lo_open = true;
         break;
       case CompareOp::LESS_EQUAL:
         w.hi.assign(bytes);
