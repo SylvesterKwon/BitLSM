@@ -109,8 +109,7 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
       if (holds_alternative<monostate>(attr_val)) {
         attr_null_rows_[i].add(data_entries_cnt_);
       } else if (schema_.index_types[i] == IndexType::kRange) {
-        get<RangeAttrBuf>(attr_buf_[i]).values.push_back(
-            get<string_view>(attr_val));
+        get<RangeAttrBuf>(attr_buf_[i]).Push(get<string_view>(attr_val));
       } else {
         get<EqualityAttrBuf>(attr_buf_[i]).Intern(get<string_view>(attr_val));
       }
@@ -223,18 +222,45 @@ void SABIBuilder::SetEqualityBinningPolicy(uint32_t i) {
   distinct_cnts_[i] = cat.value_by_id.size();
 }
 
+void SABIBuilder::RangeAttrBuf::Push(string_view v) {
+  const int32_t len = static_cast<int32_t>(v.size());
+  if (uniform_len == -2)
+    uniform_len = len;
+  else if (uniform_len != len)
+    uniform_len = -1;
+  values.push_back(v);
+}
+
 void SABIBuilder::RangeAttrBuf::Sort() {
-  sorted.resize(values.size());
-  std::iota(sorted.begin(), sorted.end(), 0u);
-  std::sort(sorted.begin(), sorted.end(),
-            [this](uint32_t a, uint32_t b) { return values[a] < values[b]; });
-  distinct = 0;
-  for (size_t a = 0; a < sorted.size();) {
-    size_t b = a + 1;
-    while (b < sorted.size() && values[sorted[b]] == values[sorted[a]]) ++b;
-    ++distinct;
-    a = b;
+  const uint32_t n = static_cast<uint32_t>(values.size());
+  sorted.resize(n);
+  run_start.clear();
+  if (uniform_len == static_cast<int32_t>(kOkeyBytes)) {
+    // Every value is an okey: sort (okey, row) records contiguously -- the
+    // cost of the plain integer sort -- and cut runs on the way out.
+    struct Rec {
+      uint64_t key;
+      uint32_t row;
+    };
+    vector<Rec> recs(n);
+    for (uint32_t i = 0; i < n; ++i) recs[i] = {OkeyFromBytes(values[i]), i};
+    std::sort(recs.begin(), recs.end(),
+              [](const Rec& x, const Rec& y) { return x.key < y.key; });
+    for (uint32_t i = 0; i < n; ++i) {
+      sorted[i] = recs[i].row;
+      if (i == 0 || recs[i].key != recs[i - 1].key) run_start.push_back(i);
+    }
+  } else {
+    std::iota(sorted.begin(), sorted.end(), 0u);
+    std::sort(sorted.begin(), sorted.end(), [this](uint32_t a, uint32_t b) {
+      return values[a] < values[b];
+    });
+    for (uint32_t i = 0; i < n; ++i)
+      if (i == 0 || values[sorted[i]] != values[sorted[i - 1]])
+        run_start.push_back(i);
   }
+  distinct = run_start.size();
+  if (n > 0) run_start.push_back(n);
 }
 
 // Bin thresholds for one kRange attribute: cut the sorted values into
@@ -255,9 +281,10 @@ void SABIBuilder::RangeAttrBuf::Sort() {
 // impossible by construction, in one linear pass over the sorted buffer.
 void SABIBuilder::SetRangeBinningPolicy(uint32_t i) {
   const uint32_t bins = bitmap_index_.bitmap_nums[i];
-  const RangeAttrBuf& buf = get<RangeAttrBuf>(attr_buf_[i]);
+  RangeAttrBuf& buf = get<RangeAttrBuf>(attr_buf_[i]);
   const BytesList& v = buf.values;
   const vector<uint32_t>& sorted = buf.sorted;
+  const vector<uint32_t>& runs = buf.run_start;
   distinct_cnts_[i] = buf.distinct;
 
   BytesList boundaries;
@@ -267,16 +294,18 @@ void SABIBuilder::SetRangeBinningPolicy(uint32_t i) {
     return;
   }
 
+  const size_t run_cnt = runs.size() - 1;
   uint64_t remaining_mass = sorted.size();
   uint32_t remaining_bins = bins;
   uint64_t cur = 0;  // mass accumulated into the bin being built
+  // Every threshold is the value of some run; remembering which run lets the
+  // bin assignment below compare run indices instead of bytes.
+  vector<uint32_t> boundary_run;
   boundaries.push_back(v[sorted.front()]);
+  boundary_run.push_back(0);
 
-  for (size_t a = 0; a < sorted.size();) {
-    const string_view value = v[sorted[a]];
-    size_t b = a;
-    while (b < sorted.size() && v[sorted[b]] == value) ++b;
-    const uint64_t run = b - a;
+  for (size_t r = 0; r < run_cnt; ++r) {
+    const uint64_t run = runs[r + 1] - runs[r];
 
     // The target is re-derived from what is left, so closing a bin light or
     // heavy is absorbed by the bins after it instead of accumulating.
@@ -291,25 +320,42 @@ void SABIBuilder::SetRangeBinningPolicy(uint32_t i) {
           std::abs(static_cast<double>(cur) - target) <=
           std::abs(static_cast<double>(cur + run) - target);
       if (own_bin || nearer_before) {
-        boundaries.push_back(value);
+        boundaries.push_back(v[sorted[runs[r]]]);
+        boundary_run.push_back(static_cast<uint32_t>(r));
         remaining_mass -= cur;
         --remaining_bins;
         cur = 0;
       }
     }
     cur += run;
-    a = b;
   }
 
   // The sweep closes at most bins-1 times, so at least one threshold is
-  // always left over. Repeat the maximum: CalculateBitmapIndex clamps a row
-  // past the last threshold into the final bin and SelectBins resolves a
-  // lookup there the same way, so spare bins sit empty between them rather
-  // than swallowing the maximum, and the ends stay pinned to the exact data
-  // bounds for min/max pruning.
+  // always left over. Repeat the maximum: rows past the last threshold land
+  // in the final bin (below) and SelectBins resolves a lookup there the same
+  // way, so spare bins sit empty between them rather than swallowing the
+  // maximum, and the ends stay pinned to the exact data bounds for min/max
+  // pruning.
   const string max_value(v[sorted.back()]);
-  while (boundaries.size() < static_cast<size_t>(bins) + 1)
+  while (boundaries.size() < static_cast<size_t>(bins) + 1) {
     boundaries.push_back(max_value);
+    boundary_run.push_back(static_cast<uint32_t>(run_cnt - 1));
+  }
+
+  // Bin of each row = (number of boundaries <= value) - 1, clamped -- the
+  // same rule SelectBins applies through BytesList::UpperBound. Runs ascend
+  // and each threshold is a run's value, so "threshold <= value" is
+  // "threshold's run <= this run": one forward cursor over run indices
+  // settles every row in O(n) without touching a byte.
+  buf.bin_of_row.resize(sorted.size());
+  uint32_t passed = 0;  // thresholds at or below the current run
+  for (uint32_t r = 0; r < run_cnt; ++r) {
+    while (passed < boundary_run.size() && boundary_run[passed] <= r) ++passed;
+    uint32_t bin = passed == 0 ? 0 : passed - 1;
+    if (bin >= bins) bin = bins - 1;
+    for (uint32_t k = runs[r]; k < runs[r + 1]; ++k)
+      buf.bin_of_row[sorted[k]] = bin;
+  }
 
   bitmap_index_.binning_policy[i] = std::move(boundaries);
 }
@@ -343,22 +389,18 @@ void SABIBuilder::CalculateBitmapIndex() {
       }
       assert(k == cat.row_ids.size());
     } else if (schema_.index_types[i] == IndexType::kRange) {
-      const BytesList& values = get<RangeAttrBuf>(attr_buf_[i]).values;
-      const BytesList& binning =
-          get<BytesList>(bitmap_index_.binning_policy[i]);
+      const vector<uint32_t>& bin_of_row =
+          get<RangeAttrBuf>(attr_buf_[i]).bin_of_row;
       for (uint32_t j = 0; j < data_entries_cnt_; ++j) {
         if (s < skip_ids.size() && skip_ids[s] == j) {
           ++s;
           continue;
         }
-        const uint32_t idx = binning.UpperBound(values[k++]);
-        uint32_t local_bin_idx = idx == 0 ? 0 : idx - 1;
-        if (local_bin_idx >= bitmap_index_.bitmap_nums[i])
-          local_bin_idx = bitmap_index_.bitmap_nums[i] - 1;
+        const uint32_t local_bin_idx = bin_of_row[k++];
         bitmap_index_.bitmaps[bin_idx_offset + local_bin_idx].addBulk(
             bin_ctxs[local_bin_idx], j);
       }
-      assert(k == values.size());
+      assert(k == bin_of_row.size());
     } else {
       assert(false);
     }

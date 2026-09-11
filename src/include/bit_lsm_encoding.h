@@ -58,10 +58,8 @@ inline double OkeyToF64(uint64_t okey) {
 inline constexpr size_t kOkeyBytes = 8;
 
 inline void OkeyToBytes(uint64_t okey, char* out) {
-  for (int i = static_cast<int>(kOkeyBytes) - 1; i >= 0; --i) {
-    out[i] = static_cast<char>(okey & 0xff);
-    okey >>= 8;
-  }
+  const uint64_t be = __builtin_bswap64(okey);  // host is little-endian
+  std::memcpy(out, &be, kOkeyBytes);
 }
 
 inline std::string OkeyToBytes(uint64_t okey) {
@@ -72,9 +70,9 @@ inline std::string OkeyToBytes(uint64_t okey) {
 
 // Precondition: bytes.size() == kOkeyBytes.
 inline uint64_t OkeyFromBytes(std::string_view bytes) {
-  uint64_t okey = 0;
-  for (unsigned char c : bytes) okey = (okey << 8) | c;
-  return okey;
+  uint64_t be;
+  std::memcpy(&be, bytes.data(), kOkeyBytes);
+  return __builtin_bswap64(be);
 }
 
 // ---- dispatch helpers (adapter side; the only spec-aware entry points) ----

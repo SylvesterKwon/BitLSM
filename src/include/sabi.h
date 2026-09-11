@@ -156,8 +156,17 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
   // read those, so the sort happens once.
   struct RangeAttrBuf {
     BytesList values;
-    std::vector<uint32_t> sorted;
+    std::vector<uint32_t> sorted;     // row positions in value order
+    std::vector<uint32_t> run_start;  // equal-value runs in `sorted`, plus n
     uint64_t distinct = 0;
+    // Length shared by every value so far: -2 while empty, -1 once two
+    // lengths differ. Uniform 8-byte values (every numeric attr) sort as
+    // contiguous okeys instead of through arena offsets.
+    int32_t uniform_len = -2;
+    // Dense row -> local bin, filled by SetRangeBinningPolicy in one walk
+    // over the sorted runs against the final boundaries.
+    std::vector<uint32_t> bin_of_row;
+    void Push(std::string_view v);
     void Sort();
   };
 
