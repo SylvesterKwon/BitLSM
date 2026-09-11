@@ -232,9 +232,9 @@ class CompiledQuery {
     uint8_t is_numeric;
     CompareOp op;
     int32_t null_bit;  // attr's null-bitmap bit position, or -1 if not nullable
-    uint32_t slot;  // fixed: absolute byte offset / kVarBinary: var_end rank
-    AttrSpec spec;  // physical type / width
-    int64_t ival;   // numeric comparand; the one matching spec is active
+    uint32_t slot;     // fixed: absolute byte offset / kVarBinary: var_end rank
+    AttrSpec spec;     // physical type / width
+    int64_t ival;      // numeric comparand; the one matching spec is active
     uint64_t uval;
     double dval;
     uint32_t soff;  // binary comparand: offset into arena_

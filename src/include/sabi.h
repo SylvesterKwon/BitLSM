@@ -12,10 +12,10 @@
 #include <variant>
 
 #include "bit_lsm_encoding.h"
-#include "bytes_list.h"
 #include "bit_lsm_option.h"
 #include "bit_lsm_query.h"
 #include "bit_lsm_utils.h"
+#include "bytes_list.h"
 #include "cache/cache_key.h"
 #include "roaring.hh"
 #include "rocksdb/advanced_cache.h"  // full rocksdb::Cache / Cache::Handle
@@ -420,7 +420,7 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   // for exactness). Returns false when the attr is out of range, not
   // kEquality, or has zero binned rows.
   bool EqualityValueCounts(uint32_t attr_idx,
-                            EqualityAttrValueCounts* out) const;
+                           EqualityAttrValueCounts* out) const;
   void Dump();
 };
 
@@ -516,7 +516,8 @@ class SABIFactory : public rocksdb::UserDefinedIndexFactory {
   using ExtractorFactory = std::function<std::unique_ptr<AttrExtractor>()>;
 
   // Reader-only factory: readers self-describe from the blob's directory, so
-  // no schema is needed to open SSTs. NewBuilder() is unavailable in this state.
+  // no schema is needed to open SSTs. NewBuilder() is unavailable in this
+  // state.
   SABIFactory() = default;
   SABIFactory(SABISchema schema, ExtractorFactory extractor_factory)
       : schema_(std::move(schema)),
@@ -536,9 +537,9 @@ class SABIFactory : public rocksdb::UserDefinedIndexFactory {
   std::unique_ptr<rocksdb::UserDefinedIndexReader> NewReader(
       rocksdb::Slice& index_block_) const override;
   // Rejects blobs with a missing or non-v8 version footer, an invalid
-  // directory, or (when this factory is schema-bound) index_types that differ from
-  // the bound schema. A schema-less factory skips the index_types cross-check and
-  // trusts the blob's directory.
+  // directory, or (when this factory is schema-bound) index_types that differ
+  // from the bound schema. A schema-less factory skips the index_types
+  // cross-check and trusts the blob's directory.
   rocksdb::Status NewReader(
       const rocksdb::UserDefinedIndexOption& option,
       rocksdb::Slice& index_block,

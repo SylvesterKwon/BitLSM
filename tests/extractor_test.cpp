@@ -16,9 +16,12 @@ using namespace bit_lsm;
 TEST(ValueLayoutExtractor, MatchesDecodeAttr) {
   BitLSMOptions o;
   o.attr_num = 3;
-  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/true),  // double
-                  AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),                     // bytes
-                  AttrSpec(IndexType::kRange, PhysicalType::kInt, 8, /*nullable=*/false)};  // i64
+  o.attr_specs = {
+      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8,
+               /*nullable=*/true),                               // double
+      AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),  // bytes
+      AttrSpec(IndexType::kRange, PhysicalType::kInt, 8,
+               /*nullable=*/false)};  // i64
 
   std::vector<Attr> attrs = {Attr(3.25), Attr(std::string("seoul")),
                              Attr(int64_t(-42))};
@@ -40,8 +43,9 @@ TEST(ValueLayoutExtractor, MatchesDecodeAttr) {
 TEST(ValueLayoutExtractor, NullBecomesMonostate) {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/true),
-                  AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
+  o.attr_specs = {
+      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/true),
+      AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   std::vector<Attr> attrs = {Attr(std::monostate{}), Attr(std::string("x"))};
   std::string row;
   EncodeValue(o, attrs, "", row);

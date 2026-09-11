@@ -5,10 +5,10 @@
 #include <map>
 #include <set>
 
+#include "bit_lsm_encoding.h"
 #include "db/column_family.h"
 #include "db/db_impl/db_impl.h"
 #include "db/version_set.h"
-#include "bit_lsm_encoding.h"
 #include "sabi.h"
 #include "table/block_based/block_based_table_reader.h"
 #include "table/format.h"
@@ -57,7 +57,7 @@ double GlobalRangeStats::PointAwareRangeMass(uint64_t lo, uint64_t hi) const {
 }
 
 double GlobalRangeStats::CandidateMass(uint64_t lo, uint64_t hi,
-                                         double match_mass) const {
+                                       double match_mass) const {
   if (hi < lo || sst_bins.empty()) return match_mass;
   // Pass 1: span-uniform overlap mass per covering SST -- the weight that
   // apportions the caller's GLOBAL matching mass across SSTs (the per-SST
@@ -267,8 +267,7 @@ namespace {
 // 8-byte lo/hi, or lo = okey bytes + '\0' from a strict lower bound. A
 // window with a raw-string bound (a kVarBinary attr) has no okey
 // coordinates; the caller falls back. lo > hi on return means empty.
-bool WindowToOkeys(const bit_lsm::ByteInterval& w, uint64_t* lo,
-                   uint64_t* hi) {
+bool WindowToOkeys(const bit_lsm::ByteInterval& w, uint64_t* lo, uint64_t* hi) {
   if (w.lo.empty()) {
     *lo = 0;
   } else if (w.lo.size() == bit_lsm::kOkeyBytes) {
@@ -304,7 +303,8 @@ bool WindowToOkeys(const bit_lsm::ByteInterval& w, uint64_t* lo,
 // Standalone selectivity of one condition (used for OR-clause members).
 // Returns -1 when the condition is unestimatable (caller flags fallback).
 double ConditionSelectivity(const SABICondition& cond, const GlobalStats& stats,
-                            const std::vector<IndexType>& index_types, double phys) {
+                            const std::vector<IndexType>& index_types,
+                            double phys) {
   if (cond.attr_idx >= index_types.size()) return -1;
   if (index_types[cond.attr_idx] == IndexType::kRange) {
     const auto& ord = stats.range[cond.attr_idx];
@@ -327,8 +327,8 @@ double ConditionSelectivity(const SABICondition& cond, const GlobalStats& stats,
 // whose match fraction f is already known (>= 0): what the bin-granular
 // pruning ADMITS for this condition alone.
 double ConditionCandidate(const SABICondition& cond, const GlobalStats& stats,
-                          const std::vector<IndexType>& index_types, double phys,
-                          double f) {
+                          const std::vector<IndexType>& index_types,
+                          double phys, double f) {
   if (index_types[cond.attr_idx] == IndexType::kRange) {
     const auto& ord = stats.range[cond.attr_idx];
     uint64_t lo, hi;
@@ -378,7 +378,8 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
           schema_.index_types[cond.attr_idx] == IndexType::kRange) {
         windows[cond.attr_idx].Intersect(cond.win);
       } else {
-        double f = ConditionSelectivity(cond, *stats, schema_.index_types, phys);
+        double f =
+            ConditionSelectivity(cond, *stats, schema_.index_types, phys);
         if (f < 0) {
           fallback.insert(cond.attr_idx);
         } else {
@@ -395,13 +396,15 @@ EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
       double cand_sum = 0;
       bool clause_fallback = false;
       for (const SABICondition& cond : clause) {
-        double f = ConditionSelectivity(cond, *stats, schema_.index_types, phys);
+        double f =
+            ConditionSelectivity(cond, *stats, schema_.index_types, phys);
         if (f < 0) {
           clause_fallback = true;
           fallback.insert(cond.attr_idx);
         } else {
           sum += f;
-          cand_sum += ConditionCandidate(cond, *stats, schema_.index_types, phys, f);
+          cand_sum +=
+              ConditionCandidate(cond, *stats, schema_.index_types, phys, f);
         }
       }
       if (!clause_fallback) {

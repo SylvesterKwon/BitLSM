@@ -1,8 +1,8 @@
+#include "bytes_list.h"
+
 #include <gtest/gtest.h>
 
 #include <string>
-
-#include "bytes_list.h"
 
 using namespace bit_lsm;
 

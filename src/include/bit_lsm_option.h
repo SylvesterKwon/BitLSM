@@ -31,8 +31,8 @@ struct AttrSpec {
   uint16_t width;
   bool nullable;
 
-  AttrSpec(IndexType index_type, PhysicalType physical_type,
-           uint16_t width = 0, bool nullable = false)
+  AttrSpec(IndexType index_type, PhysicalType physical_type, uint16_t width = 0,
+           bool nullable = false)
       : index_type(index_type),
         physical_type(physical_type),
         width(width),

@@ -24,7 +24,8 @@ namespace {
 BitLSMOptions I64Options(bool nullable = false) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kInt, 8, /*nullable=*/nullable)};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kInt, 8,
+                           /*nullable=*/nullable)};
   o.read_seqno = 0;
   o.rho = 0.1;
   return o;
@@ -231,7 +232,8 @@ namespace {
 BitLSMOptions UnorderedOptions(bool nullable = false) {
   BitLSMOptions o;
   o.attr_num = 1;
-  o.attr_specs = {AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary, 0, /*nullable=*/nullable)};
+  o.attr_specs = {AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary, 0,
+                           /*nullable=*/nullable)};
   o.read_seqno = 0;
   o.rho = 0.1;
   return o;

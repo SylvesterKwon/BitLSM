@@ -109,7 +109,9 @@ struct SABISchema {
   std::vector<IndexType> index_types;
   double rho = 0.001;  // bitmap budget knob; only the builder consumes it
 
-  uint32_t attr_num() const { return static_cast<uint32_t>(index_types.size()); }
+  uint32_t attr_num() const {
+    return static_cast<uint32_t>(index_types.size());
+  }
 
   static SABISchema FromOptions(const BitLSMOptions& o) {
     SABISchema s;

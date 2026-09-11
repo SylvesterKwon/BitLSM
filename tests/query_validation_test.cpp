@@ -13,7 +13,8 @@ namespace {
 BitLSMOptions TwoAttrOptions() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8), AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
+  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+                  AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   o.read_seqno = 0;
   o.rho = 0.5;
   return o;

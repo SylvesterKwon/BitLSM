@@ -16,8 +16,9 @@ namespace {
 BitLSMOptions TwoAttrOpts() {
   BitLSMOptions o;
   o.attr_num = 2;
-  o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/false),
-                  AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
+  o.attr_specs = {
+      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/false),
+      AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   o.rho = 0.5;
   return o;
 }
@@ -83,12 +84,14 @@ TEST(SabiV5Footer, SelfDescribesWithoutSchema) {
 
 // Workload: build with [kRange, kEquality], reopen with attr 1 flipped to
 //           kRange.
-// Threat: the index type selects the binning-policy variant at parse time — a silent
+// Threat: the index type selects the binning-policy variant at parse time — a
+// silent
 //         mismatch parses string policy bytes as okey thresholds.
 TEST(SabiV5Footer, RejectsRoleFlip) {
   BitLSMOptions build_o = TwoAttrOpts();
   BitLSMOptions read_o = TwoAttrOpts();
-  read_o.attr_specs[1] = AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8);  // kEquality->kRange
+  read_o.attr_specs[1] = AttrSpec(IndexType::kRange, PhysicalType::kFloat,
+                                  8);  // kEquality->kRange
   rocksdb::Status s = OpenViaFactory(SABIFactory(read_o), BuildBlob(build_o));
   EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 }
@@ -108,16 +111,17 @@ TEST(SabiV5Footer, RejectsWrongVersion) {
   EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 }
 
-// Workload: a valid blob whose first stored index-type byte is patched to a value
+// Workload: a valid blob whose first stored index-type byte is patched to a
+// value
 //           outside the IndexType enum.
 // Threat: the directory is now the source of truth for index_types — an
-//         unrecognized index-type byte must fail loudly at open, not fall through
-//         parse branches as an arbitrary index type.
+//         unrecognized index-type byte must fail loudly at open, not fall
+//         through parse branches as an arbitrary index type.
 TEST(SabiV5Footer, RejectsUnknownRoleByte) {
   BitLSMOptions o = TwoAttrOpts();
   std::string blob = BuildBlob(o);
-  // directory_off is the third-to-last u32; index-type bytes start right after the
-  // directory's leading attr_num u32.
+  // directory_off is the third-to-last u32; index-type bytes start right after
+  // the directory's leading attr_num u32.
   uint32_t directory_off;
   std::memcpy(&directory_off, blob.data() + blob.size() - 3 * sizeof(uint32_t),
               sizeof(uint32_t));
@@ -135,7 +139,7 @@ TEST(SabiV5Footer, IgnoresAdapterPrivateSpecChanges) {
   BitLSMOptions build_o = TwoAttrOpts();
   BitLSMOptions read_o = TwoAttrOpts();
   read_o.attr_specs[0] = AttrSpec(IndexType::kRange, PhysicalType::kInt,
-                                  8);  // same index types
-  read_o.attr_specs[0].nullable = true;   // NULL is a dynamic signal, unhashed
+                                  8);    // same index types
+  read_o.attr_specs[0].nullable = true;  // NULL is a dynamic signal, unhashed
   EXPECT_TRUE(OpenViaFactory(SABIFactory(read_o), BuildBlob(build_o)).ok());
 }

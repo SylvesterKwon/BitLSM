@@ -83,9 +83,9 @@ TEST_F(BitLSMTestBase, VarBinaryRangeAllOps) {
   for (int i = 0; i < 60; ++i)
     ASSERT_TRUE(db.Put("k" + std::to_string(i), {Padded("user-", i, 2)}, "p"));
   ASSERT_TRUE(db.Flush());
-  const std::vector<std::string> probes = {
-      "user-00", "user-29", "user-295", "user-3", "user-59",
-      "user-",   "",        "user-99",  "zzz"};
+  const std::vector<std::string> probes = {"user-00", "user-29", "user-295",
+                                           "user-3",  "user-59", "user-",
+                                           "",        "user-99", "zzz"};
   for (const std::string& t : probes) {
     for (CompareOp op :
          {CompareOp::EQUAL, CompareOp::LESS, CompareOp::LESS_EQUAL,

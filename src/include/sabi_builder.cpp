@@ -252,9 +252,8 @@ void SABIBuilder::RangeAttrBuf::Sort() {
     }
   } else {
     std::iota(sorted.begin(), sorted.end(), 0u);
-    std::sort(sorted.begin(), sorted.end(), [this](uint32_t a, uint32_t b) {
-      return values[a] < values[b];
-    });
+    std::sort(sorted.begin(), sorted.end(),
+              [this](uint32_t a, uint32_t b) { return values[a] < values[b]; });
     for (uint32_t i = 0; i < n; ++i)
       if (i == 0 || values[sorted[i]] != values[sorted[i - 1]])
         run_start.push_back(i);

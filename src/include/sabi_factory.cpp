@@ -13,7 +13,8 @@ string IndexTypesToString(const vector<bit_lsm::IndexType>& index_types) {
   string out = "[";
   for (size_t i = 0; i < index_types.size(); ++i) {
     if (i) out += ",";
-    out += index_types[i] == bit_lsm::IndexType::kRange ? "kRange" : "kEquality";
+    out +=
+        index_types[i] == bit_lsm::IndexType::kRange ? "kRange" : "kEquality";
   }
   return out + "]";
 }
@@ -67,9 +68,9 @@ Status SABIFactory::NewReader(
                               "); rebuild the DB");
   }
 
-  // Validate the directory prefix (attr_num + index_types) this method interprets;
-  // the rest of the directory is parsed by SABIReader against a blob that
-  // already passed RocksDB's block checksum.
+  // Validate the directory prefix (attr_num + index_types) this method
+  // interprets; the rest of the directory is parsed by SABIReader against a
+  // blob that already passed RocksDB's block checksum.
   uint32_t directory_off = DecodeFixed32(
       index_block.data() + index_block.size() - 3 * sizeof(uint32_t));
   uint64_t body_end = index_block.size() - kFooterSize;
@@ -99,7 +100,8 @@ Status SABIFactory::NewReader(
   // schema-less factory (MyRocks reader path) trusts the directory.
   if (!schema_.index_types.empty() && schema_.index_types != index_types) {
     return Status::Corruption("SABI schema mismatch: SST index_types " +
-                              IndexTypesToString(index_types) + " vs configured " +
+                              IndexTypesToString(index_types) +
+                              " vs configured " +
                               IndexTypesToString(schema_.index_types) +
                               "; rebuild the DB or fix the schema");
   }

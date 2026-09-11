@@ -160,7 +160,8 @@ SABIReader::SABIReader(Slice& index_block, SABIReaderMode mode) : mode_(mode) {
   dir += sizeof(uint32_t);
   schema_.index_types.resize(attr_num);
   for (uint32_t i = 0; i < attr_num; ++i)
-    schema_.index_types[i] = static_cast<IndexType>(static_cast<uint8_t>(dir[i]));
+    schema_.index_types[i] =
+        static_cast<IndexType>(static_cast<uint8_t>(dir[i]));
   dir += attr_num;
   bitmap_index.bitmap_nums.resize(attr_num);
   uint32_t total_bins = 0;
@@ -609,7 +610,7 @@ bool SABIReader::SelectBins(const SABICondition& cond,
 }
 
 bool SABIReader::RangeHistogram(uint32_t attr_idx,
-                                  RangeAttrHistogram* out) const {
+                                RangeAttrHistogram* out) const {
   if (attr_idx >= schema_.attr_num()) return false;
   if (schema_.index_types[attr_idx] != IndexType::kRange) return false;
 
@@ -643,7 +644,7 @@ bool SABIReader::RangeHistogram(uint32_t attr_idx,
 }
 
 bool SABIReader::EqualityValueCounts(uint32_t attr_idx,
-                                      EqualityAttrValueCounts* out) const {
+                                     EqualityAttrValueCounts* out) const {
   if (attr_idx >= schema_.attr_num()) return false;
   if (schema_.index_types[attr_idx] != IndexType::kEquality) return false;
 

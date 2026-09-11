@@ -93,8 +93,8 @@ struct GlobalEqualityStats {
 };
 
 struct GlobalStats {
-  // Indexed by attr; only the slot matching the attr's index type is ever engaged,
-  // and it stays empty when no live SST has binned rows for the attr.
+  // Indexed by attr; only the slot matching the attr's index type is ever
+  // engaged, and it stays empty when no live SST has binned rows for the attr.
   std::vector<std::optional<GlobalRangeStats>> range;
   std::vector<std::optional<GlobalEqualityStats>> equality;
   // Live SST data entries minus tombstone markers, shadowing uncorrected:

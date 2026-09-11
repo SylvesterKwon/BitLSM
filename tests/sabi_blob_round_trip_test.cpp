@@ -21,8 +21,9 @@ namespace {
 BitLSMOptions MakeOptions() {
   BitLSMOptions options;
   options.attr_num = 2;
-  options.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
-                        AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
+  options.attr_specs = {
+      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+      AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   options.read_seqno = 0;
   options.rho = 0.5;  // 전체 bin 예산 = attr_num/rho = 4 (속성별 할당은 동적)
   return options;
@@ -154,8 +155,8 @@ TEST(SabiBlobRoundTrip, RejectsUnversionedAndUnknownVersions) {
 }
 
 // Workload: the same 4-row/2-attr fixture, inspected for the on-disk
-//           bitmap contract: every bitmap start is 32B-aligned, exact frozen sizes
-//           are persisted alongside padded offsets, and per-bin/tombstone
+//           bitmap contract: every bitmap start is 32B-aligned, exact frozen
+//           sizes are persisted alongside padded offsets, and per-bin/tombstone
 //           cardinalities round-trip against the decoded bitmaps.
 // Threat: padding without persisted exact sizes breaks frozenView (it demands
 //         the exact frozen length); missing/misaligned cardinalities would

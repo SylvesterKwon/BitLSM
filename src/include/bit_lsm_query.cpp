@@ -137,8 +137,7 @@ bool CompiledQuery::Eval(rocksdb::Slice value) const {
       } else if (p.is_numeric) {
         // Fast path: 8-byte double (the common experiment schema) compares
         // straight from the slot with no variant construction.
-        if (p.spec.physical_type == PhysicalType::kFloat &&
-            p.spec.width == 8) {
+        if (p.spec.physical_type == PhysicalType::kFloat && p.spec.width == 8) {
           double v;
           std::memcpy(&v, base + p.slot, sizeof(double));
           ok = ApplyCompareOp(p.op, v, p.dval);
@@ -216,9 +215,9 @@ rocksdb::Status BitLSMQuery::Validate(const BitLSMOptions& options) const {
             " comparand type does not match its physical type");
       if (spec.index_type == IndexType::kEquality &&
           cond.op != CompareOp::EQUAL)
-        return rocksdb::Status::InvalidArgument(
-            "kEquality attr " + std::to_string(cond.attr_idx) +
-            " supports only EQUAL");
+        return rocksdb::Status::InvalidArgument("kEquality attr " +
+                                                std::to_string(cond.attr_idx) +
+                                                " supports only EQUAL");
     }
   }
   return rocksdb::Status::OK();

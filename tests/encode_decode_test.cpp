@@ -24,7 +24,8 @@ BitLSMOptions MakeOptions(std::vector<AttrSpec> types) {
 // 연속형 + 범주형 혼합 값이 왕복(encode→decode)에서 보존되는지.
 TEST(EncodeDecode, RoundTripMixedAttrs) {
   BitLSMOptions options =
-      MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8), AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)});
+      MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+                   AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)});
   std::string out;
   EncodeValue(options, {3.14, std::string("apple")}, "payload", out);
 
@@ -38,7 +39,8 @@ TEST(EncodeDecode, RoundTripMixedAttrs) {
 // 가변 길이 범주형 두 개(마지막이 아닌 범주형의 길이 계산)와 빈 payload.
 TEST(EncodeDecode, RoundTripMultipleUnorderedEmptyPayload) {
   BitLSMOptions options =
-      MakeOptions({AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary), AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),
+      MakeOptions({AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),
+                   AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),
                    AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)});
   std::string out;
   EncodeValue(options, {std::string("ab"), std::string("cdef"), 2.5}, "", out);
@@ -57,7 +59,8 @@ TEST(EncodeDecode, RoundTripMultipleUnorderedEmptyPayload) {
 //         there corrupts every attribute and the payload.
 TEST(EncodeDecode, RoundTripAllOrderedZeroHeader) {
   BitLSMOptions options =
-      MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8), AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)});
+      MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+                   AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)});
   std::string out;
   EncodeValue(options, {1.5, -2.5}, "tail", out);
 
@@ -76,7 +79,8 @@ TEST(EncodeDecode, RoundTripAllOrderedZeroHeader) {
 // Threat: v3's width-based layout drifts from v2's hardcoded 8B for doubles.
 TEST(EncodeDecode, DoubleSchemaByteIdenticalToV2) {
   BitLSMOptions options =
-      MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8), AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)});
+      MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
+                   AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)});
   std::string out;
   EncodeValue(options, {3.14, std::string("apple")}, "pay", out);
   // v2 layout for {double, string}: [var_end u32][double 8B][cat
@@ -99,10 +103,9 @@ TEST(EncodeDecode, RoundTripNativeIntegers) {
   options.attr_num = 3;
   options.read_seqno = 0;
   options.rho = 0.5;
-  options.attr_specs = {
-      AttrSpec(IndexType::kRange, PhysicalType::kInt, 4),
-      AttrSpec(IndexType::kRange, PhysicalType::kInt, 8),
-      AttrSpec(IndexType::kRange, PhysicalType::kUint, 4)};
+  options.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kInt, 4),
+                        AttrSpec(IndexType::kRange, PhysicalType::kInt, 8),
+                        AttrSpec(IndexType::kRange, PhysicalType::kUint, 4)};
 
   ValueLayout layout(options);
   // 4B + 8B + 4B fixed region, no unordered, no payload.
@@ -133,7 +136,8 @@ TEST(EncodeDecode, RoundTripNullAttrs) {
   options.rho = 0.5;
   options.attr_specs = {
       AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/true),
-      AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary, 0, /*nullable=*/true)};
+      AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary, 0,
+               /*nullable=*/true)};
 
   ValueLayout layout(options);
   EXPECT_EQ(layout.null_bitmap_bytes, 1u);  // 2 nullable attrs -> 1 byte
@@ -172,8 +176,7 @@ TEST(EncodeDecode, RoundTripFloat) {
   options.attr_num = 1;
   options.read_seqno = 0;
   options.rho = 0.5;
-  options.attr_specs = {
-      AttrSpec(IndexType::kRange, PhysicalType::kFloat, 4)};
+  options.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kFloat, 4)};
 
   ValueLayout layout(options);
   EXPECT_EQ(layout.variable_base, 4u);
@@ -195,8 +198,8 @@ TEST(EncodeDecode, LayoutKeysOnPhysicalType) {
                    AttrSpec(IndexType::kEquality, PhysicalType::kInt, 8),
                    AttrSpec(IndexType::kRange, PhysicalType::kVarBinary)});
   std::string out;
-  EncodeValue(o, {std::string("abcd"), int64_t(-2), std::string("xyz")},
-              "PAY", out);
+  EncodeValue(o, {std::string("abcd"), int64_t(-2), std::string("xyz")}, "PAY",
+              out);
   // [var_end u32 = 3][abcd][int64 -2 LE][xyz][PAY]
   ASSERT_EQ(out.size(), 4u + 4u + 8u + 3u + 3u);
   uint32_t var_end;
