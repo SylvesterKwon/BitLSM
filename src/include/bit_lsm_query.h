@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -155,6 +156,68 @@ struct OkeyInterval {
         return okey == 0 ? OkeyInterval{1, 0} : OkeyInterval{0, okey - 1};
     }
     return {1, 0};
+  }
+};
+
+// Interval on the SABI byte domain (memcmp order). Closed below: "" is the
+// domain minimum, so lo == "" means unbounded below, and x > s canonicalizes
+// to lo = s + '\0' (the byte successor). The domain has no maximum and no
+// predecessor, so hi carries explicit unbounded and open flags. Empty is
+// absorbing under Intersect.
+struct ByteInterval {
+  std::string lo;
+  std::string hi;
+  bool hi_open = false;
+  bool hi_unbounded = true;
+
+  bool Empty() const {
+    if (hi_unbounded) return false;
+    const int c = lo.compare(hi);
+    return c > 0 || (c == 0 && hi_open);
+  }
+  void Intersect(const ByteInterval& o) {
+    if (o.lo > lo) lo = o.lo;
+    if (o.hi_unbounded) return;
+    if (hi_unbounded) {
+      hi = o.hi;
+      hi_open = o.hi_open;
+      hi_unbounded = false;
+      return;
+    }
+    const int c = o.hi.compare(hi);
+    if (c < 0) {
+      hi = o.hi;
+      hi_open = o.hi_open;
+    } else if (c == 0) {
+      hi_open = hi_open || o.hi_open;
+    }
+  }
+  static ByteInterval FromOp(CompareOp op, std::string_view bytes) {
+    ByteInterval w;
+    switch (op) {
+      case CompareOp::EQUAL:
+        w.lo.assign(bytes);
+        w.hi.assign(bytes);
+        w.hi_unbounded = false;
+        break;
+      case CompareOp::GREATER_EQUAL:
+        w.lo.assign(bytes);
+        break;
+      case CompareOp::GREATER:
+        w.lo.assign(bytes);
+        w.lo.push_back('\0');
+        break;
+      case CompareOp::LESS_EQUAL:
+        w.hi.assign(bytes);
+        w.hi_unbounded = false;
+        break;
+      case CompareOp::LESS:
+        w.hi.assign(bytes);
+        w.hi_open = true;
+        w.hi_unbounded = false;
+        break;
+    }
+    return w;
   }
 };
 
