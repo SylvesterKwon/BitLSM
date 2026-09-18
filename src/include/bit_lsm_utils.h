@@ -254,9 +254,8 @@ inline std::string_view DecodePayload(const ValueLayout& layout,
   return buffer.substr(layout.variable_base + start);
 }
 
-inline void TEST_DumpValue(BitLSMOptions options, rocksdb::Slice input) {
-  ValueLayout layout(options);
-  for (uint32_t i = 0; i < options.attr_num; ++i) {
+inline void TEST_DumpValue(const ValueLayout& layout, rocksdb::Slice input) {
+  for (uint32_t i = 0; i < layout.specs.size(); ++i) {
     if (i) std::cout << " / ";
     AttrView av = DecodeAttr(layout, input.ToStringView(), i);
     if (std::holds_alternative<std::monostate>(av)) {
