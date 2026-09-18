@@ -36,10 +36,9 @@ static bool EvalCondition(const QueryCondition& cond, AttrView attr_val) {
 // CNF evaluation: all clause_groups (AND) must pass,
 // within each group at least one condition (OR) must match.
 bool BitLSMQuery::CheckCondition(rocksdb::Slice value_slice,
-                                 const BitLSMOptions& options) const {
+                                 const ValueLayout& layout) const {
   if (clause_groups.empty()) return true;
 
-  const ValueLayout layout(options);
   std::string_view buffer(value_slice.data(), value_slice.size());
 
   for (const auto& clause : clause_groups) {

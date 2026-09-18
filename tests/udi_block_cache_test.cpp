@@ -61,6 +61,7 @@ struct BuiltIndex {
 // `distinct` long (non-SSO) values, then parses it back.
 BuiltIndex BuildIndex(int rows, int distinct) {
   BitLSMOptions o = TwoAttrOptions();
+  const ValueLayout layout(o);
   BuiltIndex bi;
   bi.builder = std::make_unique<SABIBuilder>(
       SABISchema::FromOptions(o), std::make_unique<ValueLayoutExtractor>(o));
@@ -73,7 +74,7 @@ BuiltIndex BuildIndex(int rows, int distinct) {
     std::snprintf(key, sizeof(key), "k%08d", i);
     keys.emplace_back(key);
     std::string out;
-    EncodeValue(o,
+    EncodeValue(layout,
                 {std::string("value-well-past-the-sso-budget-") +
                      std::to_string(i % distinct),
                  static_cast<double>(i)},
@@ -231,6 +232,7 @@ TEST_F(UDIBlockCacheTest, LiveIteratorKeepsSABIPinnedAgainstEviction) {
 //         an unreadable file into a silently incomplete query result.
 TEST_F(UDIBlockCacheTest, SABILessSSTFailsTheQueryInsteadOfSkippingRows) {
   const BitLSMOptions o = TwoAttrOptions();
+  const ValueLayout layout(o);
 
   // 1. Write the SST from a plain RocksDB: the default table factory emits no
   // user-defined index block. Values are still BitLSM-encoded, so the query
@@ -247,7 +249,7 @@ TEST_F(UDIBlockCacheTest, SABILessSSTFailsTheQueryInsteadOfSkippingRows) {
       char key[16];
       std::snprintf(key, sizeof(key), "k%08d", i);
       std::string value;
-      EncodeValue(o,
+      EncodeValue(layout,
                   {std::string("c") + std::to_string(i % 10),
                    static_cast<double>(i % 1000)},
                   "payload", value);

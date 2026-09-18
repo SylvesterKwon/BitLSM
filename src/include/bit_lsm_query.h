@@ -14,6 +14,8 @@
 
 namespace bit_lsm {
 
+struct ValueLayout;
+
 // Compare Operator
 enum class CompareOp {
   EQUAL,
@@ -72,7 +74,7 @@ struct BitLSMQuery {
 
   // Reference row evaluation (tests/oracle); the engine evaluates through
   // CompiledQuery
-  bool CheckCondition(rocksdb::Slice slice, const BitLSMOptions& options) const;
+  bool CheckCondition(rocksdb::Slice slice, const ValueLayout& layout) const;
 
   // Structural validation against a schema: rejects empty clauses,
   // out-of-range attr_idx, comparand/physical-type mismatches, and non-EQUAL

@@ -223,13 +223,6 @@ inline void EncodeValue(const ValueLayout& layout,
     std::memcpy(variable_ptr, payload.data(), payload.size());
 }
 
-// Convenience overload for callers without a cached layout (tests, tools)
-inline void EncodeValue(const BitLSMOptions& options,
-                        const std::vector<Attr>& attrs,
-                        std::string_view payload, std::string& out_value) {
-  EncodeValue(ValueLayout(options), attrs, payload, out_value);
-}
-
 // Decode
 inline AttrView DecodeAttr(const ValueLayout& layout, std::string_view buffer,
                            uint32_t attr_idx) {
@@ -249,12 +242,6 @@ inline AttrView DecodeAttr(const ValueLayout& layout, std::string_view buffer,
   return std::string_view(base + layout.variable_base + start, end - start);
 }
 
-// Convenience overload for callers without a cached layout (tests, tools)
-inline AttrView DecodeAttr(const BitLSMOptions& options,
-                           std::string_view buffer, uint32_t attr_idx) {
-  return DecodeAttr(ValueLayout(options), buffer, attr_idx);
-}
-
 // Payload spans from the last variable end to the end of the value
 inline std::string_view DecodePayload(const ValueLayout& layout,
                                       std::string_view buffer) {
@@ -267,9 +254,8 @@ inline std::string_view DecodePayload(const ValueLayout& layout,
   return buffer.substr(layout.variable_base + start);
 }
 
-inline void TEST_DumpValue(BitLSMOptions options, rocksdb::Slice input) {
-  ValueLayout layout(options);
-  for (uint32_t i = 0; i < options.attr_num; ++i) {
+inline void TEST_DumpValue(const ValueLayout& layout, rocksdb::Slice input) {
+  for (uint32_t i = 0; i < layout.specs.size(); ++i) {
     if (i) std::cout << " / ";
     AttrView av = DecodeAttr(layout, input.ToStringView(), i);
     if (std::holds_alternative<std::monostate>(av)) {

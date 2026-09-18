@@ -43,6 +43,7 @@ struct BuiltIndex {
 };
 BuiltIndex BuildIndex(const BitLSMOptions& o,
                       const std::vector<std::string>& values) {
+  const ValueLayout layout(o);
   BuiltIndex built;
   built.builder = std::make_unique<SABIBuilder>(
       SABISchema::FromOptions(o), std::make_unique<ValueLayoutExtractor>(o));
@@ -50,7 +51,7 @@ BuiltIndex BuildIndex(const BitLSMOptions& o,
   encoded.reserve(values.size());
   for (size_t i = 0; i < values.size(); ++i) {
     std::string row;
-    EncodeValue(o, {values[i]}, "", row);
+    EncodeValue(layout, {values[i]}, "", row);
     encoded.push_back(std::move(row));
     built.builder->OnKeyAdded(rocksdb::Slice("k" + std::to_string(i)),
                               UDIB::ValueType::kValue,
