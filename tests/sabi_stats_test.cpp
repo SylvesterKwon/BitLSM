@@ -56,6 +56,7 @@ struct BuiltIndex {
 BuiltIndex BuildIndex(const BitLSMOptions& options,
                       const std::vector<std::vector<Attr>>& rows,
                       uint32_t tombstone_cnt = 0) {
+  const ValueLayout layout(options);
   BuiltIndex built;
   built.builder = std::make_unique<SABIBuilder>(
       SABISchema::FromOptions(options),
@@ -67,7 +68,7 @@ BuiltIndex BuildIndex(const BitLSMOptions& options,
   for (size_t i = 0; i < rows.size(); ++i) {
     keys.push_back("k" + std::to_string(i));
     std::string out;
-    EncodeValue(options, rows[i], "p", out);
+    EncodeValue(layout, rows[i], "p", out);
     encoded.push_back(std::move(out));
     built.builder->OnKeyAdded(rocksdb::Slice(keys[i]), UDIB::ValueType::kValue,
                               rocksdb::Slice(encoded[i]));

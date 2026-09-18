@@ -25,8 +25,9 @@ TEST(ValueLayoutExtractor, MatchesDecodeAttr) {
 
   std::vector<Attr> attrs = {Attr(3.25), Attr(std::string("seoul")),
                              Attr(int64_t(-42))};
+  const ValueLayout layout(o);
   std::string row;
-  EncodeValue(o, attrs, "payload", row);
+  EncodeValue(layout, attrs, "payload", row);
 
   ValueLayoutExtractor ex(o);
   std::vector<EncodedAttr> out(o.attr_num);
@@ -47,8 +48,9 @@ TEST(ValueLayoutExtractor, NullBecomesMonostate) {
       AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/true),
       AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   std::vector<Attr> attrs = {Attr(std::monostate{}), Attr(std::string("x"))};
+  const ValueLayout layout(o);
   std::string row;
-  EncodeValue(o, attrs, "", row);
+  EncodeValue(layout, attrs, "", row);
 
   ValueLayoutExtractor ex(o);
   std::vector<EncodedAttr> out(o.attr_num);

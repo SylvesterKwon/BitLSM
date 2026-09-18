@@ -22,9 +22,10 @@ TEST_F(BitLSMTestBase, PutThenRawGetRoundTrip) {
   BITLSM_ASSERT_OK(
       db.GetInternalDB()->Get(rocksdb::ReadOptions(), "pk1", &raw));
 
+  const ValueLayout layout(opt);
   std::string_view buf(raw);
-  EXPECT_DOUBLE_EQ(std::get<double>(DecodeAttr(opt, buf, 0)), 15.0);
-  EXPECT_EQ(std::get<std::string_view>(DecodeAttr(opt, buf, 1)), "apple");
+  EXPECT_DOUBLE_EQ(std::get<double>(DecodeAttr(layout, buf, 0)), 15.0);
+  EXPECT_EQ(std::get<std::string_view>(DecodeAttr(layout, buf, 1)), "apple");
 }
 
 // 빈 쿼리로 스캔하면 넣은 모든 행이 나오는지. (iterator 배관 검증)

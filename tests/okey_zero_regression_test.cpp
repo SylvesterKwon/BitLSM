@@ -23,11 +23,12 @@ TEST(OkeyZeroRegression, NegZeroRowSurvivesEqPosZeroPruning) {
   o.attr_specs = {
       AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8, /*nullable=*/false)};
   o.rho = 0.5;
+  const ValueLayout layout(o);
 
   SABIBuilder builder(SABISchema::FromOptions(o),
                       std::make_unique<ValueLayoutExtractor>(o));
   std::string row;
-  EncodeValue(o, {Attr(-0.0)}, "", row);
+  EncodeValue(layout, {Attr(-0.0)}, "", row);
   builder.OnKeyAdded(rocksdb::Slice("k0"), UDIB::ValueType::kValue,
                      rocksdb::Slice(row));
   std::string scratch;
@@ -46,7 +47,7 @@ TEST(OkeyZeroRegression, NegZeroRowSurvivesEqPosZeroPruning) {
   // Symmetric case: store +0.0, query EQ -0.0
   SABIBuilder builder2(SABISchema::FromOptions(o),
                        std::make_unique<ValueLayoutExtractor>(o));
-  EncodeValue(o, {Attr(0.0)}, "", row);
+  EncodeValue(layout, {Attr(0.0)}, "", row);
   builder2.OnKeyAdded(rocksdb::Slice("k0"), UDIB::ValueType::kValue,
                       rocksdb::Slice(row));
   builder2.AddIndexEntry(rocksdb::Slice("k0"), nullptr, bh, &scratch);
@@ -69,6 +70,7 @@ TEST(OkeyZeroRegression, EqOnExactMinMaxIsNotPruned) {
   o.attr_specs = {AttrSpec(IndexType::kRange, PhysicalType::kInt, 8,
                            /*nullable=*/false)};  // i64
   o.rho = 0.5;
+  const ValueLayout layout(o);
 
   SABIBuilder builder(SABISchema::FromOptions(o),
                       std::make_unique<ValueLayoutExtractor>(o));
@@ -77,7 +79,7 @@ TEST(OkeyZeroRegression, EqOnExactMinMaxIsNotPruned) {
   // okey(1400)=2^63+1400 rounds down to +1024 (past the true max).
   const int64_t kVals[] = {600, 1000, 1400};
   for (int64_t x : kVals) {
-    EncodeValue(o, {Attr(x)}, "", row);
+    EncodeValue(layout, {Attr(x)}, "", row);
     builder.OnKeyAdded(rocksdb::Slice("k"), UDIB::ValueType::kValue,
                        rocksdb::Slice(row));
   }

@@ -25,11 +25,12 @@ BitLSMOptions TwoAttrOpts() {
 
 // Minimal blob: a few rows -> one AddIndexEntry -> Finish
 std::string BuildBlob(const BitLSMOptions& o) {
+  const ValueLayout layout(o);
   SABIBuilder builder(SABISchema::FromOptions(o),
                       std::make_unique<ValueLayoutExtractor>(o));
   std::string row;
   for (int i = 0; i < 8; ++i) {
-    EncodeValue(o,
+    EncodeValue(layout,
                 {Attr(double(i)), Attr(std::string("v") + std::to_string(i))},
                 "", row);
     builder.OnKeyAdded(rocksdb::Slice("k" + std::to_string(i)),

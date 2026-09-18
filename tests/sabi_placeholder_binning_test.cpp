@@ -40,6 +40,7 @@ struct BuiltIndex {
 BuiltIndex BuildMixed(uint32_t data_rows, uint32_t null_rows,
                       uint32_t tombstone_rows) {
   BitLSMOptions options = MixedOptions();
+  const ValueLayout layout(options);
   BuiltIndex built;
   built.builder = std::make_unique<SABIBuilder>(
       SABISchema::FromOptions(options),
@@ -52,7 +53,7 @@ BuiltIndex BuildMixed(uint32_t data_rows, uint32_t null_rows,
   for (uint32_t i = 0; i < data_rows; ++i) {
     keys.push_back("k" + std::to_string(i));
     std::string out;
-    EncodeValue(options, {int64_t(i), std::string("c") + std::to_string(i % 4)},
+    EncodeValue(layout, {int64_t(i), std::string("c") + std::to_string(i % 4)},
                 "p", out);
     encoded.push_back(std::move(out));
     built.builder->OnKeyAdded(rocksdb::Slice(keys.back()),
@@ -62,7 +63,7 @@ BuiltIndex BuildMixed(uint32_t data_rows, uint32_t null_rows,
   for (uint32_t i = 0; i < null_rows; ++i) {
     keys.push_back("n" + std::to_string(i));
     std::string out;
-    EncodeValue(options, {std::monostate{}, std::string("c0")}, "p", out);
+    EncodeValue(layout, {std::monostate{}, std::string("c0")}, "p", out);
     encoded.push_back(std::move(out));
     built.builder->OnKeyAdded(rocksdb::Slice(keys.back()),
                               UDIB::ValueType::kValue,

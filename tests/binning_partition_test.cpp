@@ -36,6 +36,7 @@ struct BuiltIndex {
 
 BuiltIndex BuildF64Index(const std::vector<double>& values) {
   BitLSMOptions options = F64Options();
+  const ValueLayout layout(options);
   BuiltIndex built;
   built.builder = std::make_unique<SABIBuilder>(
       SABISchema::FromOptions(options),
@@ -47,7 +48,7 @@ BuiltIndex BuildF64Index(const std::vector<double>& values) {
   for (size_t i = 0; i < values.size(); ++i) {
     keys.push_back("k" + std::to_string(i));
     std::string out;
-    EncodeValue(options, {values[i]}, "p", out);
+    EncodeValue(layout, {values[i]}, "p", out);
     encoded.push_back(std::move(out));
     built.builder->OnKeyAdded(rocksdb::Slice(keys[i]), UDIB::ValueType::kValue,
                               rocksdb::Slice(encoded[i]));

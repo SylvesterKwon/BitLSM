@@ -38,6 +38,7 @@ BitLSMOptions MakeOptions() {
 // the blob's persisted bytes.
 std::string BuildTestBlob(std::vector<uint32_t>* out_bitmap_sizes = nullptr) {
   BitLSMOptions options = MakeOptions();
+  const ValueLayout layout(options);
   SABIBuilder builder(SABISchema::FromOptions(options),
                       std::make_unique<ValueLayoutExtractor>(options));
 
@@ -50,7 +51,7 @@ std::string BuildTestBlob(std::vector<uint32_t>* out_bitmap_sizes = nullptr) {
   encoded.reserve(rows.size());
   for (size_t i = 0; i < rows.size(); ++i) {
     std::string out;
-    EncodeValue(options, {rows[i].first, rows[i].second}, "p", out);
+    EncodeValue(layout, {rows[i].first, rows[i].second}, "p", out);
     encoded.push_back(std::move(out));
     builder.OnKeyAdded(rocksdb::Slice(keys[i]), UDIB::ValueType::kValue,
                        rocksdb::Slice(encoded[i]));
@@ -115,11 +116,12 @@ TEST(SabiBlobRoundTrip, BuildsAndParses) {
 //         garbage offsets / UB instead of a clean Corruption error.
 TEST(SabiBlobRoundTrip, RejectsUnversionedAndUnknownVersions) {
   BitLSMOptions options = MakeOptions();
+  const ValueLayout layout(options);
   SABIBuilder builder(SABISchema::FromOptions(options),
                       std::make_unique<ValueLayoutExtractor>(options));
 
   std::string encoded;
-  EncodeValue(options, {1.0, std::string("apple")}, "p", encoded);
+  EncodeValue(layout, {1.0, std::string("apple")}, "p", encoded);
   builder.OnKeyAdded(rocksdb::Slice("k0"), UDIB::ValueType::kValue,
                      rocksdb::Slice(encoded));
   std::string scratch;

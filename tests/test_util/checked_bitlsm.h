@@ -19,7 +19,10 @@ namespace bit_lsm {
 class CheckedBitLSM {
  public:
   CheckedBitLSM(BitLSM* engine, BitLSMOptions options)
-      : engine_(engine), options_(std::move(options)), ref_(options_) {}
+      : engine_(engine),
+        options_(std::move(options)),
+        layout_(options_),
+        ref_(options_) {}
   ~CheckedBitLSM() { ReleaseHeldSnapshot(); }
 
   // Mutations: applied to both sides + appended to the trace.
@@ -61,6 +64,7 @@ class CheckedBitLSM {
   BitLSM* engine_;
   const rocksdb::Snapshot* held_snapshot_ = nullptr;
   BitLSMOptions options_;
+  ValueLayout layout_;
   ReferenceDB ref_;
   std::vector<std::string> trace_;
   std::uint64_t seed_ = 0;

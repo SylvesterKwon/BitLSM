@@ -157,7 +157,7 @@ std::map<std::string, Record> CheckedBitLSM::ScanEngine(BitLSMQuery& query) {
     Record r;
     r.attrs.reserve(options_.attr_num);
     for (std::uint32_t i = 0; i < options_.attr_num; ++i) {
-      AttrView av = DecodeAttr(options_, val, i);
+      AttrView av = DecodeAttr(layout_, val, i);
       if (std::holds_alternative<std::monostate>(av))
         r.attrs.emplace_back(std::monostate{});
       else if (std::holds_alternative<int64_t>(av))

@@ -26,10 +26,10 @@ TEST(EncodeDecode, RoundTripMixedAttrs) {
   BitLSMOptions options =
       MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
                    AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)});
+  const ValueLayout layout(options);
   std::string out;
-  EncodeValue(options, {3.14, std::string("apple")}, "payload", out);
+  EncodeValue(layout, {3.14, std::string("apple")}, "payload", out);
 
-  ValueLayout layout(options);
   std::string_view buf(out);
   EXPECT_DOUBLE_EQ(std::get<double>(DecodeAttr(layout, buf, 0)), 3.14);
   EXPECT_EQ(std::get<std::string_view>(DecodeAttr(layout, buf, 1)), "apple");
@@ -42,10 +42,10 @@ TEST(EncodeDecode, RoundTripMultipleUnorderedEmptyPayload) {
       MakeOptions({AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),
                    AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary),
                    AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)});
+  const ValueLayout layout(options);
   std::string out;
-  EncodeValue(options, {std::string("ab"), std::string("cdef"), 2.5}, "", out);
+  EncodeValue(layout, {std::string("ab"), std::string("cdef"), 2.5}, "", out);
 
-  ValueLayout layout(options);
   std::string_view buf(out);
   EXPECT_EQ(std::get<std::string_view>(DecodeAttr(layout, buf, 0)), "ab");
   EXPECT_EQ(std::get<std::string_view>(DecodeAttr(layout, buf, 1)), "cdef");
@@ -61,10 +61,10 @@ TEST(EncodeDecode, RoundTripAllOrderedZeroHeader) {
   BitLSMOptions options =
       MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
                    AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8)});
+  const ValueLayout layout(options);
   std::string out;
-  EncodeValue(options, {1.5, -2.5}, "tail", out);
+  EncodeValue(layout, {1.5, -2.5}, "tail", out);
 
-  ValueLayout layout(options);
   EXPECT_EQ(layout.variable_base, 2 * sizeof(double));
   EXPECT_EQ(out.size(), 2 * sizeof(double) + 4);
 
@@ -81,8 +81,9 @@ TEST(EncodeDecode, DoubleSchemaByteIdenticalToV2) {
   BitLSMOptions options =
       MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
                    AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)});
+  const ValueLayout layout(options);
   std::string out;
-  EncodeValue(options, {3.14, std::string("apple")}, "pay", out);
+  EncodeValue(layout, {3.14, std::string("apple")}, "pay", out);
   // v2 layout for {double, string}: [var_end u32][double 8B][cat
   // bytes][payload]
   ASSERT_EQ(out.size(), sizeof(uint32_t) + sizeof(double) + 5 + 3);
@@ -197,9 +198,10 @@ TEST(EncodeDecode, LayoutKeysOnPhysicalType) {
       MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kBinary, 4),
                    AttrSpec(IndexType::kEquality, PhysicalType::kInt, 8),
                    AttrSpec(IndexType::kRange, PhysicalType::kVarBinary)});
+  const ValueLayout layout(o);
   std::string out;
-  EncodeValue(o, {std::string("abcd"), int64_t(-2), std::string("xyz")}, "PAY",
-              out);
+  EncodeValue(layout, {std::string("abcd"), int64_t(-2), std::string("xyz")},
+              "PAY", out);
   // [var_end u32 = 3][abcd][int64 -2 LE][xyz][PAY]
   ASSERT_EQ(out.size(), 4u + 4u + 8u + 3u + 3u);
   uint32_t var_end;
@@ -207,8 +209,8 @@ TEST(EncodeDecode, LayoutKeysOnPhysicalType) {
   EXPECT_EQ(var_end, 3u);
   EXPECT_EQ(out.substr(4, 4), "abcd");
   EXPECT_EQ(out.substr(16, 3), "xyz");
-  EXPECT_EQ(std::get<std::string_view>(DecodeAttr(o, out, 0)), "abcd");
-  EXPECT_EQ(std::get<int64_t>(DecodeAttr(o, out, 1)), -2);
-  EXPECT_EQ(std::get<std::string_view>(DecodeAttr(o, out, 2)), "xyz");
-  EXPECT_EQ(DecodePayload(ValueLayout(o), out), "PAY");
+  EXPECT_EQ(std::get<std::string_view>(DecodeAttr(layout, out, 0)), "abcd");
+  EXPECT_EQ(std::get<int64_t>(DecodeAttr(layout, out, 1)), -2);
+  EXPECT_EQ(std::get<std::string_view>(DecodeAttr(layout, out, 2)), "xyz");
+  EXPECT_EQ(DecodePayload(layout, out), "PAY");
 }
