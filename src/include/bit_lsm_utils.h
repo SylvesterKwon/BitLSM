@@ -223,13 +223,6 @@ inline void EncodeValue(const ValueLayout& layout,
     std::memcpy(variable_ptr, payload.data(), payload.size());
 }
 
-// Convenience overload for callers without a cached layout (tests, tools)
-inline void EncodeValue(const BitLSMOptions& options,
-                        const std::vector<Attr>& attrs,
-                        std::string_view payload, std::string& out_value) {
-  EncodeValue(ValueLayout(options), attrs, payload, out_value);
-}
-
 // Decode
 inline AttrView DecodeAttr(const ValueLayout& layout, std::string_view buffer,
                            uint32_t attr_idx) {
@@ -247,12 +240,6 @@ inline AttrView DecodeAttr(const ValueLayout& layout, std::string_view buffer,
   if (rank > 0)
     std::memcpy(&start, ve + (rank - 1) * sizeof(uint32_t), sizeof(uint32_t));
   return std::string_view(base + layout.variable_base + start, end - start);
-}
-
-// Convenience overload for callers without a cached layout (tests, tools)
-inline AttrView DecodeAttr(const BitLSMOptions& options,
-                           std::string_view buffer, uint32_t attr_idx) {
-  return DecodeAttr(ValueLayout(options), buffer, attr_idx);
 }
 
 // Payload spans from the last variable end to the end of the value
