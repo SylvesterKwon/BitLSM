@@ -16,9 +16,6 @@ BitLSMOptions Opt2() {
 }
 }  // namespace
 
-// Workload: evaluate Match on ordered conditions with all five operators.
-// Threat: a wrong oracle silently invalidates EVERY differential test built on
-// it.
 TEST(ReferenceDBTest, MatchOrderedOps) {
   ReferenceDB ref(Opt2());
   std::vector<Attr> attrs{10.0, std::string("x")};
@@ -39,9 +36,6 @@ TEST(ReferenceDBTest, MatchOrderedOps) {
       attrs));
 }
 
-// Workload: CNF with an OR-clause and an AND-clause; a contradiction; empty
-// query. Threat: AND/OR nesting wrong → oracle disagrees with engine for the
-// wrong reason.
 TEST(ReferenceDBTest, MatchCnfAndOr) {
   ReferenceDB ref(Opt2());
   std::vector<Attr> attrs{10.0, std::string("x")};
@@ -59,8 +53,6 @@ TEST(ReferenceDBTest, MatchCnfAndOr) {
   EXPECT_TRUE(ref.Match(BitLSMQuery(), attrs));  // empty matches all
 }
 
-// Workload: Put/overwrite/Delete, then ExpectedResult over the empty query.
-// Threat: overwrite must be latest-wins and Delete must remove the key.
 TEST(ReferenceDBTest, PutOverwriteDeleteExpectedResult) {
   ReferenceDB ref(Opt2());
   ref.Put("k1", {10.0, std::string("a")}, "p1");

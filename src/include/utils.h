@@ -108,7 +108,7 @@ inline void fill_kvp(bit_lsm::BitLSM* db, uint64_t n, uint32_t attr_num,
   if (debug)
     cout << "creating " << n << " kvps into BitLSM using Batch API...\n";
 
-  const uint64_t batch_size = 1e6;  // 100만 건씩 묶어서 처리
+  const uint64_t batch_size = 1e6;  // rows per write batch
   uint64_t total_batch = (n + batch_size - 1) / batch_size;
   uint64_t auto_increment = 0;
 

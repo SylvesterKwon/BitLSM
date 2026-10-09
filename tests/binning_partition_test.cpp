@@ -17,8 +17,7 @@ using UDIB = rocksdb::UserDefinedIndexBuilder;
 
 namespace {
 
-// Single kRange double attr, the shape passenger_count has in the taxi
-// workload: a scalar column whose values are in fact a handful of integers.
+// Single kRange double attr whose values are a handful of integers.
 BitLSMOptions F64Options() {
   BitLSMOptions o;
   o.attr_num = 1;
@@ -81,14 +80,10 @@ size_t CountCandidates(BitLSM& db, const BitLSMQuery& query) {
 
 }  // namespace
 
-// Workload: an kRange attribute holding two values, with three quarters of
-//           the rows on the upper one, flushed to an SST so the query goes
-//           through the bitmap; then a strict `< 1.0`.
-// Threat: thresholds sit between values, so a bin whose lower threshold is the
-//         comparand holds only values at or above it and can satisfy no strict
-//         less-than. Reading it anyway costs every row it holds -- here the
-//         three quarters sitting on 1.0. Results stay correct either way, so
-//         only the candidate count shows it.
+// Three quarters of the rows sit on 1.0. A bin whose lower threshold is
+// the comparand cannot satisfy a strict less-than, so reading it costs
+// every one of those rows. Results are correct either way; only the
+// candidate count shows it.
 TEST_F(BitLSMTestBase, StrictLessThanExcludesTheBinItsBoundStartsAt) {
   BitLSMOptions options = DefaultOptions();
   options.rho = 0.1;  // ample bin budget; the attribute's 2 values cap it at 2
@@ -116,32 +111,22 @@ TEST_F(BitLSMTestBase, StrictLessThanExcludesTheBinItsBoundStartsAt) {
   // handled by the same branch, so this is the guard on the other side.
   EXPECT_EQ(CountCandidates(db, less_equal), static_cast<size_t>(kLow + kHigh));
 
-  // The upper half of the same story, recorded because it does not come out
-  // symmetric. Bins are half-open [lo, hi), so a bin's lower edge is a stored
-  // threshold and its upper edge is only the next bin's lower edge. `>= 1.0`
-  // therefore starts exactly at the 1.0 bin and is tight, while `> 0.0` has to
-  // keep the bin that 0.0 sits in -- proving that bin holds nothing above 0.0
-  // would need its contents, not its thresholds. Tightening that is what a
-  // per-bin min/max would buy.
+  // Not symmetric: bins are half-open [lo, hi), so `>= 1.0` starts exactly at
+  // the 1.0 bin, while `> 0.0` must keep the bin 0.0 sits in.
   const BitLSMQuery greater_equal(
       std::vector<QueryCondition>{{0, CompareOp::GREATER_EQUAL, 1.0}});
   const BitLSMQuery greater(
       std::vector<QueryCondition>{{0, CompareOp::GREATER, 0.0}});
   EXPECT_EQ(CountCandidates(db, greater_equal), static_cast<size_t>(kHigh));
   EXPECT_EQ(CountCandidates(db, greater), static_cast<size_t>(kLow + kHigh))
-      << "strict > got tighter than the thresholds can justify";
+      << "strict > pruned more than the thresholds allow";
 }
 
-// Workload: an kRange double attribute carrying integers 0..6 in the skewed
-//           mix a taxi passenger_count has.
-// Threat: the range logic assumes a threshold marks a value, not a position
-//         near one -- that assumption is what lets a strict `<` drop the bin
-//         its comparand starts. Cutting between values guarantees it; deriving
-//         thresholds from interpolated quantiles did not. Assert the property
-//         itself rather than one query that happens to expose its absence.
+// The range logic assumes every threshold is a stored value; that is what
+// lets a strict `<` drop the bin its comparand starts.
 TEST(BinningBoundarySnap, ThresholdsLandOnValuesThatOccur) {
   std::vector<double> values;
-  const int mix[] = {6, 70, 12, 5, 3, 2, 2};  // percent per passenger count
+  const int mix[] = {6, 70, 12, 5, 3, 2, 2};  // percent per value
   for (int v = 0; v < 7; ++v)
     for (int n = 0; n < mix[v] * 60; ++n)
       values.push_back(static_cast<double>(v));

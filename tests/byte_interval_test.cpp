@@ -6,9 +6,7 @@
 
 using namespace bit_lsm;
 
-// Workload: every CompareOp against the comparand "abc" through FromOp.
-// Threat: a strict bound canonicalized on the wrong side ('\0' successor on
-//         hi, or an open flag on lo) shifts the bin extent by one bin.
+// Every CompareOp against "abc".
 TEST(ByteInterval, FromOpShapes) {
   ByteInterval eq = ByteInterval::FromOp(CompareOp::EQUAL, "abc");
   EXPECT_EQ(eq.lo, "abc");
@@ -38,9 +36,8 @@ TEST(ByteInterval, FromOpShapes) {
   EXPECT_FALSE(lt.hi_unbounded);
 }
 
-// Workload: x < "" and x <= "" (the domain minimum), x > "" and x >= "".
-// Threat: "" is the least byte string; an interval below it must be empty
-//         and one at or above it must not be.
+// "" is the least byte string: an interval below it is empty, one at or
+// above it is not.
 TEST(ByteInterval, DomainMinimumEdges) {
   EXPECT_TRUE(ByteInterval::FromOp(CompareOp::LESS, "").Empty());
   EXPECT_FALSE(ByteInterval::FromOp(CompareOp::LESS_EQUAL, "").Empty());
@@ -48,11 +45,6 @@ TEST(ByteInterval, DomainMinimumEdges) {
   EXPECT_FALSE(ByteInterval::FromOp(CompareOp::GREATER_EQUAL, "").Empty());
 }
 
-// Workload: BETWEEN-shaped pairs intersected: [b, inf) with (-inf, d);
-//           [b, inf) with (-inf, b); [b, inf) with (-inf, b]; two upper bounds
-//           that differ only in openness.
-// Threat: Intersect that keeps the looser upper bound, or drops the open
-//         flag when the tighter bound is open, over-selects bins.
 TEST(ByteInterval, IntersectKeepsTighterBound) {
   ByteInterval w = ByteInterval::FromOp(CompareOp::GREATER_EQUAL, "b");
   w.Intersect(ByteInterval::FromOp(CompareOp::LESS, "d"));
@@ -79,10 +71,8 @@ TEST(ByteInterval, IntersectKeepsTighterBound) {
   EXPECT_TRUE(o2.hi_open);
 }
 
-// Workload: strict lower bounds meeting closed ones on the same comparand:
-//           x > "b" with x >= "b" (either order), x > "b" with x <= "b".
-// Threat: a tie on lo that drops the open flag turns x > b into x >= b; a
-//         point closed on one side and open on the other is empty.
+// x > "b" with x >= "b" must keep the open flag; x > "b" with x <= "b"
+// is empty.
 TEST(ByteInterval, StrictLowerBoundTies) {
   ByteInterval a = ByteInterval::FromOp(CompareOp::GREATER_EQUAL, "b");
   a.Intersect(ByteInterval::FromOp(CompareOp::GREATER, "b"));
@@ -99,10 +89,6 @@ TEST(ByteInterval, StrictLowerBoundTies) {
   EXPECT_FALSE(d.lo_open);
 }
 
-// Workload: contradictory bounds x > "z" AND x < "a"; and an empty interval
-//           intersected with an unbounded one.
-// Threat: Empty must be absorbing -- a later Intersect with a wide interval
-//         must not resurrect a contradiction.
 TEST(ByteInterval, EmptyIsAbsorbing) {
   ByteInterval w = ByteInterval::FromOp(CompareOp::GREATER, "z");
   w.Intersect(ByteInterval::FromOp(CompareOp::LESS, "a"));

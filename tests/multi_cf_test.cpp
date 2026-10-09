@@ -23,8 +23,8 @@ std::set<std::string> CollectKeys(BitLSMIterator* it) {
   return keys;
 }
 
-// 4-attr schema, deliberately shaped differently from DefaultOptions()'s
-// 2-attr schema so cross-CF decode confusion cannot pass by accident.
+// 4-attr schema, different from DefaultOptions()'s 2-attr schema so a
+// cross-CF decode mix-up shows.
 BitLSMOptions FourAttrOptions() {
   BitLSMOptions options;
   options.attr_num = 4;
@@ -50,12 +50,6 @@ SABICondition Uno(uint32_t attr, const std::string& v) {
 }
 }  // namespace
 
-// Workload: one DB, two CFs with different schemas (2-attr default, 4-attr
-// "orders"); rows written to each through its handle, flushed, then queried
-// per CF on attr 0.
-// Threat: ops falling through to the default CF (wrong handle plumbing), or a
-// CF decoded with the other CF's schema — either surfaces the other CF's keys
-// or none of its own.
 TEST_F(BitLSMTestBase, TwoColumnFamiliesIsolateRowsAndSchemas) {
   auto& db = OpenDB({{rocksdb::kDefaultColumnFamilyName, DefaultOptions()},
                      {"orders", FourAttrOptions()}});
@@ -86,18 +80,11 @@ TEST_F(BitLSMTestBase, TwoColumnFamiliesIsolateRowsAndSchemas) {
   EXPECT_EQ(CollectKeys(oit.get()), (std::set<std::string>{"ok1"}));
 }
 
-// Workload: multi-CF open whose descriptor list omits the default CF.
-// Threat: silently opening without a default CF would leave every CF-less
-// convenience op with no target; this must fail loudly at open.
 TEST_F(BitLSMTestBase, OpenWithoutDefaultDescriptorThrows) {
   EXPECT_THROW(OpenDB({{"orders", FourAttrOptions()}}), std::invalid_argument);
 }
 
-// Workload: multi-CF open whose descriptor list names the same CF twice.
-// Threat: RocksDB's Open does not reject duplicate names -- it returns two
-// handles to one CF; without validation the second registry insert silently
-// destroys a live handle while the stats listener still references its
-// estimator (use-after-free, unclean close).
+// RocksDB's Open does not reject duplicate names itself.
 TEST_F(BitLSMTestBase, OpenWithDuplicateDescriptorThrows) {
   EXPECT_THROW(OpenDB({{rocksdb::kDefaultColumnFamilyName, DefaultOptions()},
                        {"orders", FourAttrOptions()},
@@ -105,10 +92,6 @@ TEST_F(BitLSMTestBase, OpenWithDuplicateDescriptorThrows) {
                std::invalid_argument);
 }
 
-// Workload: a CF created at runtime, written, flushed, queried, then dropped.
-// Threat: CreateColumnFamily not installing the CF's own SABI factory (flush
-// would produce an SST the scan path can't prune/read), or Drop leaving a
-// stale registry entry behind.
 TEST_F(BitLSMTestBase, CreateAndDropColumnFamilyAtRuntime) {
   auto& db = OpenDB(DefaultOptions());
 
@@ -136,11 +119,6 @@ TEST_F(BitLSMTestBase, CreateAndDropColumnFamilyAtRuntime) {
   EXPECT_EQ(db.GetColumnFamily("aux"), nullptr);
 }
 
-// Workload: the same primary key written to two CFs with different payloads
-// -- the orders side through the cf-first PutBatch, alongside a second orders
-// key -- then one key deleted in each CF through that CF's own handle.
-// Threat: CF keyspaces bleeding into each other -- a shared key resolving to
-// the other CF's row (or deleting in one CF erasing the other's row).
 TEST_F(BitLSMTestBase, SameKeyIsIndependentAcrossColumnFamilies) {
   auto& db = OpenDB({{rocksdb::kDefaultColumnFamilyName, DefaultOptions()},
                      {"orders", FourAttrOptions()}});
@@ -174,10 +152,6 @@ TEST_F(BitLSMTestBase, SameKeyIsIndependentAcrossColumnFamilies) {
   EXPECT_EQ(CollectKeys(dit.get()), (std::set<std::string>{}));
 }
 
-// Workload: DB written with two CFs, closed, reopened -- once with the full
-// descriptor list, once with the default CF only.
-// Threat: RocksDB's must-list-all-CFs rule getting swallowed (silent data
-// loss on partial reopen), or per-CF rows/schemas not surviving reopen.
 TEST_F(BitLSMTestBase, ReopenRequiresFullDescriptorList) {
   {
     auto& db = OpenDB({{rocksdb::kDefaultColumnFamilyName, DefaultOptions()},
@@ -208,10 +182,8 @@ TEST_F(BitLSMTestBase, ReopenRequiresFullDescriptorList) {
   EXPECT_EQ(CollectKeys(it.get()), (std::set<std::string>{"ok1"}));
 }
 
-// Workload: two CFs, both with the estimator enabled; only "orders" gets
-// rows and a flush, then both estimators are refreshed and asked.
-// Threat: a single shared estimator (or one bound to the wrong cfd) would
-// report orders' rows under the default CF, or leave orders on fallback.
+// Only "orders" gets rows; the default CF's estimator must stay on
+// fallback.
 TEST_F(BitLSMTestBase, EstimatorBindsPerColumnFamily) {
   BitLSMOptions default_opts = DefaultOptions();
   default_opts.enable_estimator = true;
@@ -253,14 +225,8 @@ TEST_F(BitLSMTestBase, EstimatorBindsPerColumnFamily) {
   EXPECT_EQ(d.fallback_attrs, (std::vector<uint32_t>{0, 1}));
 }
 
-// Workload: two CFs with the estimator enabled; rows written to "orders" and
-// flushed, then the estimate is polled -- with no TEST_Refresh anywhere --
-// until the flushed SST shows up in that CF's stats.
-// Threat: StatsRefreshListener routes flush/compaction events by cf id, and
-// every other estimator test signals the worker directly through
-// TEST_Refresh. A dropped event, or one delivered to the wrong CF's
-// estimator, would leave planning stats silently stale forever; only the
-// auto-refresh path can observe it.
+// Polls without TEST_Refresh, so a flush event routed to the wrong CF
+// would show up as stale stats.
 TEST_F(BitLSMTestBase, StatsListenerRoutesFlushToOwningColumnFamily) {
   BitLSMOptions default_opts = DefaultOptions();
   default_opts.enable_estimator = true;
@@ -281,8 +247,7 @@ TEST_F(BitLSMTestBase, StatsListenerRoutesFlushToOwningColumnFamily) {
 
   SABIQuery q;
   q.clause_groups = {{OrdF64(0, CompareOp::GREATER_EQUAL, 0.0)}};
-  // The refresh is asynchronous by design (bounded staleness), so poll rather
-  // than read once; the bound only has to outlast a healthy listener hop.
+  // The refresh is asynchronous, so poll rather than read once.
   EstimateResult r;
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -297,11 +262,8 @@ TEST_F(BitLSMTestBase, StatsListenerRoutesFlushToOwningColumnFamily) {
   EXPECT_TRUE(r.fallback_attrs.empty());
 }
 
-// Workload: every cf-first entry point handed the nullptr that
-// GetColumnFamily returns for a name the DB does not have.
-// Threat: composing GetColumnFamily("typo") with an op must degrade to an
-// error status, a null iterator or a fallback estimate -- never a null
-// dereference inside the write/scan path.
+// Every cf-first entry point gets the nullptr GetColumnFamily returns for
+// an unknown name.
 TEST_F(BitLSMTestBase, NullColumnFamilyHandleIsRejected) {
   auto& db = OpenDB(DefaultOptions());
   ColumnFamilyHandle* missing = db.GetColumnFamily("typo");

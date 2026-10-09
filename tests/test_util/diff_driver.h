@@ -26,12 +26,9 @@ struct DiffParams {
 };
 
 // Effective seed for a parameterized run: BITLSM_TEST_SEED overrides the
-// parameter, so a reported seed reproduces under any instantiation (run a
-// single one via ctest -R). Non-numeric input fails loudly instead of
-// silently becoming seed 0.
-// NOTE: ctest test names show parameter VALUES (e.g. .../1000 = seed), but a
-// raw gtest binary's --gtest_filter uses INDICES — when bypassing ctest,
-// always pin the seed via BITLSM_TEST_SEED instead of the filter number.
+// parameter, so a reported seed reproduces under any instantiation.
+// Non-numeric input is an error. --gtest_filter uses parameter indices, not
+// seeds; pin the seed through the environment variable.
 inline std::uint64_t EffectiveSeed(std::uint64_t param_seed) {
   const char* env = std::getenv("BITLSM_TEST_SEED");
   if (!env) return param_seed;
@@ -55,8 +52,8 @@ inline void RunRandomizedDiff(CheckedBitLSM& db, Rng& rng,
   for (uint32_t step = 1; step <= p.steps; ++step) {
     switch (PickOp(rng)) {
       case OpKind::kPut: {
-        // Sequenced locals: argument evaluation order is unspecified, and
-        // both calls consume RNG draws — order must not depend on compiler.
+        // Sequenced locals: both calls consume RNG draws and argument
+        // evaluation order is unspecified.
         std::string key = GenerateKey(rng, p.workload);
         std::vector<Attr> attrs =
             GenerateAttrs(rng, schema, p.workload, db.reference());

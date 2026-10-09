@@ -6,9 +6,6 @@
 
 using namespace bit_lsm;
 
-// Workload: generate 100 seeded schemas.
-// Threat: generator emits schemas violating BitLSMOptions invariants
-//         (attr_num/attr_specs mismatch, rho<=0) -> engine UB downstream.
 TEST(Generators, SchemasAreWellFormed) {
   Rng rng(42);
   for (int i = 0; i < 100; ++i) {
@@ -21,10 +18,7 @@ TEST(Generators, SchemasAreWellFormed) {
   }
 }
 
-// Workload: 50 schemas x 50 queries each, over an oracle pre-seeded with
-//           records so stored-value sampling kicks in.
-// Threat: generator emits queries Validate() rejects -> the random driver
-//         would feed nullptr iterators instead of testing engine semantics.
+// The oracle is pre-seeded so stored-value sampling kicks in.
 TEST(Generators, QueriesAlwaysValidate) {
   Rng rng(7);
   WorkloadParams p;
@@ -42,9 +36,6 @@ TEST(Generators, QueriesAlwaysValidate) {
   }
 }
 
-// Workload: two RNGs with the same seed, drained identically.
-// Threat: hidden nondeterminism (global rand, iteration-order dependence)
-//         breaks seed-based failure reproduction.
 TEST(Generators, SameSeedSameStream) {
   Rng a(123), b(123);
   BitLSMOptions sa = GenerateSchema(a);

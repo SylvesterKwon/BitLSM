@@ -86,9 +86,8 @@ uint64_t ByteAxis::Rel(std::string_view s) const {
 
 GlobalRangeStats::Window GlobalRangeStats::Place(const ByteInterval& w) const {
   Window out;
-  // Ends outside [min, max] are settled by bytes, so the axis never has to
-  // represent "below min" (a strict bound there must not step inward) or
-  // "above max".
+  // Ends outside [min, max] are settled by bytes, so the axis never
+  // represents them.
   if (w.lo < min)
     out.lo = 0;
   else if (w.lo > max)
@@ -128,14 +127,10 @@ double GlobalRangeStats::RangeMass(const Window& w) const {
 
 double GlobalRangeStats::PointAwareRangeMass(const Window& w) const {
   double mass = RangeMass(w);
-  // NDV equality floor, point windows INSIDE the live span only: the grid
-  // smears mass uniformly over the span, so on a sparse domain an existing
-  // point reads ~total/span_used instead of ~total/ndv. Points OUTSIDE
-  // [min, max] keep their zero -- there it is proof of absence, not smear.
-  // (In-span holes do get floored: NDV alone cannot tell a hole from a
-  // value, and overestimating a hole is the conservative direction.) Range
-  // windows integrate over the holes and need no correction (verified exact
-  // on SF2 BETWEENs).
+  // NDV equality floor for point windows inside the live span: the grid
+  // smears mass over the span, so on a sparse domain an existing point reads
+  // far below total/ndv. Points outside [min, max] keep their zero. Range
+  // windows integrate over the holes and need no correction.
   if (w.point && ndv > 0 && w.in_span)
     mass = std::max(mass, total / double(ndv));
   return std::min(mass, total);
@@ -145,9 +140,8 @@ double GlobalRangeStats::CandidateMass(const Window& w,
                                        double match_mass) const {
   if (w.hi <= w.lo || sst_bins.empty()) return match_mass;
   const double unit = static_cast<double>(axis.unit);
-  // Pass 1: span-uniform overlap mass per covering SST -- the weight that
-  // apportions the caller's GLOBAL matching mass across SSTs (the per-SST
-  // stats keep no histogram, only span + bin mass; mass is conserved).
+  // Pass 1: span-uniform overlap mass per covering SST, the weight that
+  // apportions the caller's global matching mass across SSTs.
   double overlap_total = 0;
   for (const SSTBins& s : sst_bins) {
     const uint64_t s_end = SatAdd(s.hi, axis.unit);
@@ -158,11 +152,8 @@ double GlobalRangeStats::CandidateMass(const Window& w,
     overlap_total += s.total * (ov_len / span_len);
   }
   // Pass 2: per covering SST, round the matching share out to prune-bin
-  // boundaries. A point candidates the whole bin containing it; a range
-  // overshoots by half a bin per free edge (an edge clipped by the SST span
-  // sits on a pinned boundary and overshoots nothing). At least one bin is
-  // touched whenever the window overlaps the span; never more than the
-  // SST's binned rows.
+  // boundaries: a point fetches its whole bin, a range overshoots by half a
+  // bin per unclipped edge. At least one bin, at most the SST's binned rows.
   double cand = 0;
   for (const SSTBins& s : sst_bins) {
     const uint64_t s_end = SatAdd(s.hi, axis.unit);
@@ -291,8 +282,8 @@ void CardinalityEstimator::WorkerLoop() {
     worker_cv_.wait(lock,
                     [this] { return stop_ || signal_gen_ > processed_gen_; });
     if (stop_) return;
-    // Pace the passes: a churn storm's signals coalesce into one reconcile
-    // per interval.
+    // Pace the passes: signals during churn coalesce into one reconcile per
+    // interval.
     auto not_before =
         last_reconcile + std::chrono::milliseconds(min_rebuild_interval_ms_);
     while (!stop_ && std::chrono::steady_clock::now() < not_before)
@@ -374,7 +365,7 @@ double ConditionSelectivity(const SABICondition& cond, const GlobalStats& stats,
 
 // Candidate-fraction counterpart of ConditionSelectivity, for a condition
 // whose match fraction f is already known (>= 0): what the bin-granular
-// pruning ADMITS for this condition alone.
+// pruning admits for this condition alone.
 double ConditionCandidate(const SABICondition& cond, const GlobalStats& stats,
                           const std::vector<IndexType>& index_types,
                           double phys, double f) {
@@ -396,15 +387,13 @@ double ConditionCandidate(const SABICondition& cond, const GlobalStats& stats,
 
 EstimateResult CardinalityEstimator::Estimate(const SABIQuery& q) {
   std::shared_ptr<const GlobalStats> stats = Stats();
-  // Live per call, never from the rebuilt snapshot: the memtable count
-  // moves with every write and drops to zero at flush, while stats lag by
-  // design (bounded staleness).
+  // Live per call: the memtable count moves with every write and drops to
+  // zero at flush, while stats lag.
   uint64_t memtable = MemtableEntries();
 
   if (stats->live_sst_count == 0 || stats->physical_rows == 0) {
-    // No flushed rows to estimate from; flag every queried attr. The
-    // memtable term still rides along -- pre-first-flush it is the ONLY
-    // fetch mass there is.
+    // No flushed rows to estimate from; flag every queried attr. The memtable
+    // term still applies.
     EstimateResult res = FallbackResult(q);
     res.memtable_entries = memtable;
     return res;
@@ -524,23 +513,15 @@ std::shared_ptr<const GlobalStats> CardinalityEstimator::Rebuild(
                                *meta, &handle, sv->mutable_cf_options);
       if (!s.ok()) continue;  // unreadable file contributes nothing
       auto* bbt = static_cast<BlockBasedTable*>(cache_interface.Value(handle));
-      // Holds the SABI entry for this file's harvest: a block cache pin when
-      // cache_index_and_filter_blocks is on (evictable after release), or an
-      // unowned reference to the table-lifetime pin in Rep when off. Either
-      // way valid only while the table reader stays alive. Everything
-      // harvested below is copied out, so it only has to outlive this
-      // iteration.
+      // Pins the SABI entry for this file's harvest; everything harvested is
+      // copied out, so it only has to outlive this iteration.
       CachableEntry<Block_kUserDefinedIndex> udi_entry;
       Status udi_s = bbt->GetUserDefinedIndexReader(ReadOptions(), &udi_entry);
       if (!udi_s.ok()) {
-        // Embedded reality (vs the standalone all-SABI guarantee): an SST
-        // built while the CF was not yet bound -- a WAL-recovery flush or an
-        // early compaction at DB open -- carries no SABI block (NotFound), and
-        // a damaged one fails to parse (Corruption). Any other failure to
-        // obtain the reader, an IO error on the re-read included, degrades the
-        // same way: planning stats must degrade, never crash. The file's rows
-        // are fetch candidates all the same, so count them into the physical
-        // total, but no attr stats are available to harvest.
+        // An SST built before the CF was bound (a WAL-recovery flush, an early
+        // compaction) carries no SABI block, and a damaged one fails to parse.
+        // Stats degrade rather than crash: count the file's rows into the
+        // physical total and harvest no attr stats.
         stats->physical_rows += meta->num_entries - meta->num_deletions;
         stats->live_sst_count++;
         cache_interface.Release(handle);

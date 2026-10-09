@@ -19,8 +19,7 @@
 
 namespace bit_lsm {
 
-// Source level of candidates that came from a memtable child; nothing in the
-// SST tree can be newer than a memtable row except other memtable entries.
+// Source level of candidates from a memtable child.
 inline constexpr int kMemtableSourceLevel = -1;
 
 // Abstract class for internal iterator like SABITableIterator,
@@ -28,11 +27,8 @@ inline constexpr int kMemtableSourceLevel = -1;
 class SABIInternalIterator {
  protected:
   bool valid_ = false;
-  // OK unless iteration hit an error. Sticky: once an iterator fails it stays
-  // failed, because the failure (a SABI block that will not load) is not
-  // recoverable by re-seeking the same iterator. Every layer must therefore
-  // distinguish "!Valid() and OK" (exhausted) from "!Valid() and !OK"
-  // (stopped early), never treating the latter as end-of-data.
+  // OK unless iteration hit an error; sticky. Every layer distinguishes
+  // !Valid() with OK (exhausted) from !Valid() with !OK (stopped early).
   rocksdb::Status status_;
 
  public:
@@ -48,8 +44,8 @@ class SABIInternalIterator {
   virtual int SourceLevel() const { return kMemtableSourceLevel; }
   virtual uint64_t SourceFileNumber() const { return 0; }
   // True when a newer version of the current row may live in its own source
-  // file, the one place ShadowChecker does not look. Memtable children
-  // return false: the check probes memtables with a real Get.
+  // file, which ShadowChecker does not search. Memtable children return
+  // false.
   virtual bool SourceHasNewerVersion() const { return false; }
 };
 
@@ -62,44 +58,38 @@ class ShadowChecker;
 
 // What BitLSMIterator emits.
 enum class ResultMode {
-  // Bitmap pruning + authoritative MultiGet fetch + per-row verification:
-  // only rows that truly match the query. The standalone default.
+  // Bitmap pruning, MultiGet fetch and per-row verification: only matching
+  // rows. The default.
   Verified,
-  // Bitmap pruning only: candidate keys, a superset of the answer at the
-  // iterator's read seqno; the consumer fetches and re-verifies. Requires an
-  // injected snapshot so candidate generation and the consumer's fetch see
-  // the same seqno (a fresher seqno here would drop rows the consumer's
-  // snapshot must still see).
+  // Bitmap pruning only: candidate keys, a superset of the answer; the
+  // consumer fetches and re-verifies. Requires an injected snapshot so both
+  // sides see the same seqno.
   Candidate,
 };
 
-// "What to match": the query and its resolved forms, threaded to the leaf
-// evaluators. Holds references into the owning BitLSMIterator, which outlives
-// every child.
+// The query and its resolved forms, shared by the leaf evaluators.
+// References members of the owning BitLSMIterator.
 struct QueryContext {
   const BitLSMOptions& options;
   const SABIQuery& sabi_query;  // bitmap phase (SST skip, bin lookup)
-  // Per-row verification; nullptr = yield every bitmap-phase candidate and
-  // let the consumer re-verify. seqno/tombstone checks always stay on.
+  // Per-row verification; nullptr yields every bitmap candidate.
+  // seqno/tombstone checks always stay on.
   const CompiledQuery* compiled;
   // Whether leaves must compute SourceHasNewerVersion(); only the per-key
   // check consumes it.
   bool track_source_versions = false;
 };
 
-// "Where to read": the version/snapshot backdrop a scan runs against, derived
-// once from the SuperVersion and shared by the plumbing iterators (merging,
-// level) instead of each re-deriving these fields.
+// The version a scan runs against, derived once from the SuperVersion and
+// shared by the merging and level iterators.
 struct ScanContext {
   rocksdb::SuperVersion* sv;
   rocksdb::TableCache* tc;
   const rocksdb::VersionStorageInfo* storage_info;
   const rocksdb::InternalKeyComparator* icmp;
   const rocksdb::MutableCFOptions& cf_opts;
-  // CF-configured file options (direct I/O, rate limiter, ...). Table opens
-  // must pass these, not a default-constructed FileOptions: the table cache
-  // keeps whichever reader the first opener created, so one open with the
-  // wrong options pins the wrong I/O path for the file's cached lifetime.
+  // CF-configured file options. Table opens must pass these: the table cache
+  // keeps whichever reader the first opener created.
   const rocksdb::FileOptions& file_opts;
 
   explicit ScanContext(rocksdb::SuperVersion* sv)
@@ -111,11 +101,8 @@ struct ScanContext {
         file_opts(*sv->cfd->soptions()) {}
 };
 
-// Iterator for SABI.
-// rocksdb-Iterator style: !Valid() alone only means "no more rows". Callers
-// that must not accept a partial answer check status() -- non-OK there means
-// the scan stopped on an error (typically an SST whose SABI block could not be
-// loaded), so the rows produced so far are an incomplete result.
+// Top-level scan iterator. !Valid() alone means no more rows; a non-OK
+// status() means the scan stopped on an error and the result is incomplete.
 class BitLSMIterator : public SABIInternalIterator {
  private:
   rocksdb::DB* db_;
@@ -132,9 +119,7 @@ class BitLSMIterator : public SABIInternalIterator {
   BitLSMOptions options_;
   BitLSMQuery query_;
   ResultMode result_mode_;
-  // In Candidate mode this is an inert default-constructed shell; the
-  // nullable signal is query_ctx_.compiled, so never take &compiled_
-  // unconditionally.
+  // Unused in Candidate mode; query_ctx_.compiled is the nullable signal.
   CompiledQuery compiled_;
   SABIQuery sabi_query_;    // query_ encoded into the SABI domain
   QueryContext query_ctx_;  // references the members above
@@ -145,11 +130,10 @@ class BitLSMIterator : public SABIInternalIterator {
   std::vector<std::string> batch_values_;
   uint32_t batch_cur_idx_ = 0;
 
-  // Dedup scratch per batch; a member so the vector's buffer survives. Its
-  // elements move out into batch_keys_, so the strings are not reused.
+  // Dedup scratch per batch; elements move out into batch_keys_.
   std::vector<std::string> candidate_keys_;
-  // Scan-row values for candidates that may skip the re-fetch. Copied on
-  // collection: the source Slice dies when the child loads its next block.
+  // Scan-row values for candidates that may skip the re-fetch. Copied, since
+  // the source Slice dies with the child's next block.
   std::vector<std::string> candidate_values_;
 
   std::string latest_user_key_added;
@@ -174,9 +158,7 @@ class BitLSMIterator : public SABIInternalIterator {
   void FetchNextBatch(uint32_t batch_size);
 
  public:
-  // With the defaults (Verified mode, no injected snapshot) this behaves
-  // exactly like the original standalone iterator. Candidate mode requires
-  // an injected snapshot (see ResultMode).
+  // Candidate mode requires an injected snapshot (see ResultMode).
   BitLSMIterator(rocksdb::DB* db, rocksdb::ColumnFamilyHandle* cfh,
                  const BitLSMOptions& options, const BitLSMQuery& query,
                  ResultMode result_mode = ResultMode::Verified,
@@ -205,8 +187,7 @@ struct IteratorComparator {
   }
 };
 
-// Merging Iterator for SABI. Internally contains SABITableIterator and
-// MemTableIterator
+// Merges the memtable and level iterators.
 class BitLSMMergingIterator : public SABIInternalIterator {
  private:
   const ScanContext& scan_ctx_;
@@ -226,8 +207,7 @@ class BitLSMMergingIterator : public SABIInternalIterator {
   void Next() override;
   rocksdb::Slice key() const override;
   rocksdb::Slice value() const override;
-  // Valid only while Valid(), like key(): delegates to the child that owns
-  // the current row.
+  // Delegate to the child that owns the current row.
   int SourceLevel() const override { return heap_.top()->SourceLevel(); }
   uint64_t SourceFileNumber() const override {
     return heap_.top()->SourceFileNumber();
@@ -276,12 +256,9 @@ class SABITableIterator : public SABIInternalIterator {
   // Table & query context
   const BitLSMOptions& options_;
   rocksdb::BlockBasedTable* bbt_;
-  // Holds the SABI entry (and its parsed SABIReader) for this iterator's
-  // lifetime: a block cache pin when cache_index_and_filter_blocks is on
-  // (evictable after release), or an unowned reference to the table-lifetime
-  // pin in Rep when off. Either way valid only while the table reader stays
-  // alive. Declared before every member that references reader state —
-  // members are destroyed in reverse order, so this must die last.
+  // Holds the SABI entry and its parsed SABIReader for this iterator's
+  // lifetime: a block cache pin, or an unowned reference to the
+  // table-lifetime pin. Declared first so it dies last.
   rocksdb::CachableEntry<rocksdb::Block_kUserDefinedIndex> udi_entry_;
   SABIReader* sabi_reader_ =
       nullptr;  // points into udi_entry_; null on failure
@@ -296,33 +273,23 @@ class SABITableIterator : public SABIInternalIterator {
   // Holds the current data block pinned in the Block Cache, so values can be
   // borrowed from it instead of copied.
   std::unique_ptr<rocksdb::DataBlockIter> biter_;
-  // RocksDB's standard adaptive readahead for this scan's data block reads,
-  // the same mechanism BlockBasedTableIterator uses. Its FilePrefetchBuffer
-  // is created lazily by PrefetchIfNeeded once the block access pattern turns
-  // near-sequential, so sparse target sets never trigger readahead. Handles
-  // whatever prefetch_queue_ did not prefetch.
+  // RocksDB's adaptive readahead for the data block reads prefetch_queue_
+  // did not cover; it only engages once block accesses turn near-sequential.
   rocksdb::BlockPrefetcher block_prefetcher_;
   // Target-block reads kept in flight (block_prefetch_queue.h). Borrows bbt_,
   // so declared after it.
   BlockPrefetchQueue prefetch_queue_;
-  // Overlaps this query's cold bin-run reads in metadata mode (sabi.h);
-  // null in resident mode and once async reads are known unavailable,
-  // slotless (inert) when the query has fewer than two miss runs. Borrows
-  // sabi_reader_ and bbt_; a run's buffer is freed the moment it is fully
-  // consumed, and only unconsumed buffers survive to die with the iterator.
+  // Overlaps this query's cold bin-run reads in metadata mode; null in
+  // resident mode and once async reads are known unavailable. Borrows
+  // sabi_reader_ and bbt_.
   std::unique_ptr<SABISpanPrefetch> span_prefetch_;
 
   // Internal status for iterating
   // Cached-bin pins for this scan; views borrowed via Bin() stay valid
-  // until these release. Declared before bitmap_pool_/query_bitmap_ so it
-  // is destroyed after them.
+  // until these release. Declared before bitmap_pool_ so it dies after it.
   std::vector<SABIPinnedBin> pinned_bins_;
-  // The query bitmap is either borrowed from the SABIReader's frozen bitmaps
-  // (the reader outlives this iterator: udi_entry_ holds either a block
-  // cache pin or an unowned reference to the table-lifetime pin in Rep) or
-  // owned by bitmap_pool_. query_bitmap_ always points at the live bitmap.
-  // bitmap_pool_ must remain a std::deque: element pointers (query_bitmap_,
-  // BitmapRef::owned) must stay valid across emplace_back.
+  // The query bitmap is either borrowed from the SABIReader or owned by
+  // bitmap_pool_. A deque, since element pointers must survive emplace_back.
   std::deque<roaring::Roaring> bitmap_pool_;
   const roaring::Roaring* query_bitmap_;  // bitmap for current iteration
   roaring::Roaring::const_iterator bitmap_iter_;  // bitmap iterator
@@ -337,13 +304,13 @@ class SABITableIterator : public SABIInternalIterator {
   std::vector<rocksdb::PinnableSlice> keys_buffer_;
   // Borrowed from the block biter_ pins; valid until the next block load.
   std::vector<rocksdb::Slice> values_buffer_;
-  // Per-row "the preceding block entry carries the same user key", i.e. this
-  // row is an older in-file version. Compacted alongside the buffers above;
-  // an entry with no observable predecessor is recorded as shadowed.
+  // Per-row flag: the preceding block entry has the same user key, so this
+  // row is an older in-file version. An entry with no observable
+  // predecessor is recorded as shadowed.
   std::vector<uint8_t> shadowed_buffer_;
-  std::string prev_user_key_;  // reused so the capture is an assign
-  int32_t buffer_idx_ = 0;     // 버퍼 내 현재 커서
-  int32_t buffer_count_ = 0;   // 버퍼 내 유효 엔트리 수
+  std::string prev_user_key_;
+  int32_t buffer_idx_ = 0;    // cursor into the buffer
+  int32_t buffer_count_ = 0;  // valid entries in the buffer
 
   // Get all data entries by indexes from data block
   // indexes must be sorted and unique
@@ -365,8 +332,7 @@ class SABITableIterator : public SABIInternalIterator {
   // query_bitmap_ (borrowing reader bitmaps where possible)
   void BuildQueryBitmap(const SABIQuery& query);
   // One bin's bitmap through the mode-resolving reader path; on failure
-  // sets status_ and returns the empty bitmap so the scan fails loudly
-  // rather than shrinking the result.
+  // sets status_ and returns the empty bitmap.
   const roaring::Roaring* Bin(uint32_t flat_idx);
   const roaring::Roaring& Tombstone();
   // Fill buffer by loading next data block
@@ -385,9 +351,8 @@ class SABITableIterator : public SABIInternalIterator {
   bool SourceHasNewerVersion() const override {
     return shadowed_buffer_[buffer_idx_] != 0;
   }
-  // Carry the adaptive-readahead ramp across the files of a level scan, the
-  // way LevelIterator hands ReadaheadFileInfo between BlockBasedTableIterators
-  // so a new file resumes at the ramped readahead size instead of 8K.
+  // Carry the readahead ramp across the files of a level scan, as RocksDB's
+  // LevelIterator does.
   void GetReadaheadState(rocksdb::ReadaheadFileInfo* readahead_file_info);
   void SetReadaheadState(rocksdb::ReadaheadFileInfo* readahead_file_info);
   void TEST_DumpValue(rocksdb::Slice slice);  // Inspect Value for debug

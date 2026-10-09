@@ -30,8 +30,7 @@ rocksdb::ColumnFamilyOptions BuildCFOptions(
   cf_opts.level_compaction_dynamic_level_bytes = true;
   return cf_opts;
 }
-// A kBinary attr occupies exactly `width` bytes of its row; a value of any
-// other length would either truncate silently or spill into the next slot.
+// A kBinary attr occupies exactly `width` bytes of its row.
 Status CheckFixedBinaryWidths(const BitLSMOptions& options,
                               const vector<Attr>& attrs) {
   for (size_t i = 0; i < attrs.size(); ++i) {
@@ -80,11 +79,9 @@ BitLSM::BitLSM(const string& db_path, const Options& rocksdb_options,
                                   vs.ToString());
   }
 
-  // Before Open: RocksDB decides whether a file gets io_uring rings when the
-  // file is opened, so async reads -- the scan prefetch queue's, and in
-  // on-demand mode the SABI span prefetch's -- have to be opted into before
-  // the files they read are opened (block_prefetch_queue.h). Column families
-  // created at runtime opt in the same way from CreateColumnFamily.
+  // Before Open: RocksDB decides per file open whether it gets io_uring
+  // rings, so async reads must be opted into before the files are opened.
+  // CreateColumnFamily opts in the same way.
   if (want_uring) EnableRocksDbIOUring();
 
   // Registered before Open (the listener list is frozen there); estimators
@@ -120,10 +117,8 @@ bit_lsm::ColumnFamilyHandle* BitLSM::RegisterColumnFamily(
         static_cast<ColumnFamilyHandleImpl*>(handle)->cfd(),
         SABISchema::FromOptions(options), options);
   auto [it, inserted] = cf_registry_.emplace(name, std::move(cf));
-  // Registry uniqueness is enforced upstream: the multi-CF constructor
-  // rejects duplicate descriptors and CreateColumnFamily rejects a name that
-  // is already registered. A silently dropped insert would destroy the handle
-  // and estimator this call just built.
+  // Uniqueness is enforced upstream; a dropped insert would destroy the
+  // handle and estimator just built.
   assert(inserted);
   // Armed only once the registry owns the estimator, so the listener can
   // never reference an estimator whose handle failed to register.
@@ -160,16 +155,15 @@ bit_lsm::ColumnFamilyHandle* BitLSM::GetColumnFamily(const string& name) const {
 Status BitLSM::CreateColumnFamily(const string& name,
                                   const BitLSMOptions& options,
                                   ColumnFamilyHandle** out) {
-  // One critical section over the duplicate check, the rocksdb create and the
-  // register: creates are rare, and splitting them would let the registry and
-  // rocksdb's column family set diverge in between.
+  // One critical section over the duplicate check, the create and the
+  // register, so the registry and rocksdb's CF set cannot diverge.
   std::lock_guard<std::mutex> lock(cf_mu_);
   if (cf_registry_.count(name))
     return Status::InvalidArgument("column family already exists: " + name);
   Status vs = ValidateAttrSpecs(options);
   if (!vs.ok()) return vs;
-  // The io_uring latch is read when a file is opened, and every file of a CF
-  // created here is opened after this point, so opting in now is in time.
+  // Every file of this CF is opened after this point, so opting in now is in
+  // time.
   if (options.scan_prefetch_depth > 0 || options.ondemand_index)
     EnableRocksDbIOUring();
   rocksdb::ColumnFamilyHandle* handle = nullptr;
@@ -193,9 +187,8 @@ Status BitLSM::DropColumnFamily(ColumnFamilyHandle* cf) {
     owned = std::move(it->second);
     cf_registry_.erase(it);
   }
-  // Past this point GetColumnFamily can no longer hand out this handle; the
-  // teardown below is unconditional so a failed rocksdb drop cannot leave a
-  // half-dead CF behind -- the caller only loses the ability to retry.
+  // Past this point GetColumnFamily cannot hand out this handle; the teardown
+  // is unconditional so a failed drop cannot leave a half-dead CF.
   stats_listener_->Disarm(cf->id());
   Status s = db_->DropColumnFamily(cf->rocksdb_handle_);
   owned->estimator_.reset();
@@ -276,7 +269,7 @@ unique_ptr<BitLSMIterator> BitLSM::NewIterator(ColumnFamilyHandle* cf,
   if (!query.Validate(cf->options()).ok()) return nullptr;
 
   // Sort conditions within each OR clause by attr_idx so same-attr conditions
-  // are adjacent — guarantees CheckCondition's per-clause decode cache hits.
+  // are adjacent for CheckCondition's per-clause decode cache.
   for (auto& clause : query.clause_groups) {
     std::sort(clause.begin(), clause.end(),
               [](const QueryCondition& a, const QueryCondition& b) {

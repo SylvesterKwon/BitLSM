@@ -57,20 +57,14 @@ rocksdb::Status OpenViaFactory(
 
 }  // namespace
 
-// Workload: build a blob and reopen it through the factory with the same
-//           schema.
-// Threat: an over-eager footer check that rejects its own writer's output
-//         would brick every freshly flushed SST.
-TEST(SabiV5Footer, AcceptsMatchingSchema) {
+TEST(SabiFooter, AcceptsMatchingSchema) {
   BitLSMOptions o = TwoAttrOpts();
   EXPECT_TRUE(OpenViaFactory(SABIFactory(o), BuildBlob(o)).ok());
 }
 
-// Workload: reopen a blob through a schema-less (reader-only) factory, as a
-//           restarting MyRocks does before DDL binding.
-// Threat: a reader that still needs an injected schema fails every restart
-//         with flushed SABI SSTs — the v4 chicken-and-egg DB-open bug.
-TEST(SabiV5Footer, SelfDescribesWithoutSchema) {
+// A reader-only factory, as an embedding engine uses before it binds the
+// schema.
+TEST(SabiFooter, SelfDescribesWithoutSchema) {
   BitLSMOptions o = TwoAttrOpts();
   std::unique_ptr<rocksdb::UserDefinedIndexReader> reader;
   rocksdb::Status s = OpenViaFactory(SABIFactory(), BuildBlob(o), &reader);
@@ -83,12 +77,9 @@ TEST(SabiV5Footer, SelfDescribesWithoutSchema) {
   EXPECT_EQ(sabi.block_handles.size(), 1u);
 }
 
-// Workload: build with [kRange, kEquality], reopen with attr 1 flipped to
-//           kRange.
-// Threat: the index type selects the binning-policy variant at parse time — a
-// silent
-//         mismatch parses string policy bytes as okey thresholds.
-TEST(SabiV5Footer, RejectsRoleFlip) {
+// The index type selects the binning-policy variant at parse time; a
+// mismatch would parse string policy bytes as okey thresholds.
+TEST(SabiFooter, RejectsRoleFlip) {
   BitLSMOptions build_o = TwoAttrOpts();
   BitLSMOptions read_o = TwoAttrOpts();
   read_o.attr_specs[1] = AttrSpec(IndexType::kRange, PhysicalType::kFloat,
@@ -97,28 +88,19 @@ TEST(SabiV5Footer, RejectsRoleFlip) {
   EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 }
 
-// Workload: a valid blob whose version field is patched back to 4.
-// Threat: a v4 blob (24B footer, schema hash, no directory) parsed as v5
-//         reads a garbage directory offset — must be rejected at open.
-TEST(SabiV5Footer, RejectsWrongVersion) {
+TEST(SabiFooter, RejectsWrongVersion) {
   BitLSMOptions o = TwoAttrOpts();
   std::string blob = BuildBlob(o);
-  // Patch the version field (second-to-last u32) back to 4
+  // Patch the version field (second-to-last u32).
   std::string patched = blob;
-  uint32_t old_version = 4;
+  uint32_t older_version = kBitLSMFormatVersion - 1;
   std::memcpy(patched.data() + patched.size() - 2 * sizeof(uint32_t),
-              &old_version, sizeof(uint32_t));
+              &older_version, sizeof(uint32_t));
   rocksdb::Status s = OpenViaFactory(SABIFactory(o), patched);
   EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 }
 
-// Workload: a valid blob whose first stored index-type byte is patched to a
-// value
-//           outside the IndexType enum.
-// Threat: the directory is now the source of truth for index_types — an
-//         unrecognized index-type byte must fail loudly at open, not fall
-//         through parse branches as an arbitrary index type.
-TEST(SabiV5Footer, RejectsUnknownRoleByte) {
+TEST(SabiFooter, RejectsUnknownRoleByte) {
   BitLSMOptions o = TwoAttrOpts();
   std::string blob = BuildBlob(o);
   // directory_off is the third-to-last u32; index-type bytes start right after
@@ -131,12 +113,9 @@ TEST(SabiV5Footer, RejectsUnknownRoleByte) {
   EXPECT_TRUE(s.IsCorruption()) << s.ToString();
 }
 
-// Workload: reopen a blob with physical type/nullable changed but index_types
-//           identical.
-// Threat: validating adapter-private spec fields would invalidate every
-//         existing SST on changes that don't affect blob interpretation
-//         (row-layout evolution is the adapter's own versioning concern).
-TEST(SabiV5Footer, IgnoresAdapterPrivateSpecChanges) {
+// Physical type and nullable are adapter-private; changing them must not
+// invalidate existing SSTs.
+TEST(SabiFooter, IgnoresAdapterPrivateSpecChanges) {
   BitLSMOptions build_o = TwoAttrOpts();
   BitLSMOptions read_o = TwoAttrOpts();
   read_o.attr_specs[0] = AttrSpec(IndexType::kRange, PhysicalType::kInt,

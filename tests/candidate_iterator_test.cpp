@@ -19,11 +19,7 @@ std::set<std::string> CollectKeys(BitLSMIterator* it) {
 }
 }  // namespace
 
-// Workload: rows only in the memtable (no bitmap pruning there), scanned in
-// Candidate mode with an injected snapshot; pk2 does not satisfy the query.
-// Threat: per-row verification (compiled Eval) or the MultiGet fetch still
-// running in Candidate mode would filter pk2 out, silently turning the
-// candidate stream back into a verified stream.
+// pk2 does not satisfy the query but must still surface as a candidate.
 TEST_F(BitLSMTestBase, CandidateModeSkipsRowVerification) {
   auto& db = OpenDB(DefaultOptions());
   BITLSM_ASSERT_OK(db.Put("pk1", {15.0, std::string("apple")}, "p1"));
@@ -37,18 +33,15 @@ TEST_F(BitLSMTestBase, CandidateModeSkipsRowVerification) {
     auto it = db.NewIterator(query, ResultMode::Candidate, snap);
     ASSERT_NE(it, nullptr);
     // Memtable rows are not bitmap-pruned, so with verification off every
-    // live row must surface as a candidate — including non-matching pk2.
+    // live row surfaces as a candidate, including non-matching pk2.
     EXPECT_EQ(CollectKeys(it.get()),
               (std::set<std::string>{"pk1", "pk2", "pk3"}));
   }
   db.GetInternalDB()->ReleaseSnapshot(snap);
 }
 
-// Workload: rows split across a flushed SST (bitmap-pruned path) and the
-// memtable, queried once in Verified mode and once in Candidate mode with
-// the same injected snapshot (acceptance criterion: Verified ⊆ Candidate).
-// Threat: candidate pruning dropping a true match — a false negative the
-// consumer's re-verification can never repair.
+// Rows split across an SST and the memtable, queried in both modes with
+// the same injected snapshot.
 TEST_F(BitLSMTestBase, VerifiedIsSubsetOfCandidatesAtSameSeqno) {
   auto& db = OpenDB(DefaultOptions());
   BITLSM_ASSERT_OK(db.Put("pk1", {15.0, std::string("apple")}, "p1"));
@@ -79,10 +72,8 @@ TEST_F(BitLSMTestBase, VerifiedIsSubsetOfCandidatesAtSameSeqno) {
     EXPECT_TRUE(candidates.count(k)) << "candidates lost true match " << k;
 }
 
-// Workload: a transaction snapshot injected into a Candidate scan while
-// newer matching rows land after the snapshot.
-// Threat: candidate generation reading a fresher seqno than the injected
-// one — the seqno visibility check must stay on even with verification off.
+// Newer matching rows land after the injected snapshot and must not
+// appear.
 TEST_F(BitLSMTestBase, CandidateModeRespectsInjectedSeqno) {
   auto& db = OpenDB(DefaultOptions());
   BITLSM_ASSERT_OK(db.Put("pk1", {15.0, std::string("apple")}, "p1"));
@@ -100,10 +91,7 @@ TEST_F(BitLSMTestBase, CandidateModeRespectsInjectedSeqno) {
   db.GetInternalDB()->ReleaseSnapshot(snap);
 }
 
-// Workload: a caller-owned (transaction) snapshot injected into an iterator
-// that is then destroyed while the caller keeps using the snapshot.
-// Threat: the iterator releasing a snapshot it does not own — the caller's
-// later reads through it become use-after-free / see the wrong version.
+// The caller keeps using its snapshot after the iterator is destroyed.
 TEST_F(BitLSMTestBase, InjectedSnapshotSurvivesIterator) {
   auto& db = OpenDB(DefaultOptions());
   BITLSM_ASSERT_OK(db.Put("pk1", {15.0, std::string("apple")}, "p1"));
@@ -131,11 +119,7 @@ TEST_F(BitLSMTestBase, InjectedSnapshotSurvivesIterator) {
   rdb->ReleaseSnapshot(snap);
 }
 
-// Workload: an integration layer that keeps row data in its own CF (MyRocks
-// layout: one data CF per table), created through BitLSM and scanned in
-// Candidate mode through its handle while the default CF holds decoy rows.
-// Threat: the scan side hardcoding the default CF would silently emit the
-// decoy keys (or nothing) instead of the requested CF's candidates.
+// The default CF holds decoy rows.
 TEST_F(BitLSMTestBase, CandidateModeReadsRequestedColumnFamily) {
   auto& db = OpenDB(DefaultOptions());
   BITLSM_ASSERT_OK(db.Put("dk1", {15.0, std::string("apple")}, "p1"));
@@ -151,19 +135,15 @@ TEST_F(BitLSMTestBase, CandidateModeReadsRequestedColumnFamily) {
   {
     auto it = db.NewIterator(aux, query, ResultMode::Candidate, snap);
     ASSERT_NE(it, nullptr);
-    // Memtable rows of the requested CF, unverified — and none of the
-    // default CF's.
+    // Memtable rows of the requested CF, unverified, and none of the default
+    // CF's.
     EXPECT_EQ(CollectKeys(it.get()), (std::set<std::string>{"ak1", "ak2"}));
   }
   db.GetInternalDB()->ReleaseSnapshot(snap);
 }
 
-// Workload: a Candidate-mode caller that forgets to inject its transaction
-// snapshot.
-// Threat: candidate generation would silently run on a fresher seqno than
-// the caller's fetch, dropping rows the caller's snapshot must still see
-// (false negatives). Misuse must be rejected at construction, before any
-// snapshot/SuperVersion is acquired.
+// Without an injected snapshot candidates would be generated at a
+// fresher seqno than the caller's fetch.
 TEST_F(BitLSMTestBase, CandidateModeWithoutSnapshotRejected) {
   auto& db = OpenDB(DefaultOptions());
   BITLSM_ASSERT_OK(db.Put("pk1", {15.0, std::string("apple")}, "p1"));
@@ -175,11 +155,8 @@ TEST_F(BitLSMTestBase, CandidateModeWithoutSnapshotRejected) {
                std::invalid_argument);
 }
 
-// Workload: a Candidate-mode consumer that mistakenly reads value() instead
-// of fetching authoritatively by key.
-// Threat: the fetch step is skipped so there is no value; silently returning
-// garbage (or an empty slice) would be consumed as a real row value. assert
-// is compiled out in Release, so this must fail loudly via an exception.
+// value() has nothing to return in Candidate mode. assert is compiled out
+// in Release, so this must throw.
 TEST_F(BitLSMTestBase, CandidateModeValueThrows) {
   auto& db = OpenDB(DefaultOptions());
   BITLSM_ASSERT_OK(db.Put("pk1", {15.0, std::string("apple")}, "p1"));

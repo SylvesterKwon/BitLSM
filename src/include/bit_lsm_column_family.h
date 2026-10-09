@@ -22,10 +22,9 @@ struct ColumnFamilyDescriptor {
   BitLSMOptions options;
 };
 
-// Per-CF facade, created and owned by BitLSM. Holds everything schema-bound
-// so per-op work needs no registry lookup. Valid until DropColumnFamily()
-// or BitLSM destruction (rocksdb handle-lifetime convention: outstanding
-// iterators/ops on a dropped handle are caller error).
+// Per-CF facade, created and owned by BitLSM; holds everything schema-bound.
+// Valid until DropColumnFamily() or BitLSM destruction, like a rocksdb
+// handle.
 class ColumnFamilyHandle {
  public:
   // Address-identity handle: BitLSM stores it behind unique_ptr and hands

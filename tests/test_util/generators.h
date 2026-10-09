@@ -11,11 +11,9 @@
 
 namespace bit_lsm {
 
-// All randomness flows through an injected RNG — never global rand() — so a
-// single 64-bit seed reproduces an entire run (BITLSM_TEST_SEED).
-// Stream reproducibility is per standard-library implementation
-// (std::uniform_*_distribution algorithms are implementation-defined);
-// CI and dev both use libstdc++.
+// All randomness flows through an injected RNG, so a single 64-bit seed
+// reproduces an entire run (BITLSM_TEST_SEED). Streams are reproducible per
+// standard-library implementation; CI and dev both use libstdc++.
 using Rng = std::mt19937_64;
 
 // Random BitLSMOptions: attr_num 1-5, each attr a random index type x
@@ -43,10 +41,9 @@ std::vector<Attr> GenerateAttrs(Rng& rng, const BitLSMOptions& schema,
                                 const WorkloadParams& p,
                                 const ReferenceDB& oracle);
 
-// Random full-CNF query: 0-3 clauses (0 = empty query -> full scan), 1-3
-// conditions each, attr drawn independently per condition (cross-attr and
-// mixed-type clauses arise naturally). kEquality conditions are EQUAL-only
-// (engine contract). Always Validate()-clean by construction.
+// Random full-CNF query: 0-3 clauses (0 = full scan), 1-3 conditions each,
+// attr drawn independently per condition. kEquality conditions are
+// EQUAL-only. Always passes Validate().
 BitLSMQuery GenerateQuery(Rng& rng, const BitLSMOptions& schema,
                           const WorkloadParams& p, const ReferenceDB& oracle);
 

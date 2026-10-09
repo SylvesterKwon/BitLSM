@@ -77,9 +77,8 @@ const rocksdb::Cache::CacheItemHelper* SABICachedBinHelper() {
 namespace bit_lsm {
 
 namespace {
-// Process-wide totals for the on-demand bin cache (see block_prefetch_queue.
-// cpp for the same pattern): these reads bypass BlockBasedTable, so RocksDB's
-// tickers never see them.
+// Process-wide totals for the on-demand bin cache; these reads bypass
+// BlockBasedTable, so RocksDB's tickers never see them.
 std::atomic<uint64_t> g_bin_hits{0};
 std::atomic<uint64_t> g_bin_misses{0};
 std::atomic<uint64_t> g_bin_reads{0};
@@ -154,7 +153,7 @@ SABIReader::SABIReader(Slice& index_block, SABIReaderMode mode) : mode_(mode) {
       index_block.data() + index_block.size() - 3 * sizeof(uint32_t));
 
   // 2. Directory, parsed forward from attr_num so every following array's
-  // size is known. Roles reconstruct the schema residue without any binding.
+  // size is known.
   const char* dir = index_block.data() + directory_off;
   uint32_t attr_num = DecodeFixed32(dir);
   dir += sizeof(uint32_t);
@@ -233,13 +232,8 @@ SABIReader::SABIReader(Slice& index_block, SABIReaderMode mode) : mode_(mode) {
     }
   }
 
-  // 4. Materialize frozen bitmap views. Metadata mode skips this entirely:
-  // bitmap_index.bitmaps and tombstone_bitmap stay default-constructed
-  // (empty), and no aligned copy of the bitmap region is made. Everything a
-  // metadata-only reader needs (bitmap_offsets_, bitmap_sizes_,
-  // bin_cardinalities, binning policies, psum, handles) is already copied
-  // out above and below, so nothing references index_block afterwards --
-  // which is what RetainsIndexContents() == false promises.
+  // 4. Materialize frozen bitmap views. Metadata mode skips this: its bitmaps
+  // stay empty and nothing references index_block afterwards.
   if (mode_ == SABIReaderMode::kResident) {
     bitmap_index.bitmaps.resize(total_bins);  // tombstone kept separately
     // Every bitmap start is 32B-aligned blob-relative, so one 32B-aligned
@@ -248,8 +242,8 @@ SABIReader::SABIReader(Slice& index_block, SABIReaderMode mode) : mode_(mode) {
     const uint32_t region_len = bitmap_offsets_[bitmaps_cnt] - region_off;
     void* arena = nullptr;
     if (posix_memalign(&arena, 32, region_len == 0 ? 32 : region_len) != 0) {
-      // No status channel here, and a silently-empty bin would under-return
-      // rows; treat allocation failure as fatal rather than degrade quietly.
+      // No status channel here; allocation failure is fatal rather than an
+      // empty bin.
       std::abort();
     }
     AlignedPtr owned(static_cast<char*>(arena), std::free);
@@ -277,8 +271,6 @@ SABIReader::SABIReader(Slice& index_block, SABIReaderMode mode) : mode_(mode) {
     block_handles[i].set_size(
         DecodeFixed32(cur_index_entry_base_ptr + 2 * sizeof(uint32_t)));
   }
-
-  // Dump();
 }
 
 unique_ptr<UserDefinedIndexIterator> SABIReader::NewIterator(
@@ -302,11 +294,8 @@ uint64_t SABIReader::TombstoneCardinality() const {
 }
 
 Cache* SABIReader::BinCache() const {
-  // no_block_cache=true (or a caller-supplied null block_cache) leaves this
-  // null; BitLSM's ctor takes caller-supplied table options, so it's
-  // reachable (see block_prefetch_queue.cpp's InBlockCache for the same
-  // guard). ProbeBin/LoadRun then skip lookup/insert entirely and hand
-  // decoded bins to their pins instead.
+  // Null when the table options disable the block cache; ProbeBin/LoadRun
+  // then hand decoded bins straight to their pins.
   return table_->get_rep()->table_options.block_cache.get();
 }
 
@@ -345,9 +334,8 @@ bool SABIReader::LoadRun(uint32_t a, uint32_t b, Cache* cache,
                          SABIPinnedBin* slots, SABISpanPrefetch* prefetch) {
   const auto* rep = table_->get_rep();
   const uint64_t udi_off = rep->udi_handle.offset();
-  // One read covering every missed bin, [padded start of a, exact end of b).
-  // Alignment gaps between bins ride along: dead bytes cost far less than
-  // the per-bin reads they replace.
+  // One read covering every missed bin, [padded start of a, exact end of b);
+  // alignment gaps ride along.
   const uint64_t file_off = udi_off + bitmap_offsets_[a];
   const size_t run_len =
       (bitmap_offsets_[b] - bitmap_offsets_[a]) + bitmap_sizes_[b];
@@ -355,24 +343,18 @@ bool SABIReader::LoadRun(uint32_t a, uint32_t b, Cache* cache,
   void* raw = nullptr;
   // run_len >= bitmap_sizes_[b] >= 4 (the frozen header), never zero.
   if (posix_memalign(&raw, 32, run_len) != 0) return false;
-  // One shared arena for the run: every bin's entry keeps a reference, so
-  // the buffer lives until the last sharing entry (cached or pin-owned)
-  // dies, whatever order the cache evicts them in.
+  // One shared arena for the run; it lives until the last sharing entry dies.
   std::shared_ptr<char> arena(static_cast<char*>(raw), std::free);
 
-  // A span prefetch may already hold the run's bytes: copy out of its
-  // buffer and skip the file read (`reads` counts issued file reads, so a
-  // served run adds none). A miss, dead slot or short buffer falls through
-  // to the pread below -- identical bytes either way.
+  // A span prefetch may already hold the run's bytes; otherwise pread.
   if (prefetch == nullptr ||
       !prefetch->TryConsume(file_off, run_len, arena.get())) {
     Slice result;
     // One read at the run's absolute file offset; the reader realigns for
-    // direct I/O itself, so the run never becomes N straddling page reads
-    // (the v1 design's blob-relative-grid mistake).
+    // direct I/O itself, so the run never becomes N straddling page reads.
     IOStatus s = rep->file->Read(IOOptions(), file_off, run_len, &result,
                                  arena.get(), /*aligned_buf=*/nullptr);
-    // Counts reads issued, not reads succeeded: a failed run still shows up.
+    // Counts reads issued, not succeeded.
     g_bin_reads.fetch_add(1, memory_order_relaxed);
     // A short read fails the whole run: no partial arena is ever cached.
     if (!s.ok() || result.size() < run_len) return false;
@@ -396,8 +378,8 @@ bool SABIReader::LoadRun(uint32_t a, uint32_t b, Cache* cache,
     // in-arena view 32B-aligned as frozenView requires.
     const uint32_t rel = bitmap_offsets_[i] - bitmap_offsets_[a];
     bin->view = Roaring::frozenView(arena.get() + rel, bitmap_sizes_[i]);
-    // The padded extent, not the arena size: a span's entries then sum to
-    // about one arena, charged exactly once across them.
+    // The padded extent, not the arena size, so a run's entries sum to one
+    // arena.
     bin->charge =
         sizeof(SABICachedBin) + (bitmap_offsets_[i + 1] - bitmap_offsets_[i]);
     g_bin_misses.fetch_add(1, memory_order_relaxed);
@@ -412,9 +394,8 @@ bool SABIReader::LoadRun(uint32_t a, uint32_t b, Cache* cache,
     const CacheKey key =
         rep->base_cache_key.WithOffset((udi_off + bitmap_offsets_[i]) >> 2);
     Cache::Handle* h = nullptr;
-    // HIGH: same convention as RocksDB's own
-    // cache_index_and_filter_blocks_with_high_priority, so data-block churn
-    // stops evicting the bins that gate it.
+    // HIGH, like cache_index_and_filter_blocks_with_high_priority: data-block
+    // churn must not evict the bins that gate it.
     Status is = cache->Insert(key.AsSlice(), bin.get(), SABICachedBinHelper(),
                               bin->charge, &h, Cache::Priority::HIGH);
     slot->cache = cache;
@@ -423,8 +404,7 @@ bool SABIReader::LoadRun(uint32_t a, uint32_t b, Cache* cache,
       slot->handle = h;
       slot->view = &entered->view;
     } else {
-      // Refused insert (strict capacity): the pin owns the bin instead; its
-      // arena stays shared with whatever run-mates did get in.
+      // Refused insert: the pin owns the bin instead.
       g_bin_inserts_refused.fetch_add(1, memory_order_relaxed);
       slot->handle = nullptr;
       slot->owned = std::move(bin);
@@ -442,8 +422,7 @@ const roaring::Roaring* SABIReader::Bin(uint32_t flat_idx, SABIPinnedBin* pin,
   }
   assert(table_ != nullptr && pin != nullptr);
   Cache* cache = BinCache();
-  // A span of one: single-bin misses take the same probe/read/insert path
-  // as coalesced runs, so there is exactly one miss path to keep correct.
+  // A span of one: single-bin misses share the coalesced-run path.
   SABIPinnedBin slot;
   if (!ProbeBin(cache, flat_idx, &slot) &&
       !LoadRun(flat_idx, flat_idx, cache, &slot, prefetch)) {
@@ -480,7 +459,7 @@ bool SABIReader::BinRange(uint32_t first_flat, uint32_t last_flat,
     }
     i = j;
   }
-  // Append in flat-idx order (hits and runs interleaved deterministically).
+  // Append in flat-idx order.
   for (SABIPinnedBin& slot : slots) {
     out_views->push_back(slot.view);
     out_pins->push_back(std::move(slot));
@@ -499,7 +478,7 @@ size_t SABIReader::ApproximateMemoryUsage() const {
   for (const auto& buf : managed_buffers_)
     usage += malloc_usable_size(buf.get());
 
-  // Schema residue parsed out of the blob's directory.
+  // Schema parsed from the directory.
   usage += schema_.index_types.capacity() * sizeof(IndexType);
 
   usage += bitmap_index.bitmaps.capacity() * sizeof(roaring::Roaring);
@@ -512,8 +491,7 @@ size_t SABIReader::ApproximateMemoryUsage() const {
     } else if (const auto* cat =
                    std::get_if<vector<pair<string, uint32_t>>>(&policy)) {
       usage += cat->capacity() * sizeof(pair<string, uint32_t>);
-      // Count heap allocations only; short values live inline (SSO), and an
-      // empty string's capacity is exactly that inline budget.
+      // Count heap allocations only; short values live inline.
       static const size_t kSSOCapacity = string().capacity();
       for (const auto& entry : *cat)
         if (entry.first.capacity() > kSSOCapacity)
@@ -527,10 +505,9 @@ size_t SABIReader::ApproximateMemoryUsage() const {
   usage += bitmap_offsets_.capacity() * sizeof(uint32_t);
   usage += bitmap_sizes_.capacity() * sizeof(uint32_t);
 
-  // Frozen views allocate a separate metadata arena (the bitmap struct plus
-  // the container pointer array); the keys, typecodes and the container
-  // payloads themselves live in the frozen buffer already counted via
-  // managed_buffers_. Approximate the arena from the container count.
+  // Frozen views allocate a small metadata arena; the payloads live in the
+  // frozen buffer counted via managed_buffers_. Approximate the arena from
+  // the container count.
   auto frozen_arena_usage = [](const roaring::Roaring& rb) -> size_t {
     size_t n_containers = rb.roaring.high_low_container.size;
     return sizeof(roaring::api::roaring_bitmap_t) +
@@ -582,12 +559,10 @@ bool SABIReader::SelectBins(const SABICondition& cond,
   const uint32_t num_bins = bitmap_index.bitmap_nums[cond.attr_idx];
   const int32_t last = static_cast<int32_t>(num_bins) - 1;
 
-  // Bin b covers [boundary b, boundary b+1), the top bin closed on the right,
-  // matching how the builder bins the maximum. A closed bound resolves to
-  // the last boundary <= v (upper_bound), an open one to the last boundary
-  // strictly below v (lower_bound), so a bound sitting exactly on a
-  // threshold lands in the correct neighbour without special cases. -1 =
-  // below the leftmost boundary.
+  // Bin b covers [boundary b, boundary b+1), the top bin closed on the right.
+  // A closed bound resolves to the last boundary <= v, an open one to the
+  // last boundary < v, so a bound on a threshold lands in the right
+  // neighbour. -1 = below the leftmost boundary.
   auto bin_of = [&](string_view v, bool open) -> int32_t {
     const uint32_t i =
         open ? boundaries.LowerBound(v) : boundaries.UpperBound(v);
@@ -601,9 +576,8 @@ bool SABIReader::SelectBins(const SABICondition& cond,
   if (end_bin < 0) return false;  // whole interval below the leftmost bin
   int32_t start_bin = bin_of(cond.win.lo, /*open=*/false);
   if (start_bin < 0) start_bin = 0;
-  // bin_of is monotone, so start_bin <= end_bin here; the extent is exactly
-  // the bins the interval can touch, boundary bins included (their rows are
-  // over-approximated and trimmed by per-row verification).
+  // bin_of is monotone, so start_bin <= end_bin. Boundary bins are included;
+  // per-row verification trims their extra rows.
   out->first = bitmap_offset + static_cast<uint32_t>(start_bin);
   out->last = bitmap_offset + static_cast<uint32_t>(end_bin);
   return true;
@@ -697,10 +671,8 @@ void SABISpanPrefetch::PlanAndSubmit(
     const std::vector<BinSelection>& selections) {
   if (AsyncReadUnavailable()) return;
 
-  // Union the selections into byte-contiguous intervals: overlapping and
-  // flat-adjacent extents share one read (adjacent bins are adjacent bytes
-  // in the blob, whatever attr each belongs to); a gap of even one unwanted
-  // bin keeps intervals separate, so no dead bytes ride along between runs.
+  // Union the selections into byte-contiguous intervals: adjacent bins are
+  // adjacent bytes in the blob regardless of attr.
   std::vector<BinSelection> sorted = selections;
   std::sort(sorted.begin(), sorted.end(),
             [](const BinSelection& x, const BinSelection& y) {
@@ -716,10 +688,7 @@ void SABISpanPrefetch::PlanAndSubmit(
   }
 
   // Coalesce each interval's cache-missing bins into maximal contiguous
-  // runs -- the same grouping BinRange rediscovers when it loads, as long
-  // as the cache does not change in between (and when it does, consumers
-  // just fall back to their own pread). One cache peek per bin: a run ends
-  // on the same lookup that shows the next bin cached.
+  // runs, the same grouping BinRange forms when it loads.
   std::vector<BinSelection> runs;
   constexpr uint32_t kNoRun = std::numeric_limits<uint32_t>::max();
   for (const BinSelection& iv : intervals) {
@@ -737,15 +706,12 @@ void SABISpanPrefetch::PlanAndSubmit(
     if (run_start != kNoRun) runs.push_back({run_start, iv.last});
   }
 
-  // A lone run overlaps nothing: the sync pread LoadRun issues anyway is
-  // the same single read, so skip the machinery entirely.
+  // A lone run overlaps nothing; skip.
   if (runs.size() < 2) return;
   g_spans_planned.fetch_add(runs.size(), memory_order_relaxed);
 
-  // Submit in plan order up to the slot cap. Every planned run that ends
-  // up with no slot -- beyond the cap, async known unavailable (the first
-  // NotSupported stops the rest, like BlockPrefetchQueue::Submit), or a
-  // failed submit -- is dropped: its loads stay synchronous.
+  // Submit in plan order up to the slot cap. A run with no slot is dropped;
+  // its loads stay synchronous.
   slots_.reserve(std::min(runs.size(), kMaxSlots));
   uint64_t dropped = 0;
   for (size_t r = 0; r < runs.size(); ++r) {
@@ -768,8 +734,7 @@ bool SABISpanPrefetch::Submit(uint32_t a, uint32_t b) {
       reader_->bitmap_sizes_[b];
 
   Slot slot;
-  // No readahead: this run's bytes and nothing else (the slot setup in
-  // block_prefetch_queue.cpp).
+  // No readahead: only this run's bytes.
   ReadaheadParams params;
   params.num_buffers = 1;
   rep->CreateFilePrefetchBuffer(params, &slot.buf,
@@ -809,9 +774,8 @@ bool SABISpanPrefetch::TryConsume(uint64_t offset, size_t len, char* dst) {
     if (slot.state == SlotState::kDead) return false;
     if (slot.state == SlotState::kSubmitted) {
       // First touch: poll the whole run at its submitted offset, the only
-      // offset an explicit async submit answers to (any other aborts the
-      // buffer -- TryReadFromCacheUntracked). Later sub-ranges serve from
-      // the populated buffer with no further I/O.
+      // offset an async submit answers to. Later sub-ranges serve from the
+      // buffer.
       const BlockBasedTable::Rep* rep = table_->get_rep();
       IOOptions opts;
       IODebugContext dbg;
@@ -824,9 +788,7 @@ bool SABISpanPrefetch::TryConsume(uint64_t offset, size_t len, char* dst) {
                                      slot.len, &result, &status) &&
           status.ok() && result.size() >= slot.len;
       if (!ok) {
-        // Failed or short: kill the whole run (and free its buffer now),
-        // never serve part of it. The consumer preads instead -- results
-        // identical.
+        // Failed or short: kill the whole run; the consumer preads instead.
         slot.state = SlotState::kDead;
         slot.buf.reset();
         return false;
@@ -836,13 +798,11 @@ bool SABISpanPrefetch::TryConsume(uint64_t offset, size_t len, char* dst) {
     }
     memcpy(dst, slot.data.data() + (offset - slot.offset), len);
     g_spans_prefetched.fetch_add(1, memory_order_relaxed);
-    // Clamped: with no bin cache the consumed sub-ranges can overlap
-    // (nothing records the first load), and over-subtracting would only
-    // free early -- later overlaps then pread.
+    // Clamped: with no bin cache sub-ranges can overlap, and over-subtracting
+    // only frees early.
     slot.remaining -= std::min(len, slot.remaining);
     if (slot.remaining == 0) {
-      // The whole run has been copied out: free the buffer now instead of
-      // holding every run's bytes until the scan ends.
+      // The whole run has been copied out; free the buffer.
       slot.data = Slice();
       slot.buf.reset();
       slot.state = SlotState::kDead;

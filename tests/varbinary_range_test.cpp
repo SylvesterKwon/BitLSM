@@ -70,14 +70,9 @@ BuiltIndex BuildIndex(const BitLSMOptions& o,
 
 }  // namespace
 
-// Workload: 60 VARCHAR-like values "user-00".."user-59" flushed once; every
-//           operator with comparands on stored values, between stored values
-//           ("user-295", "user-3"), the bare prefix, the empty string and
-//           values above the maximum.
-// Threat: byte-domain bin selection off by one at a boundary (open vs closed
-//         upper bound, '\0' successor on a strict lower bound) drops rows the
-//         re-check would have kept, or the re-check compares in a different
-//         order than the bins were built in.
+// 60 values "user-00".."user-59"; every operator with comparands on
+// stored values, between them, the bare prefix, the empty string and
+// above the maximum.
 TEST_F(BitLSMTestBase, VarBinaryRangeAllOps) {
   BitLSMOptions opt = VarBinaryRangeOpt(0.2);
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -95,11 +90,8 @@ TEST_F(BitLSMTestBase, VarBinaryRangeAllOps) {
   }
 }
 
-// Workload: BETWEEN-shaped CNF (x >= "user-10" AND x < "user-20") and a
-//           two-member OR clause, over the same 60 rows, before and after
-//           Flush and after a full compaction.
-// Threat: same-attr clause merging into one ByteInterval, and OR members
-//         staying separate, must hold on the byte domain exactly as on okeys.
+// Same-attr clause merging and OR members staying separate must hold on
+// the byte domain as on okeys.
 TEST_F(BitLSMTestBase, VarBinaryBetweenAndOr) {
   BitLSMOptions opt = VarBinaryRangeOpt(0.2);
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -121,10 +113,6 @@ TEST_F(BitLSMTestBase, VarBinaryBetweenAndOr) {
   ASSERT_TRUE(db.VerifyQuery(either));
 }
 
-// Workload: nullable kRange kVarBinary; 40 valued rows, 10 NULL rows, 5
-//           deletes, then range queries whose window covers the whole domain.
-// Threat: NULL rows leaking into value bins or into range results (3VL),
-//         tombstoned rows resurfacing through the byte-domain bins.
 TEST_F(BitLSMTestBase, VarBinaryRangeWithNullsAndDeletes) {
   BitLSMOptions opt = VarBinaryRangeOpt(0.2, /*nullable=*/true);
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -140,12 +128,8 @@ TEST_F(BitLSMTestBase, VarBinaryRangeWithNullsAndDeletes) {
   ASSERT_TRUE(db.VerifyQuery(Str(CompareOp::EQUAL, "v03")));
 }
 
-// Workload: 1000 distinct values "prefix-0000".."prefix-0999" sharing a
-//           7-byte common prefix, rho 0.01 (100 bins), built into one blob.
-// Threat: a binning that projected strings through a fixed-width numeric
-//         prefix would collapse common-prefix data into one bin and lose all
-//         pruning; byte-string boundaries must split the run into 100 equal
-//         bins pinned to the exact min and max.
+// 1000 values sharing a 7-byte prefix, 100 bins; the boundaries must
+// split the run into equal bins pinned to the exact min and max.
 TEST(VarBinaryBinning, CommonPrefixDataSpreadsAcrossBins) {
   std::vector<std::string> values;
   for (int i = 0; i < 1000; ++i) values.push_back(Padded("prefix-", i, 4));
@@ -163,11 +147,8 @@ TEST(VarBinaryBinning, CommonPrefixDataSpreadsAcrossBins) {
     EXPECT_EQ(reader.BinCardinality(bin), 10u) << "bin " << bin;
 }
 
-// Workload: the blob above; SelectBins for <, <=, >, >= with the comparand
-//           sitting exactly on an interior boundary B_j.
-// Threat: an open upper bound resolved with upper_bound selects the bin
-//         starting at B_j for x < B_j (a wasted bin); a closed bound resolved
-//         with lower_bound drops that bin for x <= B_j (a false negative).
+// Comparand exactly on an interior boundary B_j: x < B_j must not select
+// the bin starting at B_j, x <= B_j must.
 TEST(VarBinaryBinning, SelectBinsAtExactBoundary) {
   std::vector<std::string> values;
   for (int i = 0; i < 1000; ++i) values.push_back(Padded("prefix-", i, 4));

@@ -19,7 +19,7 @@ BitLSMOptions MakeOptions(std::vector<AttrSpec> types) {
   options.rho = 0.5;
   return options;
 }
-// 연속형 1개 + 범주형 1개 스키마로 한 행을 인코딩.
+// Encodes one row of the {kRange, kEquality} schema.
 std::string Encode2(const ValueLayout& layout, double cont,
                     const std::string& cat) {
   std::string out;
@@ -35,7 +35,7 @@ TEST(QueryEval, EmptyQueryMatchesAll) {
   std::string out;
   EncodeValue(layout, {42.0}, "p", out);
 
-  BitLSMQuery query;  // 빈 쿼리 → 항상 true
+  BitLSMQuery query;  // empty query is always true
   EXPECT_TRUE(query.CheckCondition(rocksdb::Slice(out), layout));
 }
 
@@ -51,7 +51,7 @@ TEST(QueryEval, OrderedGreaterEqual) {
       query.CheckCondition(rocksdb::Slice(Encode2(layout, 15.0, "x")), layout));
   EXPECT_FALSE(
       query.CheckCondition(rocksdb::Slice(Encode2(layout, 5.0, "x")), layout));
-  // >= 는 경계값 포함.
+  // >= includes the boundary.
   EXPECT_TRUE(
       query.CheckCondition(rocksdb::Slice(Encode2(layout, 10.0, "x")), layout));
 }
@@ -64,7 +64,7 @@ TEST(QueryEval, OrClauseSameAttribute) {
   OrClause clause = {{0, CompareOp::EQUAL, 1.0}, {0, CompareOp::EQUAL, 2.0}};
   BitLSMQuery query(std::vector<OrClause>{clause});
 
-  // 첫 번째 OR 분기(a0==1.0) 단락 경로도 확인.
+  // Also covers the short-circuit on the first OR branch (a0 == 1.0).
   std::string first_match;
   EncodeValue(layout, {1.0}, "p", first_match);
   EXPECT_TRUE(query.CheckCondition(rocksdb::Slice(first_match), layout));
@@ -96,12 +96,8 @@ TEST(QueryEval, AndOfClausesMixedTypes) {
       rocksdb::Slice(Encode2(layout, 5.0, "apple")), layout));
 }
 
-// Workload: a sweep of queries (empty, single-cond, same-attr OR, cross-attr
-//           OR, multi-clause AND, boundary >= / <) evaluated over a grid of
-//           rows by both CheckCondition (reference) and CompiledQuery::Eval
-//           (engine path).
-// Threat: compiled predicate slots, comparand storage, or op mapping diverge
-//         from the reference semantics, silently corrupting engine results.
+// A sweep of queries over a grid of rows, evaluated by CheckCondition and
+// CompiledQuery::Eval.
 TEST(QueryEval, CompiledQueryMatchesCheckCondition) {
   BitLSMOptions options =
       MakeOptions({AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),

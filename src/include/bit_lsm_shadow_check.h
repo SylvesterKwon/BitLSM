@@ -7,19 +7,16 @@
 
 namespace bit_lsm {
 
-// A candidate row is "shadowed" when a newer version of its key -- an update
-// or a tombstone -- exists somewhere the per-file bitmap scan cannot see.
-// Such rows must not be served from the scan, which is why Verified mode
-// re-fetches candidates through MultiGet.
+// A candidate row is "shadowed" when a newer version of its key, an update or
+// a tombstone, exists somewhere the per-file bitmap scan cannot see. Such rows
+// must not be served from the scan.
 //
 // ShadowChecker answers "may this candidate be shadowed?" from the cheap
-// prefix of a MultiGet descent: memtable probes plus per-file range /
-// largest_seqno / bloom checks, never a data block. It reports anything it
-// cannot rule out as shadowed, so a wrong answer only costs a re-fetch.
-//
-// It deliberately ignores the candidate's own source file, whose bloom
-// filter always matches its own key; the leaf reports that case through
-// SABIInternalIterator::SourceHasNewerVersion.
+// prefix of a MultiGet descent: memtable probes plus per-file range, seqno and
+// bloom checks, never a data block. Anything it cannot rule out is reported as
+// shadowed, so a wrong answer only costs a re-fetch. It ignores the
+// candidate's own source file, whose bloom filter always matches; the leaf
+// reports that case through SourceHasNewerVersion.
 class ShadowChecker {
  public:
   ShadowChecker(const ScanContext& scan_ctx,

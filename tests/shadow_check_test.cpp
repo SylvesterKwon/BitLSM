@@ -48,11 +48,8 @@ uint64_t L0File(const SvGuard& g, size_t idx) {
 
 }  // namespace
 
-// Workload: two overlapping-range L0 flushes (bloom on) — F_old holds a,m,z
-//           (seqnos 1-3), F_new holds b,y (seqnos 4-5).
-// Threat: the checker answers "clean" for a key whose newer version exists in
-//         an upper file (stale row served as authoritative), or "dirty" for
-//         keys provably absent above (kills the optimization).
+// Two overlapping L0 files with bloom filters: F_old holds a,m,z (seqnos
+// 1-3), F_new holds b,y (seqnos 4-5).
 TEST_F(BitLSMTestBase, ShadowCheckerVerdicts) {
   table_options_.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
   BitLSMOptions opt = ContOpt();
@@ -81,9 +78,6 @@ TEST_F(BitLSMTestBase, ShadowCheckerVerdicts) {
   EXPECT_TRUE(checker.MayHaveNewerVersion("b", 1, 0, f_old));
 }
 
-// Workload: one flushed file, then updates land in the active memtable.
-// Threat: memtable versions newer than the candidate are missed, so a stale
-//         SST row would be served as authoritative.
 TEST_F(BitLSMTestBase, ShadowCheckerSeesMemtable) {
   table_options_.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
   BitLSMOptions opt = ContOpt();
@@ -103,11 +97,7 @@ TEST_F(BitLSMTestBase, ShadowCheckerSeesMemtable) {
   EXPECT_FALSE(checker.MayHaveNewerVersion("d", 3, kMemtableSourceLevel, 0));
 }
 
-// Workload: the two-file layout from ShadowCheckerVerdicts but with no bloom
-//           filter configured.
-// Threat: without a filter the checker guesses "clean" for covered keys
-//         instead of degrading to "maybe" — losing correctness instead of
-//         performance.
+// Without a filter the checker must answer "maybe" for covered keys.
 TEST_F(BitLSMTestBase, ShadowCheckerBloomlessIsConservative) {
   BitLSMOptions opt = ContOpt();
   BitLSM& db = OpenDB(opt);

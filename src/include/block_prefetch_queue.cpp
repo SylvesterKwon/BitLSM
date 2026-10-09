@@ -67,17 +67,16 @@ void BlockPrefetchQueue::Submit(size_t target_idx) {
   slot.target = target_idx;
   slot.submitted = false;
 
-  // Once RocksDB has said it cannot read asynchronously it never will, so stop
-  // paying for the attempt on every remaining block.
+  // Async reads are unavailable for the whole process; stop trying.
   if (AsyncReadUnavailable()) return;
 
   const BlockHandle& handle = (*targets_)[target_idx].second;
-  // Prefetching a cached block is pure extra device I/O.
+  // Prefetching a cached block is wasted I/O.
   if (InBlockCache(handle)) return;
 
   const BlockBasedTable::Rep* rep = bbt_->get_rep();
   if (slot.buf == nullptr) {
-    // No readahead: this block's bytes and nothing else.
+    // No readahead: only this block's bytes.
     ReadaheadParams params;
     params.num_buffers = 1;
     rep->CreateFilePrefetchBuffer(params, &slot.buf,

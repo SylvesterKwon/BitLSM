@@ -60,12 +60,8 @@ void Settle(BitLSM& db) {
 
 }  // namespace
 
-// Workload: bulk load, Flush, full manual compaction (no live snapshots), then
-//           a full-range Verified scan — the settled read-mostly state where
-//           every key has exactly one, seqno-zeroed version.
-// Threat: the iterator re-fetches every candidate through MultiGet even though
-//         the scan already holds the authoritative row — the skip never
-//         engages and settled scans keep paying the ~2x re-read tax.
+// After a full compaction every key has one seqno-zeroed version, so the
+// scan rows are authoritative.
 TEST_F(BitLSMTestBase, SettledScanSkipsMultiGet) {
   BitLSMOptions opt = ContOpt();
   BitLSM& db = OpenDB(opt);
@@ -78,10 +74,6 @@ TEST_F(BitLSMTestBase, SettledScanSkipsMultiGet) {
   EXPECT_GT(skipped, 0u) << "settled scan still went through MultiGet";
 }
 
-// Workload: settled DB, then one Put lands in the memtable before the scan.
-// Threat: the skip stays on with a non-empty memtable, so a candidate's newer
-//         memtable version (here: an update that changes the payload) is
-//         never consulted and the scan returns the stale compacted row.
 TEST_F(BitLSMTestBase, MemtableWriteDisablesSkip) {
   BitLSMOptions opt = ContOpt();
   BitLSM& raw = OpenDB(opt);
@@ -100,10 +92,6 @@ TEST_F(BitLSMTestBase, MemtableWriteDisablesSkip) {
   ASSERT_TRUE(db.VerifyFullScan());
 }
 
-// Workload: settled DB plus one extra Flushed (uncompacted) SST, so L0 is
-//           non-empty and the L0 file's seqnos are non-zero.
-// Threat: the skip stays on despite L0 files, so newer L0 versions shadowing
-//         compacted rows are never consulted.
 TEST_F(BitLSMTestBase, L0FileDisablesSkip) {
   BitLSMOptions opt = ContOpt();
   BitLSM& raw = OpenDB(opt);
@@ -123,10 +111,8 @@ TEST_F(BitLSMTestBase, L0FileDisablesSkip) {
   ASSERT_TRUE(db.VerifyFullScan());
 }
 
-// Workload: two disjoint-range L0 flushes (bloom on), NO compaction — the
-//           multi-level live state the OLTP benchmarks keep; full-range scan.
-// Threat: v1's global condition can never hold here, so without per-key
-//         checks every candidate still pays the MultiGet re-fetch.
+// Two L0 files with bloom filters and no compaction; the whole-scan
+// condition cannot hold, so keys must be skipped one by one.
 TEST_F(BitLSMTestBase, MultiLevelCleanScanSkipsPerKey) {
   table_options_.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
   BitLSMOptions opt = ContOpt();
@@ -143,7 +129,7 @@ TEST_F(BitLSMTestBase, MultiLevelCleanScanSkipsPerKey) {
     rows.emplace_back(it->key().ToString(), it->value().ToString());
   ASSERT_TRUE(it->status().ok());
   ASSERT_EQ(rows.size(), 2000u);
-  EXPECT_EQ(it->TEST_SkippedBatches(), 0u);  // v1 path must NOT be active
+  EXPECT_EQ(it->TEST_SkippedBatches(), 0u);  // whole-scan skip inactive
   EXPECT_EQ(it->TEST_CheckedKeys(), 2000u);
   // Not all 2000: a candidate that sits on a restart point has no preceding
   // entry to compare against, so in-file shadowing cannot be ruled out and it
@@ -153,11 +139,8 @@ TEST_F(BitLSMTestBase, MultiLevelCleanScanSkipsPerKey) {
       << "clean multi-level candidates still re-fetched";
 }
 
-// Workload: 1000 rows flushed, then 100 of them updated OUT of the query
-//           range and flushed again (newer shadowing L0 file); query
-//           attr <= 1999 sees the old versions as bitmap candidates.
-// Threat: a skipped stale candidate resurfaces a row whose newest version no
-//         longer matches — the exact bug the MultiGet re-fetch existed for.
+// 100 keys updated out of the query range in a newer L0 file; their old
+// versions are bitmap candidates and must not be served.
 TEST_F(BitLSMTestBase, UpdatedKeysFallBackToMultiGet) {
   table_options_.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
   BitLSMOptions opt = ContOpt();
@@ -182,13 +165,8 @@ TEST_F(BitLSMTestBase, UpdatedKeysFallBackToMultiGet) {
   ASSERT_TRUE(db.VerifyQuery(q));
 }
 
-// Workload: 1000 rows, a snapshot opened, then 100 of them rewritten OUT of
-//           the query range, all flushed into ONE L0 file. The open snapshot
-//           makes the flush keep both versions of each rewritten key inside
-//           that single file.
-// Threat: the shadow check excludes the candidate's own source file, so an
-//         in-file newer version that fails the predicate never reaches the
-//         dedup step and the stale old version is served as authoritative.
+// A snapshot held across the flush keeps both versions of a rewritten
+// key in one file, which the shadow check does not look into.
 TEST_F(BitLSMTestBase, IntraFileNewerVersionIsNotSkipped) {
   table_options_.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
   BitLSMOptions opt = ContOpt();
@@ -219,11 +197,7 @@ TEST_F(BitLSMTestBase, IntraFileNewerVersionIsNotSkipped) {
   EXPECT_EQ(n, 900u) << "stale in-file versions leaked into the result";
 }
 
-// Workload: the same single-file shape, but the newer in-file version is a
-//           tombstone: 100 keys deleted while a snapshot is held.
-// Threat: the in-file tombstone is dropped by the leaf's tombstone filter
-//         before dedup, so skipping the re-fetch resurrects deleted rows —
-//         data loss as far as the application is concerned.
+// Same single-file shape, with the newer version being a tombstone.
 TEST_F(BitLSMTestBase, IntraFileTombstoneIsNotSkipped) {
   table_options_.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
   BitLSMOptions opt = ContOpt();
@@ -253,13 +227,9 @@ TEST_F(BitLSMTestBase, IntraFileTombstoneIsNotSkipped) {
   EXPECT_EQ(n, 900u) << "deleted rows resurfaced";
 }
 
-// Workload: every key rewritten OUT of the query's range in a second flush,
-//           so every bitmap candidate is a stale old version and every check
-//           answers dirty; more than the sample window flows through.
-//           (Rewrites that stay IN range are not dirty: the scan sees both
-//           versions and dedup already keeps the newest.)
-// Threat: an all-dirty workload pays probe + full MultiGet per key forever —
-//         the check must notice its own futility and turn itself off.
+// Every candidate is stale, so every check answers dirty; the check must
+// turn itself off. (Rewrites that stay in range are not dirty: the scan
+// sees both versions and dedup keeps the newest.)
 TEST_F(BitLSMTestBase, AllDirtyWorkloadTripsKillSwitch) {
   table_options_.filter_policy.reset(rocksdb::NewBloomFilterPolicy(10));
   BitLSMOptions opt = ContOpt();
@@ -287,11 +257,6 @@ TEST_F(BitLSMTestBase, AllDirtyWorkloadTripsKillSwitch) {
       << "kept checking after the switch should have tripped";
 }
 
-// Workload: update + delete traffic, then a second full compaction settles
-//           the DB again before the scan.
-// Threat: after re-settling, either the skip fails to re-engage (perf loss)
-//         or it returns pre-update rows / resurrects the deleted key
-//         (correctness loss).
 TEST_F(BitLSMTestBase, ResettledAfterUpdatesSkipsAgain) {
   BitLSMOptions opt = ContOpt();
   BitLSM& db = OpenDB(opt);

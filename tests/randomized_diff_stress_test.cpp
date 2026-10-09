@@ -16,11 +16,9 @@ class RandomizedDiffStressTest
 
 }  // namespace
 
-// Workload: same randomized differential run as the fast tier with a bigger
-//           budget (32 seeds x 5000 steps). CTest label "stress": excluded
-//           from PR CI (ctest -LE stress), run locally via ctest -L stress.
-// Threat: low-probability divergences (rare op/query interleavings, deep
-//         LSM shapes) that the fast tier's small budget cannot reach.
+// The fast-tier run with a bigger budget (32 seeds x 5000 steps).
+// Labelled "stress": excluded from PR CI, run locally with ctest -L
+// stress.
 TEST_P(RandomizedDiffStressTest, EngineMatchesOracle) {
   std::uint64_t seed = EffectiveSeed(GetParam());
   // Echo the seed up front so even exception/crash failures (which bypass

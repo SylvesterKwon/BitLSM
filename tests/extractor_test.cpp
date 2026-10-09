@@ -8,11 +8,8 @@
 
 using namespace bit_lsm;
 
-// Workload: a v3 row with [kRange double, kEquality bytes, kRange i64]
-//           attrs, extracted through ValueLayoutExtractor.
-// Threat: extractor output diverging from DecodeAttr + NumericToOkey (as
-//         8-byte okey bytes) would put rows into different bins than the
-//         query path expects.
+// Extractor output must equal DecodeAttr + NumericToOkey as 8-byte okey
+// bytes, or rows land in different bins than queries expect.
 TEST(ValueLayoutExtractor, MatchesDecodeAttr) {
   BitLSMOptions o;
   o.attr_num = 3;
@@ -38,9 +35,7 @@ TEST(ValueLayoutExtractor, MatchesDecodeAttr) {
   EXPECT_EQ(std::get<std::string_view>(out[2]), OkeyToBytes(I64ToOkey(-42)));
 }
 
-// Workload: a v3 row whose nullable kRange attr is SQL NULL.
-// Threat: a NULL leaking through as okey 0 (instead of monostate) would land
-//         the row in a value bin and match value predicates it must not.
+// A NULL leaking through as okey 0 would land the row in a value bin.
 TEST(ValueLayoutExtractor, NullBecomesMonostate) {
   BitLSMOptions o;
   o.attr_num = 2;

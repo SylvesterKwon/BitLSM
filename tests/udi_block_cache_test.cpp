@@ -40,9 +40,8 @@ BitLSMQuery ConjunctiveQuery() {
       {0, CompareOp::EQUAL, std::string("c3")}, {1, CompareOp::LESS, 500.0}});
 }
 
-// Matches nothing: the iterator still has to pin the SABI entry to find that
-// out, but never loads a data block -- so a pinned data block cannot mask the
-// SABI pin in the cache accounting.
+// Matches nothing: the iterator pins the SABI entry to find that out but
+// never loads a data block, so nothing else shows in the cache accounting.
 BitLSMQuery NoMatchQuery() {
   return BitLSMQuery(std::vector<QueryCondition>{
       {0, CompareOp::EQUAL, std::string("no-such-category")}});
@@ -138,11 +137,6 @@ class UDIBlockCacheTest : public BitLSMTestBase {
   std::shared_ptr<rocksdb::Cache> cache_;
 };
 
-// Workload: 10k rows flushed to an SST, then a conjunctive query, then a full
-//           cache eviction, then the same query again.
-// Threat: the SABI block is pinned outside the block cache (never charged,
-//         never evictable), or eviction loses it permanently and the second
-//         query silently returns fewer rows.
 TEST_F(UDIBlockCacheTest, SABIIsChargedToCacheAndSurvivesEviction) {
   BitLSM& db = OpenAndFill();
 
@@ -166,20 +160,12 @@ TEST_F(UDIBlockCacheTest, SABIIsChargedToCacheAndSurvivesEviction) {
   ASSERT_EQ(RunQuery(db), kExpectedMatches);
 }
 
-// Workload: a full cache eviction fired mid-scan, and another one against a
-//           still-live (but exhausted) iterator.
-// Threat: the iterator borrows bitmaps and block handles from a reader it
-//         does not keep pinned, so eviction frees the reader under a live
-//         scan. Note the eviction is asserted through the cache's own
-//         accounting, not through the scan's output: a use-after-free reads
-//         intact freed memory often enough that result-only assertions pass
-//         in a release build whether the pin exists or not.
+// Eviction fired mid-scan. Asserted through the cache's accounting, not
+// the scan's output: a use-after-free often reads intact freed memory.
 TEST_F(UDIBlockCacheTest, LiveIteratorKeepsSABIPinnedAgainstEviction) {
   BitLSM& db = OpenAndFill();
 
-  // Baseline with the table already open and nothing of ours pinned: a first
-  // query opens the SST's table reader, whose own cache entries must not be
-  // mistaken for the iterator's pin.
+  // Baseline with the table already open and nothing of ours pinned.
   ASSERT_EQ(RunQuery(db), kExpectedMatches);
   cache_->EraseUnRefEntries();
   const size_t usage_evicted = cache_->GetUsage();
@@ -217,19 +203,15 @@ TEST_F(UDIBlockCacheTest, LiveIteratorKeepsSABIPinnedAgainstEviction) {
   cache_->EraseUnRefEntries();
   EXPECT_GT(cache_->GetUsage(), usage_evicted);
 
-  // Destroying the iterator releases that pin — the entry must become
-  // reclaimable again, or the pin leaks for the process's lifetime.
+  // Destroying the iterator releases that pin; the entry must become
+  // reclaimable again.
   empty_it.reset();
   cache_->EraseUnRefEntries();
   EXPECT_EQ(cache_->GetUsage(), usage_evicted);
 }
 
-// Workload: an SST written by a plain RocksDB (no user-defined index factory),
-//           then reopened through BitLSM and queried.
-// Threat: the file carries no SABI block, so the table iterator cannot produce
-//         a single one of its rows -- and an iterator that reports that as a
-//         plain !Valid() is indistinguishable from "nothing matched", turning
-//         an unreadable file into a silently incomplete query result.
+// An SST written by plain RocksDB has no SABI block; the query must fail
+// rather than look like "nothing matched".
 TEST_F(UDIBlockCacheTest, SABILessSSTFailsTheQueryInsteadOfSkippingRows) {
   const BitLSMOptions o = TwoAttrOptions();
   const ValueLayout layout(o);
@@ -276,14 +258,8 @@ TEST_F(UDIBlockCacheTest, SABILessSSTFailsTheQueryInsteadOfSkippingRows) {
   EXPECT_TRUE(it->status().IsNotFound()) << it->status().ToString();
 }
 
-// Workload: two parsed SABIReaders over indexes of very different size.
-// Threat: ApproximateMemoryUsage stays the 0 stub (or any constant), so the
-//         block cache charges only the raw block bytes and the parsed
-//         reader's heap is invisible to the cache's capacity accounting.
-//
-// Asserted here rather than through cache_->GetUsage(): a query also charges
-// the SST's data and index blocks, which on their own clear any plausible
-// floor — a cache-level assertion passes with the 0 stub still in place.
+// Asserted on the reader rather than through GetUsage(), which the SST's
+// own blocks would dominate.
 TEST(SABIReaderMemoryUsage, TracksIndexContent) {
   BuiltIndex small = BuildIndex(/*rows=*/64, /*distinct=*/4);
   BuiltIndex big = BuildIndex(/*rows=*/20000, /*distinct=*/2000);

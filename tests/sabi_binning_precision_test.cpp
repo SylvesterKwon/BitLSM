@@ -74,9 +74,8 @@ BuiltIndex BuildI64Index(const std::vector<int64_t>& values,
   return built;
 }
 
-// The binning quality checks shared by both regression cases: boundaries
-// must partition the okey span (not collapse to [min, min, ..., max]) and no
-// single bin may absorb every row.
+// Boundaries must partition the okey span and no single bin may absorb every
+// row.
 void ExpectBinsActuallyPartition(const SABIReader& reader, size_t row_cnt) {
   uint32_t bins = reader.bitmap_index.bitmap_nums[0];
   ASSERT_GT(bins, 1u) << "budget must allocate >1 bin for this workload";
@@ -99,12 +98,8 @@ void ExpectBinsActuallyPartition(const SABIReader& reader, size_t row_cnt) {
 
 }  // namespace
 
-// Workload: 1000 int64 values 0..999 (okeys 2^63..2^63+999, span 999 < the
-//           double ULP of 2048 near 2^63), single blob, bin budget 10.
-// Threat: projecting absolute okeys to double collapses the whole span onto
-//         one representable double, so every quantile boundary is equal and
-//         all rows fold into a single bin — range/equality pruning silently
-//         does nothing for narrow-span attributes (age, enum codes, ...).
+// okeys 2^63..2^63+999, a span narrower than a double ULP there; the
+// binning must not fold every row into one bin.
 TEST(SabiBinningPrecision, NarrowInt64SpanSpreadsAcrossBins) {
   std::vector<int64_t> values;
   values.reserve(1000);
@@ -122,12 +117,7 @@ TEST(SabiBinningPrecision, NarrowInt64SpanSpreadsAcrossBins) {
   ExpectBinsActuallyPartition(reader, values.size());
 }
 
-// Workload: the same narrow int64 span plus a few deletion entries in the
-//           same blob (any real SST with deletes).
-// Threat: tombstone rows push a placeholder okey 0 into the kRange buffer;
-//         if it leaks into the binning stats, min_okey becomes 0 (the okey
-//         domain minimum), which both skews the min/max pin and re-collapses
-//         the shifted t-digest projection back to absolute magnitude.
+// A tombstone placeholder must not pull the minimum down to 0.
 TEST(SabiBinningPrecision, TombstonesDoNotSkewBinning) {
   std::vector<int64_t> values;
   values.reserve(1000);

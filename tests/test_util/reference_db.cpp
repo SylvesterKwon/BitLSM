@@ -14,7 +14,7 @@ void ReferenceDB::Clear() { live_.clear(); }
 bool ReferenceDB::MatchCondition(const QueryCondition& cond,
                                  const std::vector<Attr>& attrs) const {
   const Attr& a = attrs[cond.attr_idx];
-  // 3VL: a NULL attr makes every comparison UNKNOWN, i.e. not a match.
+  // 3VL: a NULL attr makes every comparison UNKNOWN, so no match.
   if (std::holds_alternative<std::monostate>(a)) return false;
   // Compare in the domain the stored alternative fixes: numerics natively,
   // bytes (kBinary/kVarBinary) in memcmp order.

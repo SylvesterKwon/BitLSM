@@ -69,10 +69,9 @@ BitLSMIterator::BitLSMIterator(DB* db, ColumnFamilyHandle* cfh,
       !scan_ctx_.cf_opts.enable_blob_files;
 
   // 4. Whole-scan authority: with empty memtables and L0, a single non-empty
-  // level (disjoint key ranges) and every file seqno-zeroed (which RocksDB
-  // does only when one visible version remains), no candidate can have a
-  // newer version anywhere, so batches need no re-fetch at all. Writes
-  // arriving later are invisible -- the snapshot seqno is already fixed.
+  // level and every file seqno-zeroed, no candidate can have a newer version
+  // anywhere, so batches need no re-fetch. Later writes are invisible under
+  // the fixed snapshot seqno.
   if (result_mode_ == ResultMode::Verified && skippable_value_format) {
     const rocksdb::VersionStorageInfo* vsi = scan_ctx_.storage_info;
     bool above_empty = sv_->mem->NumEntries() == 0 &&
@@ -137,8 +136,7 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
   batch_cur_idx_ = 0;
   valid_ = false;
 
-  // 2. Never scan on top of a failed merge: the merging iterator stops on the
-  // first child error, so anything it could still yield is a partial answer.
+  // 2. Never scan on top of a failed merge.
   if (!smi_->status().ok()) {
     status_ = smi_->status();
     return;
@@ -183,8 +181,8 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       }
       smi_->Next();
     }
-    // The merge may have stopped on an error partway through this batch.
-    // Half a batch is worse than none, so drop it and report the failure.
+    // The merge may have stopped on an error partway through this batch;
+    // drop it and report the failure.
     if (!smi_->status().ok()) {
       status_ = smi_->status();
       candidate_keys_.clear();
@@ -229,8 +227,8 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       }
       checked_keys_ += candidate_keys_.size();
       skipped_keys_ += candidate_keys_.size() - dirty_idx_.size();
-      // Below this skip rate the probes are pure overhead on top of a full
-      // MultiGet, so stop checking for the rest of this iterator.
+      // Below this skip rate the probes are overhead on top of a full
+      // MultiGet; stop checking for the rest of this iterator.
       constexpr uint64_t kCheckSampleKeys = 4096;
       constexpr uint64_t kMinSkipRatePct = 25;
       if (checked_keys_ >= kCheckSampleKeys &&
@@ -269,8 +267,8 @@ void BitLSMIterator::FetchNextBatch(uint32_t batch_size) {
       }
       const size_t j = d++;
       // 7-1. NotFound is expected: the row was shadowed or deleted. Any
-      // other non-OK status makes this batch unverifiable -- drop it and
-      // report, the same way a mid-batch smi_ error does above.
+      // other non-OK status makes this batch unverifiable; drop it and
+      // report.
       if (!statuses[j].ok()) {
         if (statuses[j].IsNotFound()) continue;
         status_ = statuses[j];
@@ -300,7 +298,7 @@ void BitLSMIterator::SeekToFirst() {
   latest_user_key_added.clear();
 
   // 2. Prepare next batch
-  FetchNextBatch(1024);  // TODO: parameterize it.
+  FetchNextBatch(1024);
 }
 
 void BitLSMIterator::Next() {
@@ -322,9 +320,8 @@ Slice BitLSMIterator::key() const {
 
 Slice BitLSMIterator::value() const {
   assert(Valid());
-  // No authoritative fetch happens in Candidate mode, so there is no value
-  // to return; a thrown error (not an assert, which Release compiles out)
-  // keeps a misusing consumer from reading garbage.
+  // Candidate mode fetches no values; throw rather than assert, which a
+  // Release build compiles out.
   if (result_mode_ == ResultMode::Candidate)
     throw std::logic_error(
         "BitLSMIterator::value() is unavailable in Candidate mode; fetch "

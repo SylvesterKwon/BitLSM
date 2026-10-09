@@ -25,17 +25,14 @@ BitLSMOptions MakeOptions() {
       AttrSpec(IndexType::kRange, PhysicalType::kFloat, 8),
       AttrSpec(IndexType::kEquality, PhysicalType::kVarBinary)};
   options.read_seqno = 0;
-  options.rho = 0.5;  // 전체 bin 예산 = attr_num/rho = 4 (속성별 할당은 동적)
+  options.rho = 0.5;  // bin budget = attr_num/rho = 4, split per attr
   return options;
 }
 
 // Shared fixture: 4 rows over {kRange, kEquality} and one AddIndexEntry.
-// Returns an owned copy of the blob since the builder (owner of the Slice
-// memory Finish() points into) goes out of scope on return. When
-// out_bitmap_sizes is non-null, filled with the builder's own
-// TEST_LastFinishBitmapSizes() (tombstone last) -- ground truth captured
-// before serialization, independent of anything a reader later derives from
-// the blob's persisted bytes.
+// Returns an owned copy of the blob, since the builder owns the memory
+// Finish() points into. out_bitmap_sizes, when non-null, receives the
+// builder's TEST_LastFinishBitmapSizes().
 std::string BuildTestBlob(std::vector<uint32_t>* out_bitmap_sizes = nullptr) {
   BitLSMOptions options = MakeOptions();
   const ValueLayout layout(options);
@@ -46,7 +43,7 @@ std::string BuildTestBlob(std::vector<uint32_t>* out_bitmap_sizes = nullptr) {
   const std::vector<std::pair<double, std::string>> rows = {
       {1.0, "apple"}, {2.0, "banana"}, {3.0, "apple"}, {4.0, "cherry"}};
 
-  // OnKeyAdded 는 value Slice 로 인코딩 값을 받는다 → 살아있어야 하므로 보관.
+  // OnKeyAdded takes the encoded value by Slice, so keep the buffers alive.
   std::vector<std::string> encoded;
   encoded.reserve(rows.size());
   for (size_t i = 0; i < rows.size(); ++i) {
@@ -57,9 +54,8 @@ std::string BuildTestBlob(std::vector<uint32_t>* out_bitmap_sizes = nullptr) {
                        rocksdb::Slice(encoded[i]));
   }
 
-  // 모든 키를 담는 단일 데이터 블록 하나를 등록.
-  // offset/size 는 빌더가 PutFixed32 로 직렬화하므로 32비트에 들어가는 작은
-  // 값을 쓴다.
+  // One data block holding every key. offset/size are serialized with
+  // PutFixed32, so keep them within 32 bits.
   std::string scratch;
   UDIB::BlockHandle block_handle{/*offset=*/100, /*size=*/4096};
   builder.AddIndexEntry(rocksdb::Slice(keys.back()),
@@ -74,30 +70,30 @@ std::string BuildTestBlob(std::vector<uint32_t>* out_bitmap_sizes = nullptr) {
 }
 }  // namespace
 
-// SABIBuilder 에 값들을 먹이고 Finish 로 블롭을 만든 뒤 SABIReader 로 다시
-// 파싱했을 때 블록 핸들/카운트/비닝 정책/비트맵 개수가 일관적인지.
+// A blob built by SABIBuilder::Finish parses back through SABIReader with
+// consistent block handles, counts, binning policies and bitmap counts.
 TEST(SabiBlobRoundTrip, BuildsAndParses) {
   BitLSMOptions options = MakeOptions();
   std::string blob_owner = BuildTestBlob();
   rocksdb::Slice blob(blob_owner);
 
-  // v5: 리더는 스키마 주입 없이 블롭의 directory 에서 self-describe 한다.
+  // The reader self-describes from the blob's directory; no schema injected.
   SABIReader reader(blob);
 
-  // index_types 가 블롭에서 그대로 복원되는지.
+  // index_types come back from the blob.
   ASSERT_EQ(reader.schema().attr_num(), options.attr_num);
   EXPECT_EQ(reader.schema().index_types[0], IndexType::kRange);
   EXPECT_EQ(reader.schema().index_types[1], IndexType::kEquality);
 
-  // 인덱스 엔트리(블록) 1개.
+  // One index entry (block).
   ASSERT_EQ(reader.block_handles.size(), 1u);
   EXPECT_EQ(reader.block_handles[0].offset(), 100u);
   EXPECT_EQ(reader.block_handles[0].size(), 4096u);
   ASSERT_EQ(reader.data_entries_cnt_psum.size(), 1u);
   EXPECT_EQ(reader.data_entries_cnt_psum[0],
-            4u);  // AddIndexEntry 시점까지 4개 키
+            4u);  // four keys before AddIndexEntry
 
-  // 비닝 정책과 속성별 bin 수: 둘 다 attr_num 개, bin 수는 각각 최소 1.
+  // One binning policy and bin count per attr, each attr has at least one bin.
   ASSERT_EQ(reader.bitmap_index.binning_policy.size(), options.attr_num);
   ASSERT_EQ(reader.bitmap_index.bitmap_nums.size(), options.attr_num);
   uint32_t total_bins = 0;
@@ -105,15 +101,12 @@ TEST(SabiBlobRoundTrip, BuildsAndParses) {
     EXPECT_GE(n, 1u);
     total_bins += n;
   }
-  // 실제 비트맵 개수(tombstone 제외) == bin 수 총합.
+  // Bitmap count (tombstone excluded) == total bins.
   EXPECT_EQ(reader.bitmap_index.bitmaps.size(), total_bins);
 }
 
-// Workload: a freshly built blob validated through the factory's
-//           Status-returning NewReader; the same blob with its version footer
-//           stripped (pre-versioning layout); and one with a bumped version.
-// Threat: a pre-versioned or future-format index gets parsed as if current —
-//         garbage offsets / UB instead of a clean Corruption error.
+// A blob with its version footer stripped, and one with a bumped
+// version, must both fail with Corruption.
 TEST(SabiBlobRoundTrip, RejectsUnversionedAndUnknownVersions) {
   BitLSMOptions options = MakeOptions();
   const ValueLayout layout(options);
@@ -138,7 +131,7 @@ TEST(SabiBlobRoundTrip, RejectsUnversionedAndUnknownVersions) {
   BITLSM_ASSERT_OK(factory.NewReader(udi_option, blob, reader));
   ASSERT_NE(reader, nullptr);
 
-  // 2. Version footer stripped -> pre-versioning layout -> Corruption.
+  // 2. Version footer stripped -> Corruption.
   std::string unversioned(blob.data(), blob.size() - 2 * sizeof(uint32_t));
   rocksdb::Slice unversioned_slice(unversioned);
   reader.reset();
@@ -156,13 +149,9 @@ TEST(SabiBlobRoundTrip, RejectsUnversionedAndUnknownVersions) {
       factory.NewReader(udi_option, bumped_slice, reader).IsCorruption());
 }
 
-// Workload: the same 4-row/2-attr fixture, inspected for the on-disk
-//           bitmap contract: every bitmap start is 32B-aligned, exact frozen
-//           sizes are persisted alongside padded offsets, and per-bin/tombstone
-//           cardinalities round-trip against the decoded bitmaps.
-// Threat: padding without persisted exact sizes breaks frozenView (it demands
-//         the exact frozen length); missing/misaligned cardinalities would
-//         force a metadata-only reader to decode bitmaps just to count rows.
+// Every bitmap start is 32B-aligned, exact frozen sizes are persisted
+// alongside padded offsets, and per-bin cardinalities match the decoded
+// bitmaps.
 TEST(SabiBlobRoundTrip, PadsBitmapsAndPersistsSizesAndCardinalities) {
   std::vector<uint32_t> ground_truth_sizes;
   // same fixture body as BuildsAndParses
@@ -184,10 +173,7 @@ TEST(SabiBlobRoundTrip, PadsBitmapsAndPersistsSizesAndCardinalities) {
   ASSERT_EQ(reader.bitmap_sizes_.size(), total_bins + 1u);
   ASSERT_EQ(ground_truth_sizes.size(), total_bins + 1u);
   for (uint32_t i = 0; i <= total_bins; ++i)
-    EXPECT_EQ(reader.bitmap_sizes_[i], ground_truth_sizes[i])
-        << "bin " << i
-        << " (persisted size vs. the builder's own pre-serialization "
-           "getFrozenSizeInBytes())";
+    EXPECT_EQ(reader.bitmap_sizes_[i], ground_truth_sizes[i]) << "bin " << i;
   ASSERT_EQ(reader.bin_cardinalities.size(), total_bins + 1u);
   for (uint32_t i = 0; i < total_bins; ++i)
     EXPECT_EQ(reader.bin_cardinalities[i],

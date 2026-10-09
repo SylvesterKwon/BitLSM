@@ -9,13 +9,8 @@
 
 using namespace bit_lsm;
 
-// Workload: kEquality kInt 8 (ids), kRange kBinary 4 (fixed codes),
-//           kRange kUint 2; 200 rows; EQUAL on the id, all operators on the
-//           4-byte code and the uint16, flushed.
-// Threat: a kEquality numeric must reach SABI as canonical okey bytes (so
-//         EQUAL hits the dictionary), a kBinary attr must be located at its
-//         fixed slot by the compiled re-check, and narrow widths must
-//         sign/zero-extend exactly as before.
+// kEquality kInt 8, kRange kBinary 4 and kRange kUint 2, 200 rows, every
+// operator, flushed.
 TEST_F(BitLSMTestBase, MixedPhysicalTypesEndToEnd) {
   BitLSMOptions o;
   o.attr_num = 3;
@@ -52,10 +47,8 @@ TEST_F(BitLSMTestBase, MixedPhysicalTypesEndToEnd) {
   ASSERT_TRUE(db.VerifyQuery(conj));
 }
 
-// Workload: Put a 3-byte and a 5-byte value into a kBinary(4) attr, and
-//           schemas with kInt width 3 and kVarBinary width 8.
-// Threat: silently truncating or over-reading a fixed slot corrupts the
-//         neighbouring slot; all must be refused with InvalidArgument.
+// A 3-byte and a 5-byte value into kBinary(4), and schemas with kInt
+// width 3 and kVarBinary width 8, all refused with InvalidArgument.
 TEST_F(BitLSMTestBase, FixedBinaryWidthIsEnforced) {
   BitLSMOptions o;
   o.attr_num = 1;

@@ -67,32 +67,28 @@ struct BitLSMOptions {
   rocksdb::SequenceNumber read_seqno;  // read sequence number
   double rho;  // proportion parameter that determines bitmap budget
 
-  // Scan data-block reads kept in flight (block_prefetch_queue.h); 0 = one at a
-  // time, the pre-existing behaviour. Costs one block-sized buffer per
-  // outstanding read per live table iterator, so depth * block_size * levels.
-  // Silently does nothing unless the build found liburing.
+  // Scan data-block reads kept in flight; 0 = one at a time. Costs one
+  // block-sized buffer per outstanding read per live table iterator. Does
+  // nothing unless the build found liburing.
   uint32_t scan_prefetch_depth = 0;
 
   // Cardinality estimator (read-side planning stats; bit_lsm_estimator.h).
   // Off by default; none of these knobs touch the SST format.
   bool enable_estimator = false;
   uint32_t estimator_grid_cells = 256;  // per-attr okey-grid resolution
-  // Floor between stats rebuilds; bounds the refresh worker's duty cycle
-  // under churn.
+  // Floor between stats rebuilds.
   uint32_t estimator_min_rebuild_interval_ms = 1000;
 
   // Keep only the SABI directory resident per table and read bin bitmaps on
-  // demand, caching the DECODED bin in the block cache keyed off RocksDB's
-  // own per-file cache key. Off by default: the resident path stays the
-  // fastest while the index fits in memory. On-demand bin reads bypass block
-  // checksums -- a corrupted bin aborts (CRoaring frozen-view validation)
-  // rather than returning a Status.
+  // demand, caching the decoded bin in the block cache. Off by default: the
+  // resident path is fastest while the index fits in memory. On-demand bin
+  // reads bypass block checksums, so a corrupted bin aborts rather than
+  // returning a Status.
   bool ondemand_index = false;
 };
-// Schema sanity for an open/create path: attr_num agrees with attr_specs and
-// every spec's width fits its physical type. Returned as a status rather
-// than asserted, so a Release build refuses a bad schema instead of laying
-// rows out with a zero-width slot.
+// Schema sanity for open/create: attr_num agrees with attr_specs and every
+// spec's width fits its physical type. A status rather than an assert, so a
+// Release build refuses a bad schema.
 inline rocksdb::Status ValidateAttrSpecs(const BitLSMOptions& o) {
   if (o.attr_specs.size() != o.attr_num)
     return rocksdb::Status::InvalidArgument(

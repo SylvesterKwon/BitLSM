@@ -20,17 +20,14 @@ using Attr =
 
 namespace bit_lsm {
 
-// Value format v3 (versioned via kBitLSMFormatVersion in sabi.h):
+// Row value format:
 //   [null bitmap ceil(n_nullable/8)B][var_end u32 x n_variable]
 //   [fixed slots][variable bytes][payload]
-// The null bitmap (present only when some attr is nullable; bit set = NULL)
-// leads so its size is schema-derived. Only information that cannot be derived
-// from the schema is stored: var_end[r] is the end offset of the r-th
-// kVarBinary attr's bytes relative to variable_base. Every other physical type
-// has a fixed slot of spec.width bytes at a schema-derived offset (double =
-// 8B, so a non-nullable double-only schema is byte-identical to v2), and the
-// payload spans [variable_base + var_end[last], value.size()), so neither
-// needs a stored offset.
+// The null bitmap is present only when some attr is nullable (bit set = NULL).
+// var_end[r] is the end offset of the r-th kVarBinary attr's bytes relative to
+// variable_base; every other physical type has a fixed slot of spec.width
+// bytes at a schema-derived offset, and the payload spans
+// [variable_base + var_end[last], value.size()).
 struct ValueLayout {
   uint32_t n_variable = 0;
   uint32_t n_nullable = 0;
@@ -173,7 +170,7 @@ inline double NumericToDouble(
   return 0.0;
 }
 
-// Encode given attributes and payload into the v3 value format
+// Encode given attributes and payload into the row value format
 inline void EncodeValue(const ValueLayout& layout,
                         const std::vector<Attr>& attrs,
                         std::string_view payload, std::string& out_value) {
@@ -187,9 +184,7 @@ inline void EncodeValue(const ValueLayout& layout,
 
   out_value.resize(layout.variable_base + variable_bytes + payload.size());
   char* base = out_value.data();
-  // Zero only the null bitmap header; every other byte is written below (or is
-  // a reserved NULL slot, zeroed at its slot). This leaves the non-nullable
-  // path allocation-identical to v2.
+  // Zero only the null bitmap header; every other byte is written below.
   if (layout.null_bitmap_bytes) std::memset(base, 0, layout.null_bitmap_bytes);
 
   char* variable_ptr = base + layout.variable_base;

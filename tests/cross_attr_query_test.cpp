@@ -23,16 +23,12 @@ BitLSMOptions ThreeAttrOptions() {
 }
 }  // namespace
 
-// Workload: rows where the cross-attr clause (a0>=50 OR a2>=50) matches only
-//           via the SECOND condition's attribute; verify in memtable, after
-//           Flush (SST bitmap + revalidation), and after CompactAll.
-// Threat: CheckCondition decodes only clause[0]'s attribute and evaluates the
-//         whole clause against it, silently dropping rows that match via a
-//         different attribute (F1) on all three call sites.
+// Rows that match (a0>=50 OR a2>=50) only through the second attr, in the
+// memtable, after Flush and after CompactAll.
 TEST_F(BitLSMTestBase, CrossAttrOrClauseSameType) {
   BitLSMOptions opt = ThreeAttrOptions();
   CheckedBitLSM db(&OpenDB(opt), opt);
-  // k1 matches ONLY via a2; k2 matches ONLY via a0; k3 matches neither.
+  // k1 matches only via a2; k2 only via a0; k3 matches neither.
   ASSERT_TRUE(db.Put("k1", {1.0, std::string("x"), 100.0}, "p1"));
   ASSERT_TRUE(db.Put("k2", {99.0, std::string("y"), 1.0}, "p2"));
   ASSERT_TRUE(db.Put("k3", {1.0, std::string("z"), 1.0}, "p3"));
@@ -46,10 +42,9 @@ TEST_F(BitLSMTestBase, CrossAttrOrClauseSameType) {
   ASSERT_TRUE(db.VerifyFullScan());
 }
 
-// Workload: cross-attr clause mixing types (a0>=50 OR a1='x'); the row matches
-//           only via the unordered condition.
-// Threat: pre-fix CheckCondition decodes a0 (double) and evaluates the
-//         unordered condition against that double -> bad_variant_access.
+// (a0>=50 OR a1='x') where the row matches only through the unordered
+// condition; decoding a0 for the whole clause would throw
+// bad_variant_access.
 TEST_F(BitLSMTestBase, CrossAttrOrClauseMixedType) {
   BitLSMOptions opt = ThreeAttrOptions();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -63,9 +58,6 @@ TEST_F(BitLSMTestBase, CrossAttrOrClauseMixedType) {
   ASSERT_TRUE(db.VerifyQuery(q));  // SST path
 }
 
-// Workload: same-attr OR clause (a0<3 OR a0>17) after the fix.
-// Threat: regression — the per-condition decode cache must not change
-//         single-attr clause semantics (this worked before the fix).
 TEST_F(BitLSMTestBase, SameAttrOrClauseStillWorks) {
   BitLSMOptions opt = ThreeAttrOptions();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -80,16 +72,12 @@ TEST_F(BitLSMTestBase, SameAttrOrClauseStillWorks) {
   ASSERT_TRUE(db.VerifyQuery(q));
 }
 
-// Workload: three-condition OR clause (a0<3 OR a0>17 OR a1='q') where one row
-//           matches ONLY via the third condition; verified in memtable, after
-//           Flush (SST bitmap union path), and after CompactAll.
-// Threat: BuildQueryBitmap's multi-condition union folds the first two
-//         condition bitmaps and then accumulates the rest in a loop; a
-//         regression there drops rows matched only by the 3rd+ condition.
+// One row matches only through the third condition, which the union loop
+// accumulates after folding the first two.
 TEST_F(BitLSMTestBase, ThreeConditionOrClause) {
   BitLSMOptions opt = ThreeAttrOptions();
   CheckedBitLSM db(&OpenDB(opt), opt);
-  // k5 matches ONLY via a1='q'; k0-k2 via a0<3; k18-k19 via a0>17.
+  // k5 matches only via a1='q'; k0-k2 via a0<3; k18-k19 via a0>17.
   for (int i = 0; i < 20; ++i) {
     ASSERT_TRUE(db.Put(
         "k" + std::to_string(i),

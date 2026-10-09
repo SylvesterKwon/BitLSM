@@ -93,9 +93,8 @@ bool ShadowChecker::MayHaveNewerVersion(const Slice& user_key,
         ucmp->Compare(user_key, ExtractUserKey(f.largest_key)) > 0) {
       continue;
     }
-    // A range tombstone can cover this key without any point entry for it,
-    // and the point-key bloom cannot see range deletions -- so a file that
-    // carries any is never provably clean.
+    // A range tombstone can cover this key without a point entry, and the
+    // bloom cannot see it.
     if (f.file_metadata->num_range_deletions > 0) return true;
     if (FilterSaysNo(f, user_key, ikey)) continue;
     return true;
@@ -113,9 +112,8 @@ bool ShadowChecker::MayHaveNewerVersion(const Slice& user_key,
     if (ucmp->Compare(user_key, ExtractUserKey(f.smallest_key)) < 0) continue;
     if (f.fd.largest_seqno <= cand_seqno) continue;
     if (f.fd.GetNumber() == src_file_no) continue;
-    // A range tombstone can cover this key without any point entry for it,
-    // and the point-key bloom cannot see range deletions -- so a file that
-    // carries any is never provably clean.
+    // A range tombstone can cover this key without a point entry, and the
+    // bloom cannot see it.
     if (f.file_metadata->num_range_deletions > 0) return true;
     if (FilterSaysNo(f, user_key, ikey)) continue;
     return true;

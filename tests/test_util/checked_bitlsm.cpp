@@ -8,10 +8,10 @@
 namespace bit_lsm {
 namespace {
 
-// Independent payload extractor from the documented v3 value layout:
+// Independent payload extractor over the row value layout:
 // [null bitmap][var_end:u32 x n_variable][fixed slots][variable bytes][payload]
-// (implemented from the layout spec, not via ValueLayout, so it stays an
-// independent check of the production encoder)
+// Written without ValueLayout so it stays an independent check of the
+// production encoder.
 std::string PayloadOf(std::string_view buf, const BitLSMOptions& options) {
   std::uint32_t n_var = 0, n_nullable = 0, fixed_bytes = 0;
   for (const AttrSpec& s : options.attr_specs) {

@@ -8,10 +8,9 @@
 
 namespace bit_lsm {
 
-// Packed list of byte strings: one arena plus cumulative end offsets, so N
-// short strings cost N * 4 bytes of metadata instead of N std::string
-// objects. Holds range binning boundaries (in memory and as the v8 policy
-// body) and the builder's dense per-row value buffer.
+// Packed list of byte strings: one arena plus cumulative end offsets. Holds
+// range binning boundaries (in memory and in the blob's policy body) and the
+// builder's per-row value buffer.
 struct BytesList {
   std::string arena;
   std::vector<uint32_t> ends;
@@ -32,9 +31,8 @@ struct BytesList {
     ends.clear();
   }
 
-  // Elements must be sorted. Index of the first element > v (size() when
-  // none) -- the bin-assignment primitive shared by builder and reader, so
-  // the two can never disagree about which bin a value lands in.
+  // Elements must be sorted. Index of the first element > v, size() when
+  // none.
   uint32_t UpperBound(std::string_view v) const {
     uint32_t lo = 0, hi = static_cast<uint32_t>(size());
     while (lo < hi) {

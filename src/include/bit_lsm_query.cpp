@@ -16,7 +16,7 @@ namespace bit_lsm {
 // numeric attrs compare in their native domain, where the decoded value and
 // the comparand share the alternative fixed by the physical type.
 static bool EvalCondition(const QueryCondition& cond, AttrView attr_val) {
-  // 3VL: a NULL attr makes every comparison UNKNOWN, i.e. not a match.
+  // 3VL: a NULL attr makes every comparison UNKNOWN, so no match.
   if (std::holds_alternative<std::monostate>(attr_val)) return false;
   if (std::holds_alternative<std::string_view>(attr_val)) {
     const std::string_view target = std::get<std::string_view>(attr_val);
@@ -134,8 +134,8 @@ bool CompiledQuery::Eval(rocksdb::Slice value) const {
         // 3VL: NULL attr → comparison is UNKNOWN, treated as no-match.
         ok = false;
       } else if (p.is_numeric) {
-        // Fast path: 8-byte double (the common experiment schema) compares
-        // straight from the slot with no variant construction.
+        // Fast path: an 8-byte double compares straight from the slot with no
+        // variant construction.
         if (p.spec.physical_type == PhysicalType::kFloat && p.spec.width == 8) {
           double v;
           std::memcpy(&v, base + p.slot, sizeof(double));
@@ -233,7 +233,7 @@ static std::string ComparandBytes(
 SABIQuery EncodeQuery(const BitLSMQuery& q, const BitLSMOptions& options) {
   SABIQuery out;
   out.clause_groups.reserve(q.clause_groups.size());
-  // Same-attr single-condition kRange clauses intersect into ONE clause at
+  // Same-attr single-condition kRange clauses intersect into one clause at
   // the position of the attr's first occurrence: b >= x AND b < y must reach
   // bin selection as the interval [x, y), not as two half-lines whose bin
   // extents union to the whole attribute.
@@ -264,8 +264,7 @@ SABIQuery EncodeQuery(const BitLSMQuery& q, const BitLSMOptions& options) {
       sc.attr_idx = c.attr_idx;
       if (options.attr_specs[c.attr_idx].index_type == IndexType::kRange) {
         sc.win = ByteInterval::FromOp(c.op, ComparandBytes(c.value));
-        // An empty member contributes nothing to the OR; dropping it keeps
-        // downstream consumers free of empty-interval special cases.
+        // An empty member contributes nothing to the OR; drop it.
         if (sc.win.Empty()) continue;
       } else {
         sc.bytes = ComparandBytes(c.value);

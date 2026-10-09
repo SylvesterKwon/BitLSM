@@ -24,22 +24,19 @@
 #include "table/format.h"
 
 namespace rocksdb {
-class FilePrefetchBuffer;  // held by SABISpanPrefetch through unique_ptr only
+class FilePrefetchBuffer;
 }  // namespace rocksdb
 
 namespace bit_lsm {
 
-// On-disk format version of a BitLSM SST. This build reads exactly v8;
-// older blobs are rejected at open with a Corruption naming the rebuild.
+// On-disk format version. Blobs with any other version are rejected at open.
 //
-// SABI index blob wire layout (v8), as written by SABIBuilder::Finish:
+// SABI index blob wire layout, as written by SABIBuilder::Finish:
 //   [index entries]     per block: [row-count psum u32][bh.offset u32]
 //                       [bh.size u32]
 //   [frozen bitmaps]    per-attr value bins in attr order, tombstone bitmap
 //                       last. Every bitmap starts on a 32-byte boundary
-//                       (blob-relative, first included); gap bytes are zero,
-//                       so one 32B-aligned copy of the region backs every
-//                       frozenView in place.
+//                       (blob-relative); gap bytes are zero.
 //   [binning policies]  per attr:
 //                       kRange:   BytesList of bin_count+1 boundaries
 //                                  ([count u32][end u32 x count][bytes]),
@@ -78,34 +75,26 @@ class SABIReader;
 class SABIFactory;
 class SABISpanPrefetch;
 
-// One condition's flat-bin extent, [first, last] both inclusive; the
-// tombstone is the single bin {TotalBins(), TotalBins()}. Produced by
-// SABIReader::SelectBins, consumed by the bin loaders and the span-prefetch
-// plan alike, so the two can never disagree about which bins a query needs.
+// One condition's flat-bin extent, [first, last] inclusive. The tombstone is
+// bin TotalBins().
 struct BinSelection {
   uint32_t first;
   uint32_t last;
 };
 
-// Per-SST histogram of one kRange attribute, the raw material for DB-level
-// cardinality estimation: bin i covers values in [boundaries[i],
-// boundaries[i+1]) in memcmp order (the last bin also includes its upper
-// edge), counts[i] is that bin's row count. NULL and tombstone rows sit in no
-// value bin, so they are excluded by construction.
+// Per-SST histogram of one kRange attr: bin i covers [boundaries[i],
+// boundaries[i+1]) in memcmp order (the last bin also includes its upper edge)
+// and counts[i] is its row count. NULL and tombstone rows are in no bin.
 struct RangeAttrHistogram {
   BytesList boundaries;          // bin_count + 1, SABI byte domain
   std::vector<uint64_t> counts;  // bin_count
-  // Exact distinct values in this SST. Feeds the estimator's equality floor
-  // on sparse integer domains.
+  // Exact distinct values in this SST.
   uint64_t distinct = 0;
 };
 
-// Per-SST equality-count material for one kEquality attribute: every
-// interned distinct value paired with an estimated row count, sorted by
-// value. The blob persists only per-bin bitmaps, so a value alone in its bin
-// is exact and values sharing a bin split the bin's cardinality uniformly.
-// NULL and tombstone rows sit in no value bin, so they are excluded by
-// construction.
+// Per-SST value counts of one kEquality attr, sorted by value. A value alone
+// in its bin is exact; values sharing a bin split its cardinality uniformly.
+// NULL and tombstone rows are in no bin.
 struct EqualityAttrValueCounts {
   std::vector<std::pair<std::string, double>> value_counts;
 };
@@ -117,10 +106,9 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
   std::vector<EncodedAttr>
       scratch_;  // per-row extraction buffer, attr_num slots
 
-  // Interned buffer for one unordered attribute: each distinct value is
-  // appended once to a string arena and rows keep only its dense id. The
-  // value -> id lookup is a flat open-addressing table so high-cardinality
-  // attributes pay no per-value node allocation.
+  // Interned buffer for one kEquality attr: each distinct value is stored
+  // once in an arena and rows keep its dense id. The value -> id lookup is a
+  // flat open-addressing table.
   struct EqualityAttrBuf {
     struct ValueRef {
       uint32_t offset;
@@ -148,43 +136,33 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
     void Grow();
   };
 
-  // Dense per-row buffer for one kRange attribute: values as bytes, append
-  // only, so a row costs one memcpy. Sort() fills `sorted` (row positions in
-  // value order) and `distinct`; the bin budget and the binning sweep both
-  // read those, so the sort happens once.
+  // Per-row value bytes of one kRange attr, append only. Sort() fills
+  // `sorted` and `distinct`.
   struct RangeAttrBuf {
     BytesList values;
     std::vector<uint32_t> sorted;     // row positions in value order
     std::vector<uint32_t> run_start;  // equal-value runs in `sorted`, plus n
     uint64_t distinct = 0;
-    // Length shared by every value so far: -2 while empty, -1 once two
-    // lengths differ. Uniform 8-byte values (every numeric attr) sort as
-    // contiguous okeys instead of through arena offsets.
+    // Length shared by every value: -2 while empty, -1 once two lengths
+    // differ. Uniform 8-byte values sort as contiguous okeys.
     int32_t uniform_len = -2;
-    // Dense row -> local bin, filled by SetRangeBinningPolicy in one walk
-    // over the sorted runs against the final boundaries.
+    // Row -> local bin, filled by SetRangeBinningPolicy.
     std::vector<uint32_t> bin_of_row;
     void Push(std::string_view v);
     void Sort();
   };
 
-  // Per-attr value buffer, dense: data rows only (kRange bytes; kEquality
-  // interned bytes). NULL and tombstone rows push nothing — they
-  // live solely in attr_null_rows_ / tombstone_bitmap — so binning statistics
-  // are plain scans. CalculateBitmapIndex is the single place that re-aligns
-  // buffer entries with row ids by skipping exactly those bitmaps' ids.
+  // Per-attr value buffer, data rows only: NULL and tombstone rows push
+  // nothing.
   std::vector<std::variant<EqualityAttrBuf, RangeAttrBuf>> attr_buf_;
-  // Per-attr set of row ids whose value is SQL NULL. NULL rows land in no
-  // value bin and never enter binning-boundary estimation, so range/equality
-  // queries auto-exclude them. Empty for non-nullable attrs.
+  // Per-attr row ids whose value is NULL. Empty for non-nullable attrs.
   std::vector<roaring::Roaring> attr_null_rows_;
 
   // Statistics
   uint64_t total_data_entries_size_uncomp_ = 0;  // total size of KVPs (bytes)
   uint32_t data_entries_cnt_ = 0;   // total number of KVPs in current table
   uint32_t index_entries_cnt_ = 0;  // total number of index entries added
-  // Per-attr exact distinct values (directory field). kRange: the sorted
-  // buffer's run count; kEquality: the interning table size.
+  // Per-attr exact distinct values.
   std::vector<uint64_t> distinct_cnts_;
 
   // Bitmap Index
@@ -193,8 +171,7 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
   // Index blob
   std::string index_blob_;
 
-  // Captured by Finish() for tests only: each bin's (tombstone last)
-  // getFrozenSizeInBytes(), read right before writeFrozen() serializes it.
+  // Test-only: each bin's frozen size (tombstone last), captured by Finish().
   std::vector<uint32_t> last_finish_bitmap_sizes_;
 
   // Helper methods
@@ -213,17 +190,14 @@ class SABIBuilder : public rocksdb::UserDefinedIndexBuilder {
   void OnKeyAdded(const rocksdb::Slice& key, ValueType type,
                   const rocksdb::Slice& value);
   rocksdb::Status Finish(rocksdb::Slice* index_contents);
-  // Test-only: exact per-bin (tombstone last) frozen sizes as measured by
-  // Finish() immediately before writeFrozen() -- ground truth independent of
-  // anything a reader later derives from the persisted blob. Valid after
-  // Finish() returns.
+  // Test-only; valid after Finish().
   const std::vector<uint32_t>& TEST_LastFinishBitmapSizes() const {
     return last_finish_bitmap_sizes_;
   }
   void Dump();
 };
 
-// Not used. It's only for implementing UDI interface
+// Unused; satisfies the UDI interface.
 class SABIUDIIterator : public rocksdb::UserDefinedIndexIterator {
  public:
   SABIUDIIterator(const SABIReader* reader);
@@ -236,25 +210,18 @@ class SABIUDIIterator : public rocksdb::UserDefinedIndexIterator {
 
 enum class SABIReaderMode { kResident, kMetadata };
 
-// One decoded bin as a block-cache entry: a frozen view over a shared
-// 32B-aligned arena, built once on a miss and shared by every query while
-// cached. Every bin decoded by one coalesced span read shares one arena
-// (every bitmap start is 32B-aligned, so each view is in place), which lives
-// until the last sharing entry dies -- eviction order across a span never
-// matters. arena is declared before view so the view dies first.
+// One decoded bin as a block-cache entry: a frozen view over a 32B-aligned
+// arena shared by every bin loaded in the same run. The arena lives until the
+// last sharing entry dies; it is declared before view so the view dies first.
 struct SABICachedBin {
   std::shared_ptr<char> arena;
   roaring::Roaring view;
-  // The bin's PADDED extent + the entry struct: a span's entries then sum to
-  // about their arena's size -- the buffer is charged once, neither doubled
-  // nor dropped. Approximate beyond that: the frozen view's own heap
-  // metadata and the shared_ptr control block stay uncharged.
+  // Cache charge: the bin's padded extent plus the entry struct.
   size_t charge = 0;
 };
 
-// RAII pin: keeps one cached bin alive for as long as a scan borrows its
-// view. `owned` is the fallback when a cache insert is refused (strict
-// capacity): the bin then lives exactly as long as the pin.
+// RAII pin keeping one cached bin alive while a scan borrows its view.
+// `owned` holds the bin when the cache refused the insert.
 struct SABIPinnedBin {
   rocksdb::Cache* cache = nullptr;
   rocksdb::Cache::Handle* handle = nullptr;
@@ -286,35 +253,27 @@ struct SABIPinnedBin {
   }
 };
 
-// Process-wide totals for the on-demand bin cache; counted here because
-// these reads bypass BlockBasedTable, so RocksDB's tickers never see them.
+// Process-wide totals for the on-demand bin cache. These reads bypass
+// BlockBasedTable, so RocksDB's tickers never see them.
 struct SABIBinCacheStats {
   uint64_t hits = 0;
   uint64_t misses = 0;
-  // File reads issued: one per coalesced run of missed bins, so a cold range
-  // predicate costs reads << bitmaps_loaded. Synchronous preads only:
-  // async-served runs appear in spans_prefetched instead, and a
-  // submitted-but-unconsumed span read appears in neither -- take device
-  // bytes from OS counters, not bytes_read.
+  // Synchronous file reads issued, one per coalesced run of missed bins.
+  // Async-served runs count in spans_prefetched instead.
   uint64_t reads = 0;
   uint64_t bytes_read = 0;  // bytes pulled off disk
-  // read + decode events (the v1 design's smoking gun)
+  // bin read + decode events
   uint64_t bitmaps_loaded = 0;
-  // A strict/undersized cache refused a decoded-bin insert; the bin lived
-  // only as long as its pin.
+  // Decoded-bin inserts the cache refused.
   uint64_t inserts_refused = 0;
-  // Cache-missing runs the span-prefetch plan computed, counted only when
-  // the machinery engaged (>= 2 runs; see SABISpanPrefetch) -- so a build
-  // with no liburing still shows the path ran before its submits were
-  // refused.
+  // Miss runs the span-prefetch plan computed, counted only when it engaged
+  // (>= 2 runs).
   uint64_t spans_planned = 0;
-  // Miss runs served out of a span-prefetch buffer instead of a fresh
-  // pread; such a run adds bytes_read but no reads.
+  // Miss runs served from a span-prefetch buffer; they add bytes_read but no
+  // reads.
   uint64_t spans_prefetched = 0;
-  // Planned runs the submit phase did not put in flight -- async reads
-  // unavailable, the per-query slot cap, or a refused submit -- so their
-  // loads take the sync pread path (visible in `reads`). Silent async
-  // disablement shows up here as spans_dropped == spans_planned.
+  // Planned runs never put in flight (async reads unavailable, slot cap,
+  // refused submit); they load synchronously.
   uint64_t spans_dropped = 0;
 };
 SABIBinCacheStats GetSABIBinCacheStats();
@@ -329,28 +288,23 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   const rocksdb::BlockBasedTable* table_ = nullptr;
   // First index of attr_idx's bin range in the flat bitmap array.
   uint32_t AttrBinOffset(uint32_t attr_idx) const;
-  // The table's block cache; null when caller-supplied table options disable
-  // it (the probe/load paths then hand decoded bins straight to their pins).
+  // The table's block cache; null when the table options disable it.
   rocksdb::Cache* BinCache() const;
-  // The block-cache key of flat_idx's decoded bin, derived from the file's
-  // base key and the bin's absolute file offset; the single definition the
-  // probe, load and peek paths all share.
+  // Block-cache key of flat_idx's decoded bin: the file's base key plus the
+  // bin's file offset.
   rocksdb::CacheKey BinCacheKey(uint32_t flat_idx) const;
-  // Cache probe for one bin; on a hit fills *slot (pinning the entry) and
-  // returns true. slot->view stays null on a miss.
+  // Cache probe for one bin: on a hit pins the entry into *slot and returns
+  // true.
   bool ProbeBin(rocksdb::Cache* cache, uint32_t flat_idx, SABIPinnedBin* slot);
-  // Loads missed bins [a, b] (contiguous in the blob) with ONE file read --
-  // or a copy out of `prefetch`'s buffers when they already hold the run --
-  // into one shared 32B-aligned arena, freezes each bin's view in place,
-  // inserts each into `cache` (pin owns the bin on refusal or null cache;
-  // the arena stays shared either way) and fills slots[i - a]. Returns false
-  // on allocation or I/O failure; nothing is cached or filled then.
+  // Loads missed bins [a, b] with one file read (or from `prefetch` when it
+  // holds the run) into one shared arena, inserts each bin into `cache` and
+  // fills slots[i - a]. Returns false on allocation or I/O failure; nothing
+  // is cached or filled then.
   bool LoadRun(uint32_t a, uint32_t b, rocksdb::Cache* cache,
                SABIPinnedBin* slots, SABISpanPrefetch* prefetch);
 
  public:
-  // Self-describing: the schema residue (attr index_types) is parsed from the
-  // blob's directory, so no schema binding is needed to open an SST.
+  // The schema is parsed from the blob's directory; no binding needed.
   explicit SABIReader(rocksdb::Slice& index_block);  // = kResident
   SABIReader(rocksdb::Slice& index_block, SABIReaderMode mode);
   const SABISchema& schema() const { return schema_; }
@@ -377,128 +331,83 @@ class SABIReader : public rocksdb::UserDefinedIndexReader {
   void SetTable(const rocksdb::BlockBasedTable* table) override {
     table_ = table;
   }
-  // Resident: a direct pointer, pin untouched. Metadata: cache lookup or
-  // read+decode+insert; *pin keeps the bin alive; nullptr on I/O failure.
-  // flat_idx == TotalBins() is the tombstone. A non-null `prefetch` lets a
-  // cold load copy out of an already-submitted span read instead of issuing
-  // its own pread (SABISpanPrefetch).
+  // Resident mode: a direct pointer, pin untouched. Metadata mode: cache
+  // lookup or read+decode+insert, *pin keeps the bin alive, nullptr on I/O
+  // failure. flat_idx == TotalBins() is the tombstone. A cold load copies
+  // from `prefetch` when it holds the run.
   const roaring::Roaring* Bin(uint32_t flat_idx, SABIPinnedBin* pin,
                               SABISpanPrefetch* prefetch = nullptr);
-  // Computes cond's flat-bin extent without loading anything: the single bin
-  // an kEquality equality maps to, or the clamped [first, last] range an
-  // kRange comparison covers. Returns false when the condition matches no
-  // bin (the empty result). The one source of truth for bin selection: the
-  // iterator's materialization and the span-prefetch plan both consume it.
+  // cond's flat-bin extent, without loading anything. Returns false when the
+  // condition matches no bin.
   bool SelectBins(const SABICondition& cond, BinSelection* out) const;
-  // True when flat_idx's decoded bin is in the block cache right now; takes
-  // no pin and counts no hit/miss stats (the span-prefetch plan peeks ahead
-  // of the real probes).
+  // True when flat_idx's decoded bin is in the block cache; takes no pin and
+  // counts no stats.
   bool BinCached(uint32_t flat_idx) const;
-  // Span loader for one attr's contiguous bins [first_flat, last_flat]
-  // (inclusive): probes the cache per bin, then coalesces each maximal run
-  // of misses into ONE file read backing one shared arena. Views append to
-  // *out_views in flat-idx order; *out_pins keeps them alive. Resident mode
-  // appends direct pointers, pins untouched. Returns false on I/O failure
-  // (treat like Bin() returning nullptr); appends nothing then. `prefetch`
-  // as in Bin().
+  // Loads contiguous bins [first_flat, last_flat]: probes the cache per bin
+  // and coalesces each run of misses into one file read. Views append to
+  // *out_views in flat-idx order, *out_pins keeps them alive. Returns false
+  // on I/O failure and appends nothing then.
   bool BinRange(uint32_t first_flat, uint32_t last_flat,
                 std::vector<const roaring::Roaring*>* out_views,
                 std::vector<SABIPinnedBin>* out_pins,
                 SABISpanPrefetch* prefetch = nullptr);
-  // Returns false only when the query is provably unsatisfiable in this SST
-  // (safe to skip all bitmap work and block fetches). Never returns false
-  // for a query that could actually match a row.
+  // False only when the query provably matches no row of this SST.
   bool QueryCanMatch(const SABIQuery& q) const;
   // Fills `out` with attr_idx's histogram. Returns false when the attr is
-  // out of range, not kRange, or has zero binned rows (its stored boundaries
-  // are meaningless then).
+  // out of range, not kRange, or has no binned rows.
   bool RangeHistogram(uint32_t attr_idx, RangeAttrHistogram* out) const;
-  // Fills `out` with attr_idx's per-value counts (see EqualityAttrValueCounts
-  // for exactness). Returns false when the attr is out of range, not
-  // kEquality, or has zero binned rows.
+  // Fills `out` with attr_idx's per-value counts. Returns false when the attr
+  // is out of range, not kEquality, or has no binned rows.
   bool EqualityValueCounts(uint32_t attr_idx,
                            EqualityAttrValueCounts* out) const;
   void Dump();
 };
 
-// Overlaps one query's cold bin reads on one SST (metadata mode only). Span
-// coalescing already turns a range predicate's contiguous misses into one
-// pread, but the k conditions' runs live in different attr regions of the
-// blob -- far apart -- plus the tombstone, and BuildQueryBitmap would issue
-// those (k+1) preads one at a time. This plans the cache-missing byte runs
-// up front, submits each as one async read (block_prefetch_queue.h's
-// per-slot FilePrefetchBuffer pattern), and lets LoadRun copy out of the
-// buffers as it walks the conditions: cold-path latency drops from the sum
-// of the run reads toward their max.
-//
-// Per-scan lifetime: created by the owning SABITableIterator and destroyed
-// with it; each run's buffer is freed as soon as its bytes are fully
-// consumed, so only unconsumed runs survive to the destructor. On any
-// unavailability -- no liburing (the shared process-wide flag in
-// block_prefetch_queue.h), a refused submit, a short buffer -- consumers
-// silently read the ordinary way: results identical, speed unchanged.
+// Overlaps one query's cold bin reads on one SST (metadata mode only). The
+// conditions' miss runs live in different regions of the blob, so instead of
+// one pread per run this submits every run as an async read up front and lets
+// LoadRun copy out of the buffers. Per-scan lifetime; a run's buffer is freed
+// once fully consumed. When async reads are unavailable or a submit is
+// refused, consumers read the ordinary way.
 class SABISpanPrefetch {
  public:
   // `reader` must be a metadata-mode reader of `table`; both must outlive
-  // this object (the iterator's table pin covers that).
+  // this object.
   SABISpanPrefetch(SABIReader* reader, const rocksdb::BlockBasedTable* table);
-  // Out-of-line so FilePrefetchBuffer stays forward-declared here;
-  // destruction aborts any read nobody consumed.
+  // Out of line to keep FilePrefetchBuffer forward-declared; aborts any
+  // unconsumed read.
   ~SABISpanPrefetch();
 
-  // Probes the cache over the selections' union, coalesces the missing bins
-  // into maximal byte-contiguous runs (extents meeting at a shared bin
-  // boundary merge, whatever attr they belong to; a gap of even one
-  // unwanted bin keeps runs separate, so no dead bytes ride along), and
-  // submits one async read per run -- only when there are at least two
-  // (a lone run gains nothing over the sync read LoadRun issues anyway),
-  // and at most kMaxSlots of them, in plan order. Runs it does not put in
-  // flight count as spans_dropped and load synchronously.
+  // Probes the cache over the selections, coalesces the missing bins into
+  // byte-contiguous runs and submits one async read per run, only when there
+  // are at least two and at most kMaxSlots of them. Runs not put in flight
+  // count as spans_dropped and load synchronously.
   void PlanAndSubmit(const std::vector<BinSelection>& selections);
 
   // Copies file bytes [offset, offset + len) into dst if one submitted run
-  // fully holds them: the first touch of a run polls its read at the run's
-  // own offset (the only offset an explicit async submit answers to);
-  // sub-ranges then serve from the populated buffer with no further I/O.
-  // False = read the file the ordinary way; a failed or short buffer kills
-  // its whole run, never serving part of it.
+  // fully holds them. False means read the file the ordinary way; a failed or
+  // short buffer kills its whole run.
   bool TryConsume(uint64_t offset, size_t len, char* dst);
 
  private:
-  // kDead covers both a failed slot and a fully-drained one: either way the
-  // consumer preads.
+  // kDead: failed or fully drained; the consumer preads.
   enum class SlotState { kSubmitted, kPopulated, kDead };
-  // One in-flight run. Unlike BlockPrefetchQueue's fixed reused window,
-  // slots are per-query and never reused. The query does NOT bound the run
-  // count -- cache state does: a half-resident range fragments into one run
-  // per cached/uncached alternation, hundreds at fine rho -- so submission
-  // stops at kMaxSlots and each buffer is freed the moment its run is fully
-  // consumed rather than at end of scan.
+  // One in-flight run; slots are per-query and never reused.
   struct Slot {
     std::unique_ptr<rocksdb::FilePrefetchBuffer> buf;
     uint64_t offset = 0;  // absolute file offset of the run
     size_t len = 0;
-    // Unconsumed bytes; consumed sub-ranges are disjoint whenever the bin
-    // cache is live, so hitting 0 means the whole run was copied out and
-    // buf can be freed. (With no bin cache sub-ranges can overlap; the
-    // clamped subtraction then only frees early, degrading to preads.)
+    // Unconsumed bytes; at 0 the whole run was copied out and buf is freed.
     size_t remaining = 0;
     SlotState state = SlotState::kDead;
-    // Valid once kPopulated: the run's bytes inside buf, stable afterwards
-    // because nothing touches buf again.
+    // The run's bytes inside buf; valid once kPopulated.
     rocksdb::Slice data;
   };
 
-  // Submitted slots per query. Each slot holds its whole run's bytes from
-  // submit until consumption (or death), so this caps transient memory when
-  // a half-resident range plans hundreds of tiny runs; runs beyond the cap
-  // just keep their sync preads. 64 slots cover every plausible
-  // all-cold CNF (one run per condition region plus the tombstone) with
-  // room to spare.
+  // Cap on submitted slots per query; runs beyond it load synchronously.
   static constexpr size_t kMaxSlots = 64;
 
-  // Submits flat-bin miss run [a, b] (inclusive); false = nothing in
-  // flight, the run's loads stay synchronous.
+  // Submits miss run [a, b]; false means nothing in flight.
   bool Submit(uint32_t a, uint32_t b);
 
   SABIReader* reader_;
@@ -508,21 +417,18 @@ class SABISpanPrefetch {
 
 class SABIFactory : public rocksdb::UserDefinedIndexFactory {
  public:
-  // Builds run concurrently, so each NewBuilder() gets a fresh extractor from
-  // this callable; the callable itself must be thread-safe to invoke.
+  // Each NewBuilder() gets a fresh extractor from this callable, which must
+  // be thread-safe: builds run concurrently.
   using ExtractorFactory = std::function<std::unique_ptr<AttrExtractor>()>;
 
-  // Reader-only factory: readers self-describe from the blob's directory, so
-  // no schema is needed to open SSTs. NewBuilder() is unavailable in this
-  // state.
+  // Reader-only factory; NewBuilder() is unavailable.
   SABIFactory() = default;
   SABIFactory(SABISchema schema, ExtractorFactory extractor_factory)
       : schema_(std::move(schema)),
         extractor_factory_(std::move(extractor_factory)) {}
-  // Standalone convenience: derives the schema residue and wires the default
-  // v3-layout extractor. The only constructor that carries `options` itself
-  // (ondemand_index gates the reader mode below); the other constructors
-  // leave options_ default (ondemand_index == false).
+  // Standalone convenience: derives the schema and uses the ValueLayout
+  // extractor. The only constructor that sets options_, which gates the
+  // reader mode.
   explicit SABIFactory(const BitLSMOptions& options)
       : SABIFactory(SABISchema::FromOptions(options), [options] {
           return std::make_unique<ValueLayoutExtractor>(options);
@@ -533,26 +439,20 @@ class SABIFactory : public rocksdb::UserDefinedIndexFactory {
   rocksdb::UserDefinedIndexBuilder* NewBuilder() const override;
   std::unique_ptr<rocksdb::UserDefinedIndexReader> NewReader(
       rocksdb::Slice& index_block_) const override;
-  // Rejects blobs with a missing or non-v8 version footer, an invalid
-  // directory, or (when this factory is schema-bound) index_types that differ
-  // from the bound schema. A schema-less factory skips the index_types
-  // cross-check and trusts the blob's directory.
+  // Rejects blobs with a missing or wrong version footer, an invalid
+  // directory, or (when schema-bound) index_types that differ from the bound
+  // schema.
   rocksdb::Status NewReader(
       const rocksdb::UserDefinedIndexOption& option,
       rocksdb::Slice& index_block,
       std::unique_ptr<rocksdb::UserDefinedIndexReader>& reader) const override;
-  // True exactly when options_.ondemand_index: every reader this factory
-  // produces then has RetainsIndexContents() == false, so the open path can
-  // skip caching the raw block it is about to discard.
+  // True when options_.ondemand_index, so the open path can skip caching the
+  // raw index block.
   bool ProducesMetadataOnlyReaders() const override;
 
  private:
   SABISchema schema_;
   ExtractorFactory extractor_factory_;
-  // Value-init: attr_num/rho/read_seqno have no in-class default member
-  // initializers, so `{}` is what keeps them zero (rather than
-  // indeterminate) for the schema-less/schema-bound constructors that never
-  // assign options_.
   BitLSMOptions options_{};
 };
 

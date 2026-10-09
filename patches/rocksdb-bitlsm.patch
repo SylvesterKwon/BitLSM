@@ -13,20 +13,18 @@ index eb42e1c7276a9772b4db50a0d2a775422b532b0d..5498ca8b3769aad7fcd1bc0c9e3486a6
    friend class MemTableList;
  
 diff --git a/env/fs_posix.cc b/env/fs_posix.cc
-index 34efe1204f6d9ddf062b89d2360208b12eca9a44..f12c30476137cb39c375edbeeac4783584094cfa 100644
+index 34efe1204f6d9ddf062b89d2360208b12eca9a44..7635b4f2741c0d8bb238bbfa0d2ac93fd6f2577e 100644
 --- a/env/fs_posix.cc
 +++ b/env/fs_posix.cc
-@@ -1232,6 +1232,41 @@ class PosixFileSystem : public FileSystem {
+@@ -1232,6 +1232,39 @@ class PosixFileSystem : public FileSystem {
          if (posix_handle->iu != iu) {
            return IOStatus::IOError("");
          }
 +
-+        // The ring carries every async read this thread has in flight, so the
-+        // wait above can return a completion for a request this call is not
-+        // aborting. Consuming its CQE removes it from the ring for good: the
-+        // request must be finished and delivered here exactly as Poll would
-+        // have, or a later Poll on it waits forever for a completion that no
-+        // longer exists.
++        // The ring carries every async read of this thread, so the wait above
++        // can return a completion for a request this call is not aborting. Its
++        // CQE is consumed here, so the request must be finished and delivered
++        // as Poll would have.
 +        if (std::find(io_handles.begin(), io_handles.end(),
 +                      static_cast<void*>(posix_handle)) == io_handles.end()) {
 +          // Reset cqe data to catch any stray reuse of it
@@ -58,7 +56,7 @@ index 34efe1204f6d9ddf062b89d2360208b12eca9a44..f12c30476137cb39c375edbeeac47835
          posix_handle->req_count++;
  
          // Reset cqe data to catch any stray reuse of it
-@@ -1248,15 +1283,19 @@ class PosixFileSystem : public FileSystem {
+@@ -1248,15 +1281,18 @@ class PosixFileSystem : public FileSystem {
          //   found, the cancel request is completed with -ENOENT.
          //
          // Every handle has to wait for 2 requests completion: original one and
@@ -66,9 +64,8 @@ index 34efe1204f6d9ddf062b89d2360208b12eca9a44..f12c30476137cb39c375edbeeac47835
 -        if (posix_handle->req_count == 2 &&
 -            static_cast<Posix_IOHandle*>(io_handles[i]) == posix_handle) {
 +        // the cancel request which is tracked by PosixHandle::req_count. Both
-+        // can be reaped while the loop waits on an earlier handle of this
-+        // call, so completion is recorded on whichever handle reached 2, not
-+        // only on the one currently waited for.
++        // can be reaped while the loop waits on an earlier handle, so
++        // completion is recorded on whichever handle reached 2.
 +        if (posix_handle->req_count == 2) {
            posix_handle->is_finished = true;
            FSReadRequest req;
@@ -83,18 +80,16 @@ index 34efe1204f6d9ddf062b89d2360208b12eca9a44..f12c30476137cb39c375edbeeac47835
        }
      }
 diff --git a/env/io_posix.h b/env/io_posix.h
-index ca33b8e3e948057450bb60a1e46bb54103aa968c..48081d99da0cbe5be9e3a898d0ba26a9761221c5 100644
+index ca33b8e3e948057450bb60a1e46bb54103aa968c..c5bf72d8374cf0415297df9aaedd178814dda3db 100644
 --- a/env/io_posix.h
 +++ b/env/io_posix.h
-@@ -310,6 +310,14 @@ inline void DeleteIOUring(void* p) {
+@@ -310,6 +310,12 @@ inline void DeleteIOUring(void* p) {
  inline struct io_uring* CreateIOUring(unsigned int flags = 0) {
    struct io_uring* new_io_uring = new struct io_uring;
    int ret = io_uring_queue_init(kIoUringDepth, new_io_uring, flags);
 +  // SABI: IORING_SETUP_SINGLE_ISSUER (Linux 6.0) and IORING_SETUP_DEFER_TASKRUN
 +  // (6.1) are throughput hints, but an older kernel rejects the whole ring with
-+  // EINVAL rather than ignoring them. Without this retry ReadAsync and the
-+  // io_uring MultiRead path are unavailable on every pre-6.0 kernel, which
-+  // silently turns batched block reads back into one synchronous read apiece.
++  // EINVAL rather than ignoring them, so retry without them.
 +  if (ret == -EINVAL && flags != 0) {
 +    ret = io_uring_queue_init(kIoUringDepth, new_io_uring, 0);
 +  }
@@ -102,7 +97,7 @@ index ca33b8e3e948057450bb60a1e46bb54103aa968c..48081d99da0cbe5be9e3a898d0ba26a9
      delete new_io_uring;
      new_io_uring = nullptr;
 diff --git a/include/rocksdb/user_defined_index.h b/include/rocksdb/user_defined_index.h
-index 395f9fbf35306b366872df5a0cd24701c621b017..28a5d8213a551dad4d7c1b57a9b86c7f4b05dae7 100644
+index 395f9fbf35306b366872df5a0cd24701c621b017..de7c5cb26b64b80343d728561e4aec7f645cf392 100644
 --- a/include/rocksdb/user_defined_index.h
 +++ b/include/rocksdb/user_defined_index.h
 @@ -19,6 +19,8 @@
@@ -124,33 +119,30 @@ index 395f9fbf35306b366872df5a0cd24701c621b017..28a5d8213a551dad4d7c1b57a9b86c7f
    };
  
    // File offset and size of the data block
-@@ -142,6 +147,18 @@ class UserDefinedIndexReader {
+@@ -142,6 +147,16 @@ class UserDefinedIndexReader {
    // The memory usage of the index, including the size of the raw contents and
    // any other heap data structures allocated by the reader
    virtual size_t ApproximateMemoryUsage() const = 0;
 +
 +  // A reader that copies everything it needs out of the index block during
-+  // construction returns false. The table then frees the raw block instead
-+  // of keeping it resident and pins only the reader for the table's
-+  // lifetime (see BlockBasedTable::PrefetchIndexAndFilterBlocks).
++  // construction returns false; the table then frees the raw block and pins
++  // only the reader.
 +  virtual bool RetainsIndexContents() const { return true; }
 +
-+  // Pinned-path only: hands the reader its table, after construction and
-+  // before any query, so an on-demand reader can reach the file, the index
-+  // block's handle and the cache-key base through it. The table outlives
-+  // the reader. Default: ignore.
++  // Hands the reader its table after construction and before any query, so
++  // an on-demand reader can reach the file and the cache-key base. The table
++  // outlives the reader. Default: ignore.
 +  virtual void SetTable(const BlockBasedTable* /*table*/) {}
  };
  
  // Options for user defined index
-@@ -182,6 +199,11 @@ class UserDefinedIndexFactory : public Customizable {
+@@ -182,6 +197,10 @@ class UserDefinedIndexFactory : public Customizable {
      reader = NewReader(index_block);
      return Status::OK();
    };
 +
 +  // True when NewReader produces readers with RetainsIndexContents() ==
-+  // false. Checked before the reader exists, so the open path can skip
-+  // caching a raw block it is about to discard.
++  // false, so the open path can skip caching the raw block.
 +  virtual bool ProducesMetadataOnlyReaders() const { return false; }
  };
  
@@ -169,10 +161,10 @@ index 7d7011d40571bd7694ea6515aed74d43de3752d6..5a09084e06e90a317a3e41fba148c39e
    ~BlockIter() override {
      // Assert that the BlockIter is never deleted while Pinning is Enabled.
 diff --git a/table/block_based/block_based_table_reader.cc b/table/block_based/block_based_table_reader.cc
-index 094b0e0cb01b23c499d8e9ad5f72e21f6567e82b..aa11ba35cbc2d523774354a71c7a2bc74362eeb9 100644
+index 094b0e0cb01b23c499d8e9ad5f72e21f6567e82b..f6546df068d66e1e815a6e299761556660fc9499 100644
 --- a/table/block_based/block_based_table_reader.cc
 +++ b/table/block_based/block_based_table_reader.cc
-@@ -1356,32 +1356,65 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
+@@ -1356,32 +1356,61 @@ Status BlockBasedTable::PrefetchIndexAndFilterBlocks(
      // If the UDI block size is 0, that means there's effectively no user
      // defined index. In that case, skip setting up the reader.
      if (udi_block_handle.size() > 0) {
@@ -183,17 +175,15 @@ index 094b0e0cb01b23c499d8e9ad5f72e21f6567e82b..aa11ba35cbc2d523774354a71c7a2bc7
 +        const bool metadata_only =
 +            table_options.user_defined_index_factory
 +                ->ProducesMetadataOnlyReaders();
-+        // A metadata-only reader discards the raw block after parsing;
-+        // caching that block would only hold bytes nothing will read again.
++        // A metadata-only reader discards the raw block after parsing, so do
++        // not cache it.
 +        const bool use_cache_for_udi = use_cache && !metadata_only;
 +        // Validate that the UDI block parses. With cache_index_and_filter_
-+        // blocks on (and the reader not metadata-only) this also warms the
-+        // block cache and the entry is released at the end of this scope;
-+        // queries re-fetch it via GetUserDefinedIndexReader (block cache
-+        // hit, or re-read + re-parse on a miss). With the option off the
-+        // entry is heap owned and is kept in rep_->udi_block_pinned for the
-+        // table's lifetime. A metadata-only reader is always pinned in
-+        // rep_->udi_meta_block instead, regardless of the option.
++        // blocks on this also warms the block cache; the entry is released at
++        // the end of this scope and queries re-fetch it. With the option off
++        // the entry is kept in rep_->udi_block_pinned for the table's
++        // lifetime. A metadata-only reader is always pinned in
++        // rep_->udi_meta_block instead.
 +        CachableEntry<Block_kUserDefinedIndex> udi_block;
          s = RetrieveBlock(prefetch_buffer, ro, udi_block_handle,
 -                          rep_->decompressor.get(), &rep_->udi_block,
@@ -223,17 +213,15 @@ index 094b0e0cb01b23c499d8e9ad5f72e21f6567e82b..aa11ba35cbc2d523774354a71c7a2bc7
                                     udi_name + " in file " +
                                     rep_->file->file_name());
 +          } else if (metadata_only) {
-+            // Keep the parsed reader, drop the raw block. use_cache_for_udi
-+            // is false here, so this entry owns its value and the move is
-+            // safe.
++            // Keep the parsed reader, drop the raw block; this entry owns its
++            // value since use_cache_for_udi is false.
 +            assert(udi_block.GetOwnValue());
 +            std::unique_ptr<UserDefinedIndexReader> udi_reader =
 +                udi_block.GetValue()->ReleaseReader();
 +            assert(!udi_reader->RetainsIndexContents());
 +            if (udi_reader->RetainsIndexContents()) {
-+              // A factory that lies about being metadata-only must degrade
-+              // to full pinning, not to a reader left holding freed bytes:
-+              // put the reader back and pin the whole block instead.
++              // The factory claimed metadata-only but the reader retains the
++              // block: put the reader back and pin the whole block.
 +              udi_block.GetValue()->SetReader(std::move(udi_reader));
 +              rep_->udi_block_pinned = std::move(udi_block);
 +            } else {
@@ -255,7 +243,7 @@ index 094b0e0cb01b23c499d8e9ad5f72e21f6567e82b..aa11ba35cbc2d523774354a71c7a2bc7
            }
          }
        }
-@@ -1480,6 +1513,51 @@ size_t BlockBasedTable::ApproximateMemoryUsage() const {
+@@ -1480,6 +1509,50 @@ size_t BlockBasedTable::ApproximateMemoryUsage() const {
    return usage;
  }
  
@@ -269,8 +257,7 @@ index 094b0e0cb01b23c499d8e9ad5f72e21f6567e82b..aa11ba35cbc2d523774354a71c7a2bc7
 +  }
 +  if (rep_->udi_meta_block != nullptr) {
 +    // Metadata-only reader, pinned for the table's lifetime regardless of
-+    // cache_index_and_filter_blocks; checked first since neither of the
-+    // branches below applies to it.
++    // cache_index_and_filter_blocks.
 +    assert(rep_->udi_meta_block->reader() != nullptr);
 +    out_entry->SetUnownedValue(rep_->udi_meta_block.get());
 +    return Status::OK();
@@ -308,7 +295,7 @@ index 094b0e0cb01b23c499d8e9ad5f72e21f6567e82b..aa11ba35cbc2d523774354a71c7a2bc7
  // metaindex
  // block and its iterator.
 diff --git a/table/block_based/block_based_table_reader.h b/table/block_based/block_based_table_reader.h
-index b20d0db194e63c9f06145f35ba09078758b8e84f..2fb4f271fe17beacd50efb5a84e31da98498a371 100644
+index b20d0db194e63c9f06145f35ba09078758b8e84f..8dabab059901e39f3d25669e6700e47ae66b46cf 100644
 --- a/table/block_based/block_based_table_reader.h
 +++ b/table/block_based/block_based_table_reader.h
 @@ -20,6 +20,7 @@
@@ -355,37 +342,33 @@ index b20d0db194e63c9f06145f35ba09078758b8e84f..2fb4f271fe17beacd50efb5a84e31da9
    friend class MockedBlockBasedTable;
    friend class BlockBasedTableReaderTestVerifyChecksum_ChecksumMismatch_Test;
    BlockCacheTracer* const block_cache_tracer_;
-@@ -631,6 +647,21 @@ struct BlockBasedTable::Rep {
+@@ -631,6 +647,18 @@ struct BlockBasedTable::Rep {
    // Footer contains the fixed table information
    Footer footer;
  
-+  // When cache_index_and_filter_blocks is false, the UDI block is read and
-+  // parsed once at open and pinned here for the table's lifetime (heap
-+  // resident, not charged to the block cache) — mirroring how the regular
-+  // index behaves with that option off. Empty when the option is true.
-+  // Declared before index_reader: the UserDefinedIndexReaderWrapper owned by
-+  // index_reader reads this entry, so it must be destroyed after it.
++  // With cache_index_and_filter_blocks off, the UDI block is parsed once at
++  // open and pinned here for the table's lifetime, like the regular index.
++  // Empty when the option is on. Declared before index_reader, whose wrapper
++  // reads this entry, so it is destroyed after it.
 +  CachableEntry<Block_kUserDefinedIndex> udi_block_pinned;
 +
-+  // Metadata-only UDI reader (RetainsIndexContents() == false), pinned for
-+  // the table's lifetime regardless of cache_index_and_filter_blocks; the
-+  // raw UDI block is freed after construction. Wrapped in an (empty)
-+  // Block_kUserDefinedIndex so GetUserDefinedIndexReader hands out the same
-+  // entry type in every mode.
++  // Metadata-only UDI reader, pinned for the table's lifetime regardless of
++  // cache_index_and_filter_blocks; the raw block is freed after construction.
++  // Wrapped in an empty Block_kUserDefinedIndex so GetUserDefinedIndexReader
++  // hands out one entry type in every mode.
 +  std::unique_ptr<Block_kUserDefinedIndex> udi_meta_block;
 +
    std::unique_ptr<IndexReader> index_reader;
    std::unique_ptr<FilterBlockReader> filter;
    std::unique_ptr<UncompressionDictReader> uncompression_dict_reader;
-@@ -717,7 +748,11 @@ struct BlockBasedTable::Rep {
+@@ -717,7 +745,10 @@ struct BlockBasedTable::Rep {
    std::unique_ptr<CacheReservationManager::CacheReservationHandle>
        table_reader_cache_res_handle = nullptr;
  
 -  CachableEntry<Block_kUserDefinedIndex> udi_block;
-+  // Handle of the user-defined index block, if present in this file.
-+  // When cache_index_and_filter_blocks is true the UDI block itself lives in
-+  // the block cache (or is re-read on demand) and is intentionally NOT pinned
-+  // here; see udi_block_pinned below for the option-off case.
++  // Handle of the user-defined index block, if present. With
++  // cache_index_and_filter_blocks on the block lives in the block cache and
++  // is not pinned here; see udi_block_pinned for the option-off case.
 +  BlockHandle udi_handle = BlockHandle::NullBlockHandle();
  
    SequenceNumber get_global_seqno(BlockType block_type) const {
@@ -443,7 +426,7 @@ index 28d181db5652a9b4ce501750519a94ef58739f3c..243eee620de496d5b5872085c89c5337
      }};
  }  // namespace
 diff --git a/table/block_based/block_cache.h b/table/block_based/block_cache.h
-index 564dcf0062dbbaff4b5f7b17ed4a303aa35f2f57..b8a1ff57cf19447f9fd6cd893328609cc4c6fe56 100644
+index 564dcf0062dbbaff4b5f7b17ed4a303aa35f2f57..bfc9dfc2514cce49a5b8f8dd42f3bf5299e2eea9 100644
 --- a/table/block_based/block_cache.h
 +++ b/table/block_based/block_cache.h
 @@ -12,6 +12,7 @@
@@ -454,7 +437,7 @@ index 564dcf0062dbbaff4b5f7b17ed4a303aa35f2f57..b8a1ff57cf19447f9fd6cd893328609c
  #include "table/block_based/block.h"
  #include "table/block_based/block_type.h"
  #include "table/block_based/parsed_full_filter_block.h"
-@@ -75,6 +76,34 @@ class Block_kUserDefinedIndex : public BlockContents {
+@@ -75,6 +76,33 @@ class Block_kUserDefinedIndex : public BlockContents {
    explicit Block_kUserDefinedIndex(BlockContents&& other)
        : BlockContents(std::move(other)) {}
    const Slice& ContentSlice() const { return data; }
@@ -473,9 +456,8 @@ index 564dcf0062dbbaff4b5f7b17ed4a303aa35f2f57..b8a1ff57cf19447f9fd6cd893328609c
 +    return std::move(reader_);
 +  }
 +
-+  // Shadows BlockContents::ApproximateMemoryUsage; the block cache charge
-+  // resolves here statically via TBlocklike, so the parsed reader's memory
-+  // is included in the entry's charge.
++  // Shadows BlockContents::ApproximateMemoryUsage so the parsed reader's
++  // memory is included in the cache charge.
 +  size_t ApproximateMemoryUsage() const {
 +    size_t usage = BlockContents::ApproximateMemoryUsage();
 +    if (reader_) {
@@ -490,7 +472,7 @@ index 564dcf0062dbbaff4b5f7b17ed4a303aa35f2f57..b8a1ff57cf19447f9fd6cd893328609c
  
  struct BlockCreateContext : public Cache::CreateContext {
 diff --git a/table/block_based/user_defined_index_wrapper.h b/table/block_based/user_defined_index_wrapper.h
-index b65ba147e2fc7ab948ecda02fde336658eec3574..493977925061c9f9886a3b7f4faf4db7f7193ba4 100644
+index b65ba147e2fc7ab948ecda02fde336658eec3574..289b116b3cb5d83d90b9fab838721ba8ba554c02 100644
 --- a/table/block_based/user_defined_index_wrapper.h
 +++ b/table/block_based/user_defined_index_wrapper.h
 @@ -101,9 +101,13 @@ class UserDefinedIndexBuilderWrapper : public IndexBuilder {
@@ -592,15 +574,14 @@ index b65ba147e2fc7ab948ecda02fde336658eec3574..493977925061c9f9886a3b7f4faf4db7
    }
  
    virtual Status CacheDependencies(
-@@ -310,7 +330,21 @@ class UserDefinedIndexReaderWrapper : public BlockBasedTable::IndexReader {
+@@ -310,7 +330,20 @@ class UserDefinedIndexReaderWrapper : public BlockBasedTable::IndexReader {
    }
  
    size_t ApproximateMemoryUsage() const override {
 -    return reader_->ApproximateMemoryUsage();
 +    size_t usage = reader_->ApproximateMemoryUsage();
-+    // When cache_index_and_filter_blocks is false, the UDI block (and its
-+    // parsed reader) is heap-pinned in Rep for the table's lifetime; count
-+    // it like a regular index reader counts its pinned index block.
++    // With cache_index_and_filter_blocks off the UDI block is pinned in Rep;
++    // count it like a regular index reader counts its pinned block.
 +    const auto& pinned = table_->get_rep()->udi_block_pinned;
 +    if (!pinned.IsEmpty()) {
 +      usage += pinned.GetValue()->ApproximateMemoryUsage();
@@ -615,7 +596,7 @@ index b65ba147e2fc7ab948ecda02fde336658eec3574..493977925061c9f9886a3b7f4faf4db7
    }
  
    virtual void EraseFromCacheBeforeDestruction(
-@@ -321,6 +355,6 @@ class UserDefinedIndexReaderWrapper : public BlockBasedTable::IndexReader {
+@@ -321,6 +354,6 @@ class UserDefinedIndexReaderWrapper : public BlockBasedTable::IndexReader {
   private:
    std::string name_;
    std::unique_ptr<BlockBasedTable::IndexReader> reader_;
@@ -624,7 +605,7 @@ index b65ba147e2fc7ab948ecda02fde336658eec3574..493977925061c9f9886a3b7f4faf4db7
  };
  }  // namespace ROCKSDB_NAMESPACE
 diff --git a/table/table_test.cc b/table/table_test.cc
-index ae4fbea0e85ceed24604294ddb950ba736fc9786..aab9ab363dab58726d1443afe7b646b6391a684b 100644
+index ae4fbea0e85ceed24604294ddb950ba736fc9786..608c2a110db5121077baa01f3bc1e3dbb0002636 100644
 --- a/table/table_test.cc
 +++ b/table/table_test.cc
 @@ -7493,11 +7493,24 @@ class UserDefinedIndexTestBase : public BlockBasedTableTestBase {
@@ -682,7 +663,7 @@ index ae4fbea0e85ceed24604294ddb950ba736fc9786..aab9ab363dab58726d1443afe7b646b6
        class TestUserDefinedIndexIterator : public UserDefinedIndexIterator {
         public:
          TestUserDefinedIndexIterator(
-@@ -8041,6 +8073,340 @@ TEST_P(UserDefinedIndexTest, BasicTestWithoutPartitionedIndex) {
+@@ -8041,6 +8073,335 @@ TEST_P(UserDefinedIndexTest, BasicTestWithoutPartitionedIndex) {
    BasicTest(/*use_partitioned_index=*/false);
  }
  
@@ -764,7 +745,7 @@ index ae4fbea0e85ceed24604294ddb950ba736fc9786..aab9ab363dab58726d1443afe7b646b6
 +  ASSERT_OK(writer->Finish());
 +  writer.reset();
 +
-+  // Open a BlockBasedTable directly so we can exercise the new API.
++  // Open a BlockBasedTable directly.
 +  ImmutableOptions ioptions(options_);
 +  MutableCFOptions moptions((ColumnFamilyOptions(options_)));
 +  EnvOptions eoptions(options_);
@@ -813,8 +794,7 @@ index ae4fbea0e85ceed24604294ddb950ba736fc9786..aab9ab363dab58726d1443afe7b646b6
 +  ASSERT_OK(bbt->GetUserDefinedIndexReader(ReadOptions(), &entry2));
 +  ASSERT_FALSE(entry2.IsEmpty());
 +  ASSERT_NE(entry2.GetValue()->reader(), nullptr);
-+  // The re-fetch must have re-parsed the reader (i.e. a real reload, not a
-+  // still-cached or re-pinned entry).
++  // The re-fetch must have re-parsed the reader.
 +  ASSERT_GT(udi_factory->reader_create_count_, creates_after_first);
 +}
 +
@@ -844,7 +824,7 @@ index ae4fbea0e85ceed24604294ddb950ba736fc9786..aab9ab363dab58726d1443afe7b646b6
 +  ASSERT_OK(writer->Finish());
 +  writer.reset();
 +
-+  // Open a BlockBasedTable directly so we can exercise the new API.
++  // Open a BlockBasedTable directly.
 +  ImmutableOptions ioptions(options_);
 +  MutableCFOptions moptions((ColumnFamilyOptions(options_)));
 +  EnvOptions eoptions(options_);
@@ -875,8 +855,8 @@ index ae4fbea0e85ceed24604294ddb950ba736fc9786..aab9ab363dab58726d1443afe7b646b6
 +  // The block was read and parsed exactly once, eagerly, at open.
 +  ASSERT_EQ(udi_factory->reader_create_count_, 1u);
 +  const size_t usage_before_gets = cache->GetUsage();
-+  // The pinned UDI block (and its parsed reader) must be counted in the
-+  // table reader's own memory accounting, not left untracked.
++  // The pinned UDI block and its parsed reader must be counted in the table
++  // reader's memory accounting.
 +  ASSERT_GE(table->ApproximateMemoryUsage(), udi_factory->last_reader_memory_);
 +
 +  // 1. Fetch: served from the table-lifetime pin, not from the cache.
@@ -935,7 +915,7 @@ index ae4fbea0e85ceed24604294ddb950ba736fc9786..aab9ab363dab58726d1443afe7b646b6
 +  ASSERT_OK(writer->Finish());
 +  writer.reset();
 +
-+  // Open a BlockBasedTable directly so we can exercise the new API.
++  // Open a BlockBasedTable directly.
 +  ImmutableOptions ioptions(options_);
 +  MutableCFOptions moptions((ColumnFamilyOptions(options_)));
 +  EnvOptions eoptions(options_);
@@ -969,9 +949,7 @@ index ae4fbea0e85ceed24604294ddb950ba736fc9786..aab9ab363dab58726d1443afe7b646b6
 +  ASSERT_TRUE(udi_factory->last_reader_got_table_);
 +  ASSERT_EQ(cache->GetUsage(), 0u);
 +
-+  // The pin holds only the parsed reader, not the raw block bytes: a
-+  // regression that heap-retains the whole raw block inside the meta block
-+  // would still pass a cache-residency check alone.
++  // The pin holds only the parsed reader, not the raw block bytes.
 +  ASSERT_NE(bbt->get_rep()->udi_meta_block, nullptr);
 +  ASSERT_EQ(bbt->get_rep()->udi_meta_block->ContentSlice().size(), 0u);
 +
@@ -986,9 +964,7 @@ index ae4fbea0e85ceed24604294ddb950ba736fc9786..aab9ab363dab58726d1443afe7b646b6
 +  ASSERT_EQ(udi_factory->reader_create_count_, 1u);
 +  const Block_kUserDefinedIndex* first_ptr = entry.GetValue();
 +
-+  // 2. Evicting the block cache cannot take the pinned reader away (there
-+  // was nothing of the UDI block's for the cache to hold in the first
-+  // place).
++  // 2. Evicting the block cache cannot take the pinned reader away.
 +  entry.Reset();
 +  cache->EraseUnRefEntries();
 +
@@ -1002,9 +978,9 @@ index ae4fbea0e85ceed24604294ddb950ba736fc9786..aab9ab363dab58726d1443afe7b646b6
 +  // Both gets alias the same Rep-owned object.
 +  ASSERT_EQ(first_ptr, entry2.GetValue());
 +
-+  // 3. Drive a real read through the pinned reader. The raw UDI block was
-+  // freed right after construction on this path, so an actual scan is
-+  // exactly what would catch a reader still pointing into freed bytes.
++  // 3. Drive a real read through the pinned reader; the raw UDI block was
++  // freed after construction, so this catches a reader pointing into freed
++  // bytes.
 +  std::unique_ptr<UserDefinedIndexIterator> udi_iter =
 +      entry2.GetValue()->reader()->NewIterator(ReadOptions());
 +  ASSERT_NE(udi_iter, nullptr);

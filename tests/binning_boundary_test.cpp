@@ -32,10 +32,7 @@ BitLSMQuery Cont(CompareOp op, double v) {
 }
 }  // namespace
 
-// Workload: ordered values 0..49; after Flush, run every operator with a
-//           threshold equal to a STORED value (lands on bin boundaries).
-// Threat: off-by-one at the bin boundary (e.g. GREATER vs GREATER_EQUAL) in the
-//         SABI bitmap path.
+// Every operator with a threshold equal to a stored value, after a flush.
 TEST_F(BitLSMTestBase, OrderedBoundaryAllOps) {
   BitLSMOptions opt = ContOpt(0.5);
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -51,12 +48,7 @@ TEST_F(BitLSMTestBase, OrderedBoundaryAllOps) {
   }
 }
 
-// Workload: 100 distinct ordered values but rho so small that many share a
-// bin;
-//           EQUAL queries after Flush.
-// Threat: under-budgeted bins produce false-positive candidates that the
-// MultiGet
-//         re-validation must filter — result must stay exact.
+// Many values share a bin; the false positives must be filtered out.
 TEST_F(BitLSMTestBase, RhoTooSmallStillExact) {
   BitLSMOptions opt = ContOpt(0.01);  // tiny budget -> heavy bin collisions
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -68,9 +60,6 @@ TEST_F(BitLSMTestBase, RhoTooSmallStillExact) {
   ASSERT_TRUE(db.VerifyQuery(Cont(CompareOp::GREATER_EQUAL, 50.0)));
 }
 
-// Workload: 40 distinct categories with a tiny rho; EQUAL on a category + an OR
-//           of two categories, after Flush.
-// Threat: unordered cardinality exceeding the bin budget mis-maps values.
 TEST_F(BitLSMTestBase, UnorderedCardinalityExceedsBins) {
   BitLSMOptions opt = CatOpt(0.05);
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -86,10 +75,7 @@ TEST_F(BitLSMTestBase, UnorderedCardinalityExceedsBins) {
                              {0, CompareOp::EQUAL, std::string("c39")}}})));
 }
 
-// Workload: all rows share one ordered value (everything in one bin), then
-// all
-//           rows distinct; range + equality queries after Flush.
-// Threat: degenerate binning (single bin vs. all-distinct) breaks range eval.
+// All rows in one bin, then all rows distinct.
 TEST_F(BitLSMTestBase, BinningExtremes) {
   {
     BitLSMOptions opt = ContOpt(0.5);
@@ -103,9 +89,6 @@ TEST_F(BitLSMTestBase, BinningExtremes) {
   }
 }
 
-// Workload: a query that matches nothing and the empty query (matches
-// everything). Threat: empty result set vs. full scan boundary handling in the
-// iterator.
 TEST_F(BitLSMTestBase, EmptyResultAndFullMatch) {
   BitLSMOptions opt = ContOpt(0.5);
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -117,8 +100,6 @@ TEST_F(BitLSMTestBase, EmptyResultAndFullMatch) {
   ASSERT_TRUE(db.VerifyFullScan());                       // matches all
 }
 
-// Workload: contradictory CNF (a0>5 AND a0<3) and a satisfiable AND-of-OR.
-// Threat: AND/OR set algebra over roaring bitmaps yields wrong intersection.
 TEST_F(BitLSMTestBase, CnfContradictionAndOr) {
   BitLSMOptions opt = ContOpt(0.5);
   CheckedBitLSM db(&OpenDB(opt), opt);

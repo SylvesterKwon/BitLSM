@@ -12,10 +12,6 @@ using namespace bit_lsm;
 
 // ---- Monotonicity: native order == okey unsigned order ----
 
-// Workload: int64 extremes/near-zero fixtures plus 100k random pairs, compared
-//           in native and okey domains.
-// Threat: a non-monotone I64ToOkey (e.g. missing sign-bit flip) reorders
-//         negative vs positive values, corrupting every SABI bin decision.
 TEST(OkeyEncoding, Int64Monotone) {
   const int64_t fixtures[] = {
       std::numeric_limits<int64_t>::min(), -2, -1, 0, 1, 2,
@@ -31,19 +27,13 @@ TEST(OkeyEncoding, Int64Monotone) {
   }
 }
 
-// Workload: uint64 domain endpoints through U64ToOkey.
-// Threat: any transformation of the already-ordered uint64 domain would break
-//         the identity contract other encoders are calibrated against.
 TEST(OkeyEncoding, Uint64Identity) {
   EXPECT_EQ(U64ToOkey(0u), 0u);
   EXPECT_EQ(U64ToOkey(std::numeric_limits<uint64_t>::max()),
             std::numeric_limits<uint64_t>::max());
 }
 
-// Workload: double fixtures spanning ±inf, ±denormal, ±huge, zero plus 100k
-//           random pairs, compared in native and okey domains.
-// Threat: mishandled IEEE sign-magnitude layout (negatives need full bit flip)
-//         inverts the order of negative doubles in okey space.
+// Includes ±inf, ±denormal, ±huge and zero.
 TEST(OkeyEncoding, DoubleMonotone) {
   const double fixtures[] = {-std::numeric_limits<double>::infinity(),
                              -1e300,
@@ -66,25 +56,20 @@ TEST(OkeyEncoding, DoubleMonotone) {
   }
 }
 
-// Workload: -0.0 and +0.0 through F64ToOkey.
-// Threat: native == treats them as equal, so distinct okeys would let the
-//         bitmap phase prune a -0.0 row on an EQ +0.0 query (false negative).
+// -0.0 == +0.0 natively, so they must get the same okey or the bitmap
+// phase would prune one on an EQUAL query for the other.
 TEST(OkeyEncoding, NegativeZeroCanonicalized) {
   EXPECT_EQ(F64ToOkey(-0.0), F64ToOkey(0.0));
 }
 
-// Workload: quiet NaN through F64ToOkey.
-// Threat: placement is correctness-neutral (row re-verification filters NaN);
-//         only a crash/UB on the encode path would matter.
+// Placement does not matter (row re-verification filters NaN); only a
+// crash would.
 TEST(OkeyEncoding, NanDoesNotCrash) {
   (void)F64ToOkey(std::numeric_limits<double>::quiet_NaN());
 }
 
 // ---- Inverse mapping (debug/Dump only) ----
 
-// Workload: representative int64/double values through okey and back.
-// Threat: a lossy round trip would make Dump/debug output misreport stored
-//         values and mask encoder bugs.
 TEST(OkeyEncoding, RoundTrip) {
   const int64_t ivals[] = {std::numeric_limits<int64_t>::min(), -7, 0, 7,
                            std::numeric_limits<int64_t>::max()};
@@ -95,10 +80,6 @@ TEST(OkeyEncoding, RoundTrip) {
 
 // ---- okey <-> SABI byte domain ----
 
-// Workload: the uint64 domain endpoints plus 100k random okey pairs through
-//           OkeyToBytes, compared in memcmp order (std::string <).
-// Threat: a little-endian or partial write lets a smaller okey sort above a
-//         larger one in the byte domain, mis-binning every numeric attribute.
 TEST(OkeyBytes, MemcmpOrderMatchesOkeyOrder) {
   const uint64_t edges[] = {0,
                             1,
@@ -115,9 +96,6 @@ TEST(OkeyBytes, MemcmpOrderMatchesOkeyOrder) {
   }
 }
 
-// Workload: representative okeys through OkeyToBytes and OkeyFromBytes.
-// Threat: a lossy round trip corrupts the okey coordinates the estimator
-//         recovers from persisted boundary bytes.
 TEST(OkeyBytes, RoundTrip) {
   const uint64_t vals[] = {0, 1, 0x0123456789abcdefull, 0x8000000000000000ull,
                            UINT64_MAX};
@@ -128,7 +106,7 @@ TEST(OkeyBytes, RoundTrip) {
   }
 }
 
-// ---- SABISchema: the schema residue visible to SABI ----
+// ---- SABISchema: the schema visible to SABI ----
 
 static BitLSMOptions MakeOpts3() {
   BitLSMOptions o;
@@ -141,9 +119,6 @@ static BitLSMOptions MakeOpts3() {
   return o;
 }
 
-// Workload: derive SABISchema from a 3-attr BitLSMOptions.
-// Threat: dropping or reordering index_types during derivation would make SABI
-//         parse bins with the wrong binning-policy variant.
 TEST(SABISchema, FromOptionsKeepsOnlyRoles) {
   SABISchema s = SABISchema::FromOptions(MakeOpts3());
   ASSERT_EQ(s.attr_num(), 3u);
@@ -152,10 +127,6 @@ TEST(SABISchema, FromOptionsKeepsOnlyRoles) {
   EXPECT_DOUBLE_EQ(s.rho, 0.2);
 }
 
-// Workload: a 3-clause query over [kRange f64, kEquality, kRange i64]
-//           through the standalone adapter's EncodeQuery.
-// Threat: a comparand encoded with the wrong AttrSpec (or left native) makes
-//         every downstream bin comparison meaningless.
 TEST(EncodeQuery, ComparandsLandInSabiDomain) {
   BitLSMOptions o = MakeOpts3();  // [kRange f64, kEquality, kRange i64]
   BitLSMQuery q(
@@ -174,11 +145,8 @@ TEST(EncodeQuery, ComparandsLandInSabiDomain) {
   EXPECT_TRUE(sq.clause_groups[2][0].win.hi_open);
 }
 
-// Workload: BETWEEN-shaped CNF -- b >= 10.5 AND b < 20.5 as two clauses, the
-//           exact form the range compiler emits.
-// Threat: two half-line clauses reach bin selection separately; each covers
-//         a half-line's worth of bins, so together they load the attribute's
-//         ENTIRE bin set for any range (the 417MB-per-query pathology).
+// b >= 10.5 AND b < 20.5 as two clauses must reach bin selection as one
+// interval; separately each half-line covers most of the bins.
 TEST(EncodeQuery, SameAttrClausesMergeToOneInterval) {
   BitLSMOptions o = MakeOpts3();
   BitLSMQuery q(
@@ -195,9 +163,6 @@ TEST(EncodeQuery, SameAttrClausesMergeToOneInterval) {
   EXPECT_EQ(sq.clause_groups[1][0].bytes, "seoul");
 }
 
-// Workload: contradictory bounds on one attr (b > 20.5 AND b < 10.5).
-// Threat: without interval algebra the contradiction is invisible to bin
-//         selection and every SST is still probed.
 TEST(EncodeQuery, ContradictionSetsUnsat) {
   BitLSMOptions o = MakeOpts3();
   BitLSMQuery q(std::vector<QueryCondition>{{0, CompareOp::GREATER, 20.5},
@@ -206,11 +171,8 @@ TEST(EncodeQuery, ContradictionSetsUnsat) {
   EXPECT_TRUE(sq.unsat);
 }
 
-// Workload: a strict bound at the okey domain edge (i64 > INT64_MAX).
-// Threat: in the okey domain this needed overflow handling; in the byte
-//         domain the bound stays on the comparand with the open flag, so the
-//         interval is non-empty here and every SST prunes it through its
-//         max (lo == max, open) in ConditionImpossible.
+// i64 > INT64_MAX: the bound stays on the comparand with the open flag,
+// and every SST prunes it through its max.
 TEST(EncodeQuery, StrictBoundAboveDomainMaxStaysOpenOnComparand) {
   BitLSMOptions o = MakeOpts3();
   BitLSMQuery q(std::vector<QueryCondition>{
@@ -224,9 +186,7 @@ TEST(EncodeQuery, StrictBoundAboveDomainMaxStaysOpenOnComparand) {
   EXPECT_TRUE(w.hi_unbounded);
 }
 
-// Workload: an OR clause mixing two ordered members on the same attr.
-// Threat: OR members must NOT intersect with each other or with singleton
-//         clauses -- (a=1 OR a=9) is a union, not a window.
+// (a=1 OR a=9) is a union, not a window.
 TEST(EncodeQuery, OrClauseMembersAreNotMerged) {
   BitLSMOptions o = MakeOpts3();
   BitLSMQuery q(std::vector<OrClause>{

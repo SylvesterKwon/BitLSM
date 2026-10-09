@@ -85,7 +85,7 @@ set(CROARING_SOURCE_DIR ${croaring_SOURCE_DIR})
 find_package(Threads REQUIRED)
 find_library(JEMALLOC_LIB jemalloc REQUIRED)
 
-# project_base_lib 정적 라이브러리 생성
+# Static library
 file(GLOB_RECURSE LIB_SOURCES "src/include/*.cpp")
 add_library(project_base_lib STATIC ${LIB_SOURCES})
 target_compile_options(project_base_lib PUBLIC -fno-rtti)
@@ -105,7 +105,7 @@ target_link_libraries(project_base_lib PUBLIC
     rocksdb
 )
 
-# 별칭 타겟 (외부 프로젝트에서 bitlsm::bitlsm으로 참조)
+# Alias for consumers: bitlsm::bitlsm
 add_library(bitlsm::bitlsm ALIAS project_base_lib)
 
 # Tests

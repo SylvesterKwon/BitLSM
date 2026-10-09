@@ -32,15 +32,12 @@ class BitLSM {
                                            const BitLSMOptions& options);
 
  public:
-  // Convenience: opens the default CF only, with `bit_lsm_options` as its
-  // schema. Equivalent to the descriptor form with a single default entry.
+  // Opens the default CF only, with `bit_lsm_options` as its schema.
   BitLSM(const std::string& db_path, const BitLSMOptions& bit_lsm_options,
          const rocksdb::Options& rocksdb_options,
          const rocksdb::BlockBasedTableOptions& table_options);
-  // Multi-CF open. RocksDB rule: descriptors must list every CF that exists
-  // in the DB and must include rocksdb::kDefaultColumnFamilyName. Descriptor
-  // names must also be unique: RocksDB would return two handles to the same
-  // column family, which the registry cannot represent. The rocksdb/table
+  // Multi-CF open. Descriptors must list every CF in the DB including
+  // rocksdb::kDefaultColumnFamilyName, with unique names. The rocksdb/table
   // options are the shared base; each CF's SABI factory is derived from its
   // descriptor's BitLSMOptions.
   BitLSM(const std::string& db_path, const rocksdb::Options& rocksdb_options,
@@ -58,20 +55,17 @@ class BitLSM {
   rocksdb::Status CreateColumnFamily(const std::string& name,
                                      const BitLSMOptions& options,
                                      ColumnFamilyHandle** out);
-  // Invalidates `cf` and removes it from the registry EVEN when the returned
-  // status is not OK: the rocksdb drop can fail past the point of no return,
-  // and unwinding it would leave a half-dead CF still reachable by name. The
-  // caller only loses the ability to retry -- `cf` is dead either way.
+  // Invalidates `cf` and removes it from the registry even when the returned
+  // status is not OK: a rocksdb drop can fail past the point of no return.
+  // `cf` is dead either way.
   rocksdb::Status DropColumnFamily(ColumnFamilyHandle* cf);
   static rocksdb::Status ListColumnFamilies(const rocksdb::Options& options,
                                             const std::string& db_path,
                                             std::vector<std::string>* out);
 
-  // BitLSM core API. The CF-less overloads target the default CF. Every
-  // cf-first overload rejects a null handle -- InvalidArgument from the write
-  // ops, a null iterator from NewIterator, an all-fallback result from
-  // EstimateSelectivity -- so composing one with GetColumnFamily on an
-  // unknown name degrades to an error instead of a crash.
+  // Core API. The CF-less overloads target the default CF. Every cf-first
+  // overload rejects a null handle with an error (InvalidArgument, a null
+  // iterator, an all-fallback estimate) rather than crashing.
   rocksdb::Status Put(ColumnFamilyHandle* cf, const std::string& pk,
                       const std::vector<Attr>& attrs,
                       const std::string& payload);
@@ -116,10 +110,9 @@ class BitLSM {
   // nullptr unless the default CF's BitLSMOptions::enable_estimator is set.
   CardinalityEstimator* Estimator() const { return default_cf_->Estimator(); }
 
-  // Planning-time cardinality estimate against the CF's live SST set; see
-  // EstimateResult for the consumption contract. With the estimator disabled
-  // -- or with an unknown column family -- every queried attr is flagged as
-  // fallback.
+  // Cardinality estimate against the CF's live SST set (see EstimateResult).
+  // With the estimator disabled or an unknown column family every queried
+  // attr is flagged as fallback.
   EstimateResult EstimateSelectivity(ColumnFamilyHandle* cf,
                                      const SABIQuery& q) const {
     return cf && cf->Estimator() ? cf->Estimator()->Estimate(q)

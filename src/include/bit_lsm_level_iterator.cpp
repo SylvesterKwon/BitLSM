@@ -28,21 +28,15 @@ BitLSMLevelIterator::BitLSMLevelIterator(uint32_t level,
       cur_sti_(nullptr) {}
 
 BitLSMLevelIterator::~BitLSMLevelIterator() {
-  // cur_sti_ dereferences a raw BlockBasedTable pointer, and its
-  // udi_entry_/sabi_reader_ may alias memory owned by that table's Rep, so
-  // it must be destroyed before the table cache handle that keeps that table
-  // reader alive is released.
+  // cur_sti_ borrows the table reader, so it must be destroyed before the
+  // table cache handle is released.
   if (cur_sti_) delete cur_sti_;
   if (cur_table_handle_) scan_ctx_.tc->get_cache().Release(cur_table_handle_);
 }
 
 void BitLSMLevelIterator::LoadFile(size_t idx) {
-  // cout << "[BitLSMLevelIterator] level " << level_ << ", " << idx
-  //      << " th file is loading\n";
-
-  // 1. Clean up existing iterator & table handle (iterator first: it
-  // dereferences a raw BlockBasedTable pointer, and its
-  // udi_entry_/sabi_reader_ may alias memory owned by that table's Rep)
+  // 1. Clean up the existing iterator and table handle, iterator first: it
+  // borrows the table reader.
   valid_ = false;
   TableCache::CacheInterface cache_interface = scan_ctx_.tc->get_cache();
   if (cur_sti_ != nullptr) {
@@ -72,8 +66,8 @@ void BitLSMLevelIterator::LoadFile(size_t idx) {
       read_options, scan_ctx_.file_opts, *scan_ctx_.icmp, *file_meta,
       &new_table_handle, scan_ctx_.cf_opts, no_io);
   if (!s.ok()) {
-    // Unreadable SST: its rows cannot be skipped silently, so record the
-    // failure. cur_sti_ stays null and the callers below stop on status_.
+    // Unreadable SST: record the failure; cur_sti_ stays null and callers
+    // stop on status_.
     std::cerr << "Failed to load SST: " << s.ToString() << "\n";
     status_ = s;
     return;

@@ -18,8 +18,8 @@ add_library(bitlsm_testutil STATIC
 target_include_directories(bitlsm_testutil PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(bitlsm_testutil PUBLIC bitlsm::bitlsm GTest::gtest)
 
-# 테스트 1개 = 한 줄. <name>.cpp 를 컴파일하고 bitlsm + gtest 를 링크한 뒤
-# 각 TEST 케이스를 CTest 에 자동 등록한다.
+# One test per line: builds <name>.cpp against bitlsm + gtest and registers
+# each TEST case with CTest.
 function(bitlsm_add_test name)
   add_executable(${name} ${name}.cpp)
   target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -46,7 +46,7 @@ bitlsm_add_test(okey_encoding_test)
 bitlsm_add_test(byte_interval_test)
 bitlsm_add_test(bytes_list_test)
 bitlsm_add_test(extractor_test)
-bitlsm_add_test(sabi_v5_footer_test)
+bitlsm_add_test(sabi_footer_test)
 bitlsm_add_test(okey_zero_regression_test)
 bitlsm_add_test(candidate_iterator_test)
 bitlsm_add_test(sabi_binning_precision_test)
@@ -63,16 +63,14 @@ bitlsm_add_test(physical_type_layout_test)
 bitlsm_add_test(ondemand_index_diff_test)
 bitlsm_add_test(ondemand_bin_cache_test)
 bitlsm_add_test(multi_cf_test)
-# Positive control for the span-prefetch async path: where this build found
-# liburing (cache variable set by RocksDB's Finduring when WITH_LIBURING is
-# on), the test asserts the async branch actually ran instead of quietly
-# passing through the no-liburing fallback.
+# Where this build found liburing, the test asserts the async branch actually
+# ran instead of passing through the fallback.
 if(uring_LIBRARIES)
   target_compile_definitions(ondemand_bin_cache_test PRIVATE BITLSM_HAVE_URING)
 endif()
 
-# stress 티어: 큰 시드/스텝 예산. PR CI 는 -LE stress 로 제외하고
-# 로컬에서 ctest -L stress 로 실행한다.
+# Stress tier: large seed/step budgets. PR CI excludes it with -LE stress;
+# run locally with ctest -L stress.
 function(bitlsm_add_stress_test name)
   add_executable(${name} ${name}.cpp)
   target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

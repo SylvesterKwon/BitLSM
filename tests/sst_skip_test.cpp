@@ -36,11 +36,7 @@ BitLSMQuery CatEq(const std::string& v) {
 
 }  // namespace
 
-// Workload: two Flushed SSTables with disjoint ordered ranges [0,9] and
-//           [90,99]; query with a range that overlaps neither SST.
-// Threat: SST-level skip incorrectly prunes a row that does match, or
-//         incorrectly skips an SST that has matching rows — result diverges
-//         from the reference oracle.
+// Two SSTs with ranges [0,9] and [90,99]; the query overlaps neither.
 TEST_F(BitLSMTestBase, OrderedSkip_BothSSTsMiss) {
   BitLSMOptions opt = ContOpt();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -56,9 +52,7 @@ TEST_F(BitLSMTestBase, OrderedSkip_BothSSTsMiss) {
                                         {{0, CompareOp::LESS_EQUAL, 80.0}}})));
 }
 
-// Workload: two Flushed SSTables with disjoint ordered ranges [0,9] and
-//           [90,99]; query with attr>=5 matches part of SST1 and all of SST2.
-// Threat: SST-level skip wrongly discards SST1 (min=0 ≤ 5 ≤ max=9) or SST2.
+// attr >= 5 matches part of SST1 and all of SST2.
 TEST_F(BitLSMTestBase, OrderedSkip_PartialOverlap) {
   BitLSMOptions opt = ContOpt();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -73,11 +67,7 @@ TEST_F(BitLSMTestBase, OrderedSkip_PartialOverlap) {
   ASSERT_TRUE(db.VerifyQuery(ContQ(CompareOp::LESS_EQUAL, 99.0)));
 }
 
-// Workload: two Flushed SSTables [0,9] and [90,99]; query exactly on SST1's
-//           max boundary value (9).
-// Threat: off-by-one at the skip boundary — GREATER_EQUAL(9) must NOT skip
-//         SST1 (9 is in [0,9]); GREATER(9) must skip SST1 because no row
-//         has attr > 9 in SST1.
+// GREATER_EQUAL(9) must not skip SST1; GREATER(9) must.
 TEST_F(BitLSMTestBase, OrderedSkip_BoundaryAtSSTMax) {
   BitLSMOptions opt = ContOpt();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -97,10 +87,6 @@ TEST_F(BitLSMTestBase, OrderedSkip_BoundaryAtSSTMax) {
   ASSERT_TRUE(db.VerifyQuery(ContQ(CompareOp::LESS, 0.0)));
 }
 
-// Workload: two Flushed SSTables [0,9] and [90,99]; EQUAL queries at various
-//           values including one present in SST1, one in SST2, and one absent.
-// Threat: EQUAL on a value below the SST min or above the SST max must skip;
-//         EQUAL on the exact min/max must not skip.
 TEST_F(BitLSMTestBase, OrderedSkip_EqualAtBoundaries) {
   BitLSMOptions opt = ContOpt();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -122,10 +108,7 @@ TEST_F(BitLSMTestBase, OrderedSkip_EqualAtBoundaries) {
       db.VerifyQuery(ContQ(CompareOp::EQUAL, 100.0)));  // above both SSTs
 }
 
-// Workload: two Flushed SSTables [0,9] and [90,99]; a CNF query with two
-//           AND-clauses, one of which is unsatisfiable against SST1.
-// Threat: CNF short-circuit (skip if any clause is impossible) discards the
-//         wrong SST or fails to discard the right one.
+// An SST is skipped when any clause is impossible for it.
 TEST_F(BitLSMTestBase, OrderedSkip_CnfClauseElimination) {
   BitLSMOptions opt = ContOpt();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -148,10 +131,6 @@ TEST_F(BitLSMTestBase, OrderedSkip_CnfClauseElimination) {
       {{0, CompareOp::GREATER, 9.0}}, {{0, CompareOp::LESS, 9.0}}})));
 }
 
-// Workload: two Flushed SSTables with disjoint unordered values ("apple" and
-//           "banana"); EQUAL queries for present, absent, and cross-SST values.
-// Threat: unordered skip incorrectly prunes an SST that contains the queried
-//         value, or fails to prune one that does not.
 TEST_F(BitLSMTestBase, UnorderedSkip_EqualPresentAndAbsent) {
   BitLSMOptions opt = CatOpt();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -166,9 +145,6 @@ TEST_F(BitLSMTestBase, UnorderedSkip_EqualPresentAndAbsent) {
   ASSERT_TRUE(db.VerifyQuery(CatEq("cherry")));  // neither SST → 0 rows
 }
 
-// Workload: three consecutive Flushes ([0,9], [10,19], [20,29]); full-scan
-//           query and a mid-range query spanning exactly one SST.
-// Threat: SST-level skip with >2 SSTables selects wrong subset.
 TEST_F(BitLSMTestBase, OrderedSkip_ThreeSSTsFullAndPartial) {
   BitLSMOptions opt = ContOpt();
   CheckedBitLSM db(&OpenDB(opt), opt);

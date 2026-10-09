@@ -97,11 +97,8 @@ uint64_t BinCardinalitySum(const SABIReader& reader, uint32_t i) {
 
 }  // namespace
 
-// Workload: 100 data rows, 10 NULL-attr rows, and 5 deletion entries in one
-//           blob; inspect every value bin of the kRange attr.
-// Threat: placeholder rows (NULL/tombstone) leaking into value bins — a
-//         tombstone binned by its dummy okey 0 lands in the lowest bin and
-//         bloats every range query touching it.
+// 100 data rows, 10 NULL rows and 5 deletion entries; a tombstone binned
+// by its dummy okey 0 would land in the lowest bin.
 TEST(SabiPlaceholderBinning, OrderedValueBinsHoldOnlyDataRows) {
   BuiltIndex built = BuildMixed(/*data_rows=*/100, /*null_rows=*/10,
                                 /*tombstone_rows=*/5);
@@ -117,11 +114,8 @@ TEST(SabiPlaceholderBinning, OrderedValueBinsHoldOnlyDataRows) {
   EXPECT_EQ(boundaries.back(), OkeyToBytes(I64ToOkey(99)));
 }
 
-// Workload: the same blob; inspect the kEquality attr's binning policy and
-//           bins. Only "c0".."c3" are real category bytes.
-// Threat: NULL/tombstone placeholders interned as "" fabricate a phantom
-//         category — it wastes a bin slot, skews the frequency-based bin
-//         packing, and makes EQ "" unprunable on SSTs with no real "" data.
+// Placeholders interned as "" would fabricate a category and make EQ ""
+// unprunable.
 TEST(SabiPlaceholderBinning, UnorderedPolicyHasNoPhantomEmptyCategory) {
   BuiltIndex built = BuildMixed(/*data_rows=*/100, /*null_rows=*/10,
                                 /*tombstone_rows=*/5);

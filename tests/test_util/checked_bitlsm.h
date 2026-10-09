@@ -12,7 +12,7 @@
 
 namespace bit_lsm {
 
-// doublechecked wrapper: applies each mutation to the real engine AND the
+// Checked wrapper: applies each mutation to the real engine and the
 // reference oracle, then verifies query/scan equivalence. Verification methods
 // return a gtest AssertionResult carrying a seed/op-trace/diff message, so the
 // caller picks ASSERT_TRUE (stop) or EXPECT_TRUE (continue).
@@ -38,11 +38,9 @@ class CheckedBitLSM {
   // LSM shape changes: engine only; logical state unchanged.
   ::testing::AssertionResult Flush();
   ::testing::AssertionResult CompactAll();
-  // Holds an engine snapshot until ReleaseHeldSnapshot(). Writes flushed
-  // while one is open keep both versions of a rewritten key inside the same
-  // SST (flush preserves one version per snapshot stripe), which is the shape
-  // that exercises in-file shadowing. Logical state unchanged; re-holding
-  // while already held is a no-op.
+  // Holds an engine snapshot until ReleaseHeldSnapshot(), so flushes keep
+  // both versions of a rewritten key inside one SST (in-file shadowing).
+  // Logical state unchanged; re-holding is a no-op.
   void HoldSnapshot();
   void ReleaseHeldSnapshot();
 

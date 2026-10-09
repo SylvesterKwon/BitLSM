@@ -21,9 +21,6 @@ BitLSMOptions TwoAttrOptions() {
 }
 }  // namespace
 
-// Workload: structurally valid queries — full CNF with a cross-attr clause,
-//           and the empty query (= full scan).
-// Threat: validation rejects queries the contract admits.
 TEST(QueryValidation, AcceptsValidFullCnf) {
   BitLSMOptions opt = TwoAttrOptions();
   BitLSMQuery q(std::vector<OrClause>{{{0, CompareOp::GREATER_EQUAL, 1.0},
@@ -34,15 +31,11 @@ TEST(QueryValidation, AcceptsValidFullCnf) {
   EXPECT_TRUE(empty.Validate(opt).ok());
 }
 
-// Workload: query containing an empty OR clause.
-// Threat: engine UB (clause[0] on an empty vector) instead of clean rejection.
 TEST(QueryValidation, RejectsEmptyClause) {
   BitLSMQuery q(std::vector<OrClause>{OrClause{}});
   EXPECT_TRUE(q.Validate(TwoAttrOptions()).IsInvalidArgument());
 }
 
-// Workload: condition referencing attr_idx 5 in a 2-attr schema.
-// Threat: out-of-bounds attr_specs[]/offset-table access (UB).
 TEST(QueryValidation, RejectsAttrIdxOutOfRange) {
   BitLSMQuery q(std::vector<QueryCondition>{{5, CompareOp::EQUAL, 1.0}});
   EXPECT_TRUE(q.Validate(TwoAttrOptions()).IsInvalidArgument());
@@ -51,8 +44,6 @@ TEST(QueryValidation, RejectsAttrIdxOutOfRange) {
   EXPECT_TRUE(sentinel.Validate(TwoAttrOptions()).IsInvalidArgument());
 }
 
-// Workload: ordered attr with a string value, unordered with a double.
-// Threat: std::get<> on the wrong variant alternative -> bad_variant_access.
 TEST(QueryValidation, RejectsValueTypeMismatch) {
   BitLSMQuery q1(
       std::vector<QueryCondition>{{0, CompareOp::EQUAL, std::string("x")}});
@@ -61,18 +52,13 @@ TEST(QueryValidation, RejectsValueTypeMismatch) {
   EXPECT_TRUE(q2.Validate(TwoAttrOptions()).IsInvalidArgument());
 }
 
-// Workload: range operator on a unordered attribute.
-// Threat: bitmap path asserts (Debug) or returns an empty bitmap (Release,
-//         silent row loss) — unordered bins preserve no order, so the
-//         contract is EQUAL-only (paper §3: equality predicates).
+// Unordered bins preserve no order, so only EQUAL is allowed.
 TEST(QueryValidation, RejectsNonEqualOnUnordered) {
   BitLSMQuery q(std::vector<QueryCondition>{
       {1, CompareOp::GREATER_EQUAL, std::string("x")}});
   EXPECT_TRUE(q.Validate(TwoAttrOptions()).IsInvalidArgument());
 }
 
-// Workload: NewIterator with an invalid query, then with a valid one.
-// Threat: invalid query reaches the iterator (UB) instead of returning null.
 TEST_F(BitLSMTestBase, NewIteratorRejectsInvalidQuery) {
   BitLSMOptions opt = DefaultOptions();
   BitLSM& db = OpenDB(opt);
@@ -84,11 +70,7 @@ TEST_F(BitLSMTestBase, NewIteratorRejectsInvalidQuery) {
   EXPECT_NE(db.NewIterator(good), nullptr);
 }
 
-// Workload: the operator/comparand matrix over one attr of each physical
-//           type and both index types.
-// Threat: Validate is the only gate between a query and the typed re-check;
-//         a wrong alternative reaches std::get (throws) and a range operator
-//         on a kEquality attr reaches SelectBins (asserts).
+// Validate is the only gate before the typed re-check and SelectBins.
 TEST(QueryValidation, PhysicalTypeAndIndexTypeMatrix) {
   BitLSMOptions o;
   o.attr_num = 5;

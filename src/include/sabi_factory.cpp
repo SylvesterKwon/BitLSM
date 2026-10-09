@@ -36,10 +36,9 @@ UserDefinedIndexBuilder* SABIFactory::NewBuilder() const {
 
 unique_ptr<UserDefinedIndexReader> SABIFactory::NewReader(
     Slice& index_block_) const {
-  // Ungated public entry point (part of the base UserDefinedIndexFactory
-  // interface): always kResident. Only the validating overload below -- the
-  // path RocksDB actually calls to open an SST -- may mint a kMetadata
-  // reader, because the version gate lives there.
+  // Ungated entry point of the base interface: always kResident. Only the
+  // validating overload below, which RocksDB calls to open an SST, may mint a
+  // kMetadata reader.
   return unique_ptr<SABIReader>(
       new SABIReader(index_block_, SABIReaderMode::kResident));
 }
@@ -56,8 +55,7 @@ Status SABIFactory::NewReader(
       DecodeFixed32(index_block.data() + index_block.size() -
                     sizeof(uint32_t)) != kSABIFooterMagic) {
     return Status::Corruption(
-        "SABI index has no version footer (written by a pre-versioning "
-        "BitLSM build); rebuild the DB");
+        "SABI index has no version footer; rebuild the DB");
   }
   uint32_t version = DecodeFixed32(index_block.data() + index_block.size() -
                                    2 * sizeof(uint32_t));
@@ -94,10 +92,9 @@ Status SABIFactory::NewReader(
     index_types[i] = static_cast<IndexType>(type_byte);
   }
 
-  // A schema-bound factory (standalone BitLSM) still rejects mismatches
-  // loudly: parsing would succeed with the SST's own index_types, but queries
-  // encoded under the configured index_types would silently prune wrong. A
-  // schema-less factory (MyRocks reader path) trusts the directory.
+  // A schema-bound factory rejects mismatches: parsing would succeed with the
+  // SST's own index_types, but queries encoded under the configured ones
+  // would prune wrong. A schema-less factory trusts the directory.
   if (!schema_.index_types.empty() && schema_.index_types != index_types) {
     return Status::Corruption("SABI schema mismatch: SST index_types " +
                               IndexTypesToString(index_types) +
@@ -105,9 +102,7 @@ Status SABIFactory::NewReader(
                               IndexTypesToString(schema_.index_types) +
                               "; rebuild the DB or fix the schema");
   }
-  // Mode selection happens here, after the version gate above, not in the
-  // ungated single-arg NewReader(): a kMetadata reader can only be minted
-  // once this method has confirmed the blob's version.
+  // Mode selection happens after the version gate above.
   reader = std::make_unique<SABIReader>(
       index_block, options_.ondemand_index ? SABIReaderMode::kMetadata
                                            : SABIReaderMode::kResident);

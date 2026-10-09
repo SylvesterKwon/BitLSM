@@ -17,12 +17,8 @@ class ScanPrefetchDiffTest
 
 }  // namespace
 
-// Workload: the randomized differential stream (Put/Delete/PutBatch/Flush/
-//           Compact plus periodic CNF query batteries against the oracle), run
-//           with BitLSMOptions::scan_prefetch_depth set.
-// Threat: blocks now arrive through a different route -- an async read
-//         submitted before the scan reached the block. A slot handed to the
-//         wrong block, or reused too early, shows up as wrong or missing rows.
+// The randomized differential run with scan_prefetch_depth set; a slot
+// handed to the wrong block shows up as wrong or missing rows.
 TEST_P(ScanPrefetchDiffTest, EngineMatchesOracle) {
   std::uint64_t seed = EffectiveSeed(GetParam());
   std::cerr << "BITLSM_TEST_SEED=" << seed << "\n";
@@ -38,7 +34,7 @@ TEST_P(ScanPrefetchDiffTest, EngineMatchesOracle) {
   RunRandomizedDiff(db, rng, schema, params);
 
   // Guard against passing because the queue never ran, which would make
-  // this a test of the old path.
+  // this a test of the synchronous path.
   const BlockPrefetchQueueStats stats = GetBlockPrefetchQueueStats();
   std::cerr << "prefetch queue: " << stats.served << " blocks served\n";
   if (stats.async_unavailable) {

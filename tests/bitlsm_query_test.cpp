@@ -31,7 +31,7 @@ BitLSMOptions IntSchema() {
 }
 }  // namespace
 
-// memtable 안에서 연속형 범위 쿼리(a0 >= 10) → pk1, pk3.
+// Range query (a0 >= 10) against the memtable -> pk1, pk3.
 TEST_F(BitLSMTestBase, FilteredQueryInMemtable) {
   auto& db = OpenDB(DefaultOptions());
   BITLSM_ASSERT_OK(db.Put("pk1", {15.0, std::string("apple")}, "p1"));
@@ -43,10 +43,7 @@ TEST_F(BitLSMTestBase, FilteredQueryInMemtable) {
   EXPECT_EQ(ScanKeys(db, query), (std::set<std::string>{"pk1", "pk3"}));
 }
 
-// Workload: a signed native-int (int32) kRange attr, range query crossing
-// zero, evaluated in the memtable.
-// Threat: the int comparand routed through the double path, or a re-check
-// comparing the wrong native type, would drop negatives or misorder near zero.
+// A signed int32 range crossing zero, evaluated in the memtable.
 TEST_F(BitLSMTestBase, NativeIntRangeInMemtable) {
   auto& db = OpenDB(IntSchema());
   BITLSM_ASSERT_OK(db.Put("pk1", {int64_t{-100}, std::string("a")}, "p1"));
@@ -59,12 +56,8 @@ TEST_F(BitLSMTestBase, NativeIntRangeInMemtable) {
   EXPECT_EQ(ScanKeys(db, query), (std::set<std::string>{"pk2", "pk3", "pk4"}));
 }
 
-// Workload: same signed-int range plus a LESS query after a flush, so the
-// answer flows through the SABI bitmap path: int values are projected to the
-// double binning domain, and candidate rows are re-checked in the native
-// int64 domain.
-// Threat: sign lost in binning projection, or the bin-boundary math / native
-// re-check disagreeing around zero.
+// The same range after a flush: int values go through the bitmap path and
+// candidates are re-checked in the native int64 domain.
 TEST_F(BitLSMTestBase, NativeIntRangeAfterFlush) {
   auto& db = OpenDB(IntSchema());
   BITLSM_ASSERT_OK(db.Put("pk1", {int64_t{-100}, std::string("a")}, "p1"));
@@ -81,10 +74,7 @@ TEST_F(BitLSMTestBase, NativeIntRangeAfterFlush) {
   EXPECT_EQ(ScanKeys(db, q2), (std::set<std::string>{"pk1", "pk2"}));
 }
 
-// Workload: an unsigned native-int (uint32) kRange attr with a value beyond
-// INT32_MAX, EQUAL-matched after a flush.
-// Threat: an unsigned comparand misread as signed, or the uint64 re-check
-// path never being exercised.
+// A uint32 value beyond INT32_MAX must not be misread as signed.
 TEST_F(BitLSMTestBase, NativeUintEqualityAfterFlush) {
   BitLSMOptions o;
   o.attr_num = 1;
@@ -102,12 +92,9 @@ TEST_F(BitLSMTestBase, NativeUintEqualityAfterFlush) {
   EXPECT_EQ(ScanKeys(db, q), (std::set<std::string>{"pk2"}));
 }
 
-// Workload: a nullable kRange attr with NULL rows; range/equality queries
-// must auto-exclude NULLs (SQL 3VL) in the memtable and after a flush (NULL
-// rows are in no value bin, and the per-row re-check consults the presence
-// bit). A conjunction whose other clause a NULL row satisfies still excludes
-// it, because the NULL clause is UNKNOWN.
-// Threat: a NULL row matching a range/equality it has no value for.
+// NULL rows are in no value bin and the per-row check consults the
+// presence bit, so range and equality queries exclude them (3VL). A
+// conjunction whose other clause a NULL row satisfies still excludes it.
 TEST_F(BitLSMTestBase, NullRowsExcludedFromQueries) {
   BitLSMOptions o;
   o.attr_num = 2;
@@ -137,14 +124,14 @@ TEST_F(BitLSMTestBase, NullRowsExcludedFromQueries) {
   EXPECT_EQ(ScanKeys(db, conj), (std::set<std::string>{"pk1", "pk3"}));
 }
 
-// flush 로 SST 를 만든 뒤 같은 쿼리 → SABI 비트맵 인덱스 경로에서도 동일 결과.
+// Same query after a flush: the SABI bitmap path gives the same result.
 TEST_F(BitLSMTestBase, FilteredQueryAfterFlush) {
   auto& db = OpenDB(DefaultOptions());
   BITLSM_ASSERT_OK(db.Put("pk1", {15.0, std::string("apple")}, "p1"));
   BITLSM_ASSERT_OK(db.Put("pk2", {5.0, std::string("banana")}, "p2"));
   BITLSM_ASSERT_OK(db.Put("pk3", {25.0, std::string("apple")}, "p3"));
 
-  // memtable → SST. FlushOptions 기본값은 완료까지 대기.
+  // memtable -> SST; default FlushOptions wait for completion.
   BITLSM_ASSERT_OK(db.GetInternalDB()->Flush(rocksdb::FlushOptions()));
 
   BitLSMQuery query(

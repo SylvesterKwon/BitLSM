@@ -9,8 +9,7 @@ namespace {
 // Shared by stored attrs and query comparands, so both sides of an EQ can hit
 // the same special value.
 double UniformValue(Rng& rng) {
-  // 1%: special values that hit okey encoding edges (±0.0, huge, denormal);
-  // the oracle diff is the e2e correctness gate.
+  // 1%: special values that hit okey encoding edges (±0.0, huge, denormal).
   if (std::uniform_int_distribution<int>(0, 99)(rng) == 0) {
     static constexpr double kSpecials[] = {-0.0,  0.0,    -1e300,
                                            1e300, 5e-324, -5e-324};

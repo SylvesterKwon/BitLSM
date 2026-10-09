@@ -24,8 +24,8 @@ struct Record {
   }
 };
 
-// Independent in-memory oracle. Mirrors the LSM's *logical* state and answers
-// queries by brute force, WITHOUT calling the engine's CheckCondition.
+// Independent in-memory oracle. Mirrors the LSM's logical state and answers
+// queries by brute force, without calling the engine's CheckCondition.
 class ReferenceDB {
  public:
   explicit ReferenceDB(BitLSMOptions options) : options_(std::move(options)) {}

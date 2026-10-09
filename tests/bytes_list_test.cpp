@@ -14,9 +14,7 @@ BytesList Sample() {
 }
 }  // namespace
 
-// Workload: push five strings including the empty one; index, back, size.
-// Threat: cumulative end offsets off by one for the first element, or an
-//         empty element read with a stale start offset.
+// Five strings including the empty one.
 TEST(BytesList, IndexingAndBack) {
   BytesList l = Sample();
   ASSERT_EQ(l.size(), 5u);
@@ -26,11 +24,8 @@ TEST(BytesList, IndexingAndBack) {
   EXPECT_EQ(l.back(), "b");
 }
 
-// Workload: UpperBound/LowerBound over the sorted sample for probes that hit
-//           an element, fall between elements, sit below all, and sit above
-//           all.
-// Threat: these are the bin-assignment primitives shared by builder and
-//         reader; an off-by-one here mis-bins rows or selects a neighbour bin.
+// Probes that hit an element, fall between elements, and sit below and
+// above all of them.
 TEST(BytesList, BoundsMatchStdSemantics) {
   BytesList l = Sample();  // "", "a", "ab", "abc", "b"
   EXPECT_EQ(l.UpperBound(""), 1u);
@@ -45,10 +40,8 @@ TEST(BytesList, BoundsMatchStdSemantics) {
   EXPECT_EQ(l.UpperBound("b"), 5u);
 }
 
-// Workload: serialize the sample, parse it back from the byte buffer, and
-//           check the consumed length equals the serialized length.
-// Threat: the v8 policy body is exactly this wire form; a length mismatch
-//         desynchronizes every following policy in the blob.
+// The consumed length must equal the serialized length, or every
+// following policy in the blob is misread.
 TEST(BytesList, SerializeParseRoundTrip) {
   BytesList l = Sample();
   std::string wire;

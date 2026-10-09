@@ -89,7 +89,7 @@ BuiltIndex BuildIndex(const BitLSMOptions& options,
   return built;
 }
 
-// Semantic ground truth for bin membership: bin i covers okeys in
+// Reference bin membership: bin i covers okeys in
 // [boundaries[i], boundaries[i+1]), and the last bin also includes rows
 // equal to the top boundary.
 std::vector<uint64_t> CountPerBin(const BytesList& bytes,
@@ -118,12 +118,6 @@ uint64_t Sum(const std::vector<uint64_t>& v) {
 
 }  // namespace
 
-// Workload: 1000 int64 rows 0..999 (a narrow okey span), single kRange
-//           attr, one blob, bin budget 10; read the histogram back.
-// Threat: the boundaries are persisted after (okey - min_okey) t-digest
-//         normalization; an accessor that leaks normalized values instead of
-//         absolute okeys, or misaligns counts with bins, poisons every
-//         DB-level estimate built on top of it.
 TEST(SabiHistogram, SingleAttrHistogramMatchesData) {
   std::vector<std::vector<Attr>> rows;
   std::vector<int64_t> values;
@@ -149,11 +143,8 @@ TEST(SabiHistogram, SingleAttrHistogramMatchesData) {
   EXPECT_EQ(h.counts, CountPerBin(h.boundaries, values));
 }
 
-// Workload: {kEquality, kRange, kRange} schema where the two ordered attrs
-//           carry disjoint value ranges (0..499 vs 1000..1499).
-// Threat: the per-attr bitmap ranges live in one flat array; an off-by-one in
-//         the attr offset arithmetic reads a neighbor attr's bitmaps and
-//         returns plausible-but-wrong counts.
+// The two ordered attrs carry disjoint ranges, so a wrong attr offset
+// into the flat bitmap array shows up as wrong counts.
 TEST(SabiHistogram, MixedSchemaAttrsKeepTheirOwnCounts) {
   std::vector<std::vector<Attr>> rows;
   std::vector<int64_t> a1_values, a2_values;
@@ -181,11 +172,6 @@ TEST(SabiHistogram, MixedSchemaAttrsKeepTheirOwnCounts) {
   EXPECT_EQ(h2.counts, CountPerBin(h2.boundaries, a2_values));
 }
 
-// Workload: a caller sweeping every attr index of a mixed blob, plus one
-//           index past the end.
-// Threat: an kEquality attr holds a string binning policy in the variant;
-//         reading it as okey boundaries (or indexing past attr_num) is
-//         undefined behavior instead of a clean "no histogram" answer.
 TEST(SabiHistogram, RejectsUnorderedAndOutOfRangeAttrs) {
   std::vector<std::vector<Attr>> rows;
   for (int64_t i = 0; i < 100; ++i) rows.push_back({std::string("cat"), i, i});
@@ -196,11 +182,7 @@ TEST(SabiHistogram, RejectsUnorderedAndOutOfRangeAttrs) {
   EXPECT_FALSE(built.reader->RangeHistogram(3, &h));  // out of range
 }
 
-// Workload: 100 valued rows, 20 rows with a NULL attr, 5 tombstones, one
-//           blob.
-// Threat: NULL and tombstone rows sit in no value bin by construction; a
-//         histogram that re-adds them (e.g. by counting rows instead of bin
-//         bitmap cardinality) overstates the attr's row mass.
+// NULL and tombstone rows are in no bin and must not be counted.
 TEST(SabiHistogram, CountsOnlyBinnedDataRows) {
   std::vector<std::vector<Attr>> rows;
   std::vector<int64_t> values;
@@ -218,10 +200,6 @@ TEST(SabiHistogram, CountsOnlyBinnedDataRows) {
   EXPECT_EQ(h.counts, CountPerBin(h.boundaries, values));
 }
 
-// Workload: an SST whose kRange attr is NULL on every row.
-// Threat: with zero binned rows the stored boundaries come from an empty
-//         t-digest and are meaningless; exposing them as a valid histogram
-//         would inject garbage cells into a global aggregate.
 TEST(SabiHistogram, AllNullAttrHasNoHistogram) {
   std::vector<std::vector<Attr>> rows;
   for (int64_t i = 0; i < 50; ++i) rows.push_back({std::monostate{}});
@@ -264,12 +242,6 @@ double SumCounts(const EqualityAttrValueCounts& c) {
 
 }  // namespace
 
-// Workload: 160 rows over {kRange, kEquality} where the unordered attr has
-//           3 distinct values with known counts (red 100 / green 50 /
-//           blue 10) and the bin budget covers all of them.
-// Threat: with one value per bin every count must be exact; a crossed
-//         value->bin mapping or an attr offset bug that reads the ordered
-//         neighbor's bitmaps attaches wrong counts to wrong values.
 TEST(SabiValueCounts, ExactCountsWhenBudgetCoversValues) {
   std::vector<std::vector<Attr>> rows;
   for (int64_t i = 0; i < 160; ++i) {
@@ -286,11 +258,7 @@ TEST(SabiValueCounts, ExactCountsWhenBudgetCoversValues) {
   EXPECT_EQ(c.value_counts, expected);
 }
 
-// Workload: 20 distinct values x 10 rows each on a 10-bin budget, so every
-//           bin holds exactly two values of equal mass.
-// Threat: reporting the full bin cardinality for every value sharing a bin
-//         double-counts the mass (sum 2x the row count), inflating every
-//         equality selectivity built on top.
+// Two values per bin; each gets half the bin, not the whole bin.
 TEST(SabiValueCounts, SharedBinsSplitCardinalityUniformly) {
   std::vector<std::vector<Attr>> rows;
   for (int64_t v = 0; v < 20; ++v) {
@@ -308,11 +276,6 @@ TEST(SabiValueCounts, SharedBinsSplitCardinalityUniformly) {
   EXPECT_DOUBLE_EQ(SumCounts(c), 200.0);
 }
 
-// Workload: a caller sweeping every attr index of a mixed blob, plus one
-//           index past the end.
-// Threat: an kRange attr holds okey boundaries in the variant; reading it
-//         as string entries (or indexing past attr_num) is undefined
-//         behavior instead of a clean "no counts" answer.
 TEST(SabiValueCounts, RejectsOrderedAndOutOfRangeAttrs) {
   std::vector<std::vector<Attr>> rows;
   for (int64_t i = 0; i < 100; ++i) rows.push_back({i, std::string("cat")});
@@ -323,10 +286,7 @@ TEST(SabiValueCounts, RejectsOrderedAndOutOfRangeAttrs) {
   EXPECT_FALSE(built.reader->EqualityValueCounts(2, &c));  // out of range
 }
 
-// Workload: 100 valued rows, 20 rows with a NULL attr, 5 tombstones, one
-//           blob.
-// Threat: NULL and tombstone rows sit in no value bin by construction; a
-//         count that re-adds them overstates the attr's row mass.
+// NULL and tombstone rows are in no bin and must not be counted.
 TEST(SabiValueCounts, CountsOnlyBinnedDataRows) {
   std::vector<std::vector<Attr>> rows;
   for (int64_t i = 0; i < 100; ++i)
@@ -340,10 +300,6 @@ TEST(SabiValueCounts, CountsOnlyBinnedDataRows) {
   EXPECT_DOUBLE_EQ(SumCounts(c), 100.0);
 }
 
-// Workload: an SST whose kEquality attr is NULL on every row.
-// Threat: with no interned values there is no equality material; exposing an
-//         empty-but-true result would make callers treat "no data" as "zero
-//         selectivity for every value".
 TEST(SabiValueCounts, AllNullAttrHasNoCounts) {
   std::vector<std::vector<Attr>> rows;
   for (int64_t i = 0; i < 50; ++i) rows.push_back({std::monostate{}});

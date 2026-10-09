@@ -19,9 +19,6 @@ BitLSMQuery EqCat(const std::string& v) {
 }
 }  // namespace
 
-// Workload: Put k1, then overwrite k1 with a different ordered value.
-// Threat: stale attribute index after overwrite — engine matches by the OLD
-// value.
 TEST_F(BitLSMTestBase, OverwriteUpdatesAttributes) {
   BitLSMOptions opt = DefaultOptions();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -33,9 +30,7 @@ TEST_F(BitLSMTestBase, OverwriteUpdatesAttributes) {
   ASSERT_TRUE(db.VerifyQuery(GeCont(50.0)));
 }
 
-// Workload: a row matching a query is overwritten to NOT match, then back to
-// match. Threat: query result fails to drop/re-add a row whose indexed value
-// changed.
+// Overwritten to not match, then back to match.
 TEST_F(BitLSMTestBase, OverwriteFlipsQueryMatch) {
   BitLSMOptions opt = DefaultOptions();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -49,8 +44,6 @@ TEST_F(BitLSMTestBase, OverwriteFlipsQueryMatch) {
   ASSERT_TRUE(db.VerifyFullScan());
 }
 
-// Workload: Put -> Delete -> Put the same key (resurrection).
-// Threat: tombstone shadows the later re-insert, or stale value resurfaces.
 TEST_F(BitLSMTestBase, DeleteThenReinsert) {
   BitLSMOptions opt = DefaultOptions();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -60,14 +53,12 @@ TEST_F(BitLSMTestBase, DeleteThenReinsert) {
                      "new"));        // attrs differ from pre-delete
   ASSERT_TRUE(db.VerifyFullScan());  // exactly one k1 with the new record
   ASSERT_TRUE(db.VerifyQuery(EqCat("b")));  // new unordered visible
-  ASSERT_TRUE(db.VerifyQuery(EqCat("a")));  // stale unordered NOT resurrected
+  ASSERT_TRUE(db.VerifyQuery(EqCat("a")));  // stale unordered not resurrected
   ASSERT_TRUE(db.Flush());
   ASSERT_TRUE(db.VerifyFullScan());
   ASSERT_TRUE(db.VerifyQuery(EqCat("b")));
 }
 
-// Workload: Delete a key that was never inserted.
-// Threat: phantom tombstone hides unrelated rows or corrupts the scan.
 TEST_F(BitLSMTestBase, DeleteAbsentKeyIsNoop) {
   BitLSMOptions opt = DefaultOptions();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -76,10 +67,6 @@ TEST_F(BitLSMTestBase, DeleteAbsentKeyIsNoop) {
   ASSERT_TRUE(db.VerifyFullScan());
 }
 
-// Workload: Put + Flush (key now in an SST), then Delete + Flush (tombstone in
-// a
-//           newer SST shadowing the older one).
-// Threat: tombstone_bitmap path fails to hide a key living in a lower level.
 TEST_F(BitLSMTestBase, DeleteAfterFlushShadowsSstKey) {
   BitLSMOptions opt = DefaultOptions();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -92,8 +79,6 @@ TEST_F(BitLSMTestBase, DeleteAfterFlushShadowsSstKey) {
   ASSERT_TRUE(db.VerifyFullScan());  // tombstone now in its own SST
 }
 
-// Workload: insert many, delete half, Flush then CompactAll (tombstones meet
-// keys). Threat: compaction drops the wrong rows or resurrects deleted ones.
 TEST_F(BitLSMTestBase, DeleteThenCompactStable) {
   BitLSMOptions opt = DefaultOptions();
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -110,10 +95,7 @@ TEST_F(BitLSMTestBase, DeleteThenCompactStable) {
   ASSERT_TRUE(db.VerifyQuery(GeCont(10.0)));
 }
 
-// Workload: PutBatch where one key duplicates within the batch AND overwrites
-// an
-//           existing key; later-in-batch wins.
-// Threat: batch ordering / dedup mismatch between engine and logical state.
+// Later in the batch wins.
 TEST_F(BitLSMTestBase, PutBatchDuplicateAndOverwrite) {
   BitLSMOptions opt = DefaultOptions();
   CheckedBitLSM db(&OpenDB(opt), opt);

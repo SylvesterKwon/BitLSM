@@ -9,9 +9,7 @@
 
 using namespace bit_lsm;
 
-// Workload: same data as the legacy FilteredQuery tests, driven through the
-// core. Threat: the verification core itself must agree with the engine on
-// known-good data.
+// Same data as the FilteredQuery tests, driven through the checked wrapper.
 TEST_F(BitLSMTestBase, CoreAgreesInMemtableAndAfterFlush) {
   BitLSMOptions opt = DefaultOptions();  // {kRange, kEquality}
   CheckedBitLSM db(&OpenDB(opt), opt);
@@ -30,9 +28,8 @@ TEST_F(BitLSMTestBase, CoreAgreesInMemtableAndAfterFlush) {
   ASSERT_TRUE(db.VerifyFullScan());
 }
 
-// Workload: inject a phantom key into the reference ONLY, then verify.
-// Threat: a checker that always passes makes every other test worthless — this
-//         proves VerifyFullScan actually fails on divergence.
+// A phantom key is injected into the reference only; VerifyFullScan must
+// fail.
 TEST_F(BitLSMTestBase, CheckerDetectsDivergence) {
   BitLSMOptions opt = DefaultOptions();
   CheckedBitLSM db(&OpenDB(opt), opt);

@@ -60,12 +60,8 @@ void CompactAllDB(BitLSM& db) {
 
 }  // namespace
 
-// Workload: 1000 rows (attr0 = 0..999, attr1 = "x") split over two SSTs at
-//           the value-500 boundary; query the aggregated stats.
-// Threat: a grid that merges per-SST equi-depth bins wrong (mass lost or
-//         double-counted, boundaries misprojected) skews every downstream
-//         range selectivity; okey-magnitude precision collapse would fold the
-//         narrow 0..999 span into one cell.
+// 1000 rows 0..999 split over two SSTs at 500; the merged grid must
+// reproduce the uniform distribution.
 TEST_F(BitLSMTestBase, OrderedRangeMassMatchesUniformData) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 1000; ++i) {
@@ -96,11 +92,6 @@ TEST_F(BitLSMTestBase, OrderedRangeMassMatchesUniformData) {
   EXPECT_FALSE(uno.truncated);
 }
 
-// Workload: repeated Get() calls with no write activity in between, then one
-//           more flush.
-// Threat: rebuilding on every planning query blows the ~100us budget; NOT
-//         rebuilding after the live SST set changed serves stale stats to
-//         every subsequent plan.
 TEST_F(BitLSMTestBase, CachesUntilLiveSetChanges) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 100; ++i)
@@ -123,13 +114,7 @@ TEST_F(BitLSMTestBase, CachesUntilLiveSetChanges) {
   EXPECT_EQ(s3->physical_rows, 200u);
 }
 
-// Workload: 1000 rows striped over four SSTs (each covers the full 0..999
-//           span), estimated before and after full compaction reshapes the
-//           LSM into a single run.
-// Threat: aggregate error that depends on the SST shape accumulates over
-//         compaction churn; the live-set purity constraint requires pre/post
-//         estimates to agree within projection error, and totals to agree
-//         up to float rounding (mass conservation).
+// Estimates before and after a full compaction must agree.
 TEST_F(BitLSMTestBase, ChurnKeepsEstimatesStable) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t stripe = 0; stripe < 4; ++stripe) {
@@ -154,10 +139,6 @@ TEST_F(BitLSMTestBase, ChurnKeepsEstimatesStable) {
               250.0, 35.0);
 }
 
-// Workload: the same unordered value ("red") appearing in two SSTs, plus a
-//           value ("blue") in only one.
-// Threat: per-SST value counts overwriting instead of summing during the
-//         merge understates any value that spans SSTs.
 TEST_F(BitLSMTestBase, UnorderedCountsMergeAcrossSSTs) {
   BitLSM& db = OpenDB(EstOptions());
   int64_t key = 0;
@@ -182,11 +163,7 @@ TEST_F(BitLSMTestBase, UnorderedCountsMergeAcrossSSTs) {
   EXPECT_DOUBLE_EQ(uno.total, 180.0);
 }
 
-// Workload: every row carries the same ordered value (42) across two SSTs,
-//           so the attr's live okey span is a single point.
-// Threat: a zero-width grid domain divides by zero or spreads the point mass
-//         across cells, corrupting both the equality estimate at 42 and the
-//         "nothing above 42" answer.
+// Every row has the same value, so the live span is a single point.
 TEST_F(BitLSMTestBase, SingleValueAttrKeepsPointMass) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 200; ++i) {
@@ -207,11 +184,8 @@ TEST_F(BitLSMTestBase, SingleValueAttrKeepsPointMass) {
   EXPECT_DOUBLE_EQ(ord.RangeMass(Between(ord, -10, 41)), 0.0);
 }
 
-// Workload: 100 puts in SST1, 20 tombstones for them in SST2, then 20
-//           re-puts in SST3.
-// Threat: physical_rows feeds the cost slot (expected multi_get count);
-//         counting tombstone markers as rows, or dropping shadowed old
-//         versions (which the read path still fetches), miscosts every plan.
+// Tombstone markers are not rows; shadowed old versions still are, since
+// the read path fetches them.
 TEST_F(BitLSMTestBase, PhysicalRowsCountEntriesNotMarkers) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 100; ++i)
@@ -236,11 +210,6 @@ TEST_F(BitLSMTestBase, PhysicalRowsCountEntriesNotMarkers) {
       << "shadowed old versions stay physical until compacted away";
 }
 
-// Workload: rows written but never flushed (memtable only).
-// Threat: the memtable is excluded from stats, so the pre-first-flush state
-// must be
-//         visibly empty (callers emit a fallback flag) rather than crash or
-//         fabricate stats.
 TEST_F(BitLSMTestBase, EmptyBeforeFirstFlush) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 100; ++i)
@@ -255,11 +224,6 @@ TEST_F(BitLSMTestBase, EmptyBeforeFirstFlush) {
   EXPECT_FALSE(stats->equality[1].has_value());
 }
 
-// Workload: more distinct unordered values than kMaxTrackedValues in the
-//           live set.
-// Threat: an unbounded value->count dictionary grows with NDV and turns the
-//         planning cache into a memory hog; the cap must demote to top-k and
-//         say so instead of silently dropping mass.
 TEST_F(BitLSMTestBase, NdvCapDemotesToTopK) {
   BitLSM& db = OpenDB(EstOptions());
   const int64_t ndv =
@@ -300,10 +264,7 @@ double EstimatedRows(const EstimateResult& r) {
 
 }  // namespace
 
-// Workload: 1000 rows 0..999 over two SSTs; BETWEEN-shaped query arriving as
-//           CNF, i.e. TWO clauses on the same attr (a0 >= 0, a0 <= 499).
-// Threat: treating same-attr clauses as independent predicates squares the
-//         range selectivity (0.5 * 0.5 -> 250 est instead of 500).
+// a0 >= 0 AND a0 <= 499 as two clauses must estimate 500, not 0.5 * 0.5.
 TEST_F(BitLSMTestBase, EstimateIntersectsSameAttrRanges) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 1000; ++i) {
@@ -322,10 +283,7 @@ TEST_F(BitLSMTestBase, EstimateIntersectsSameAttrRanges) {
   EXPECT_NEAR(EstimatedRows(r), 500.0, 40.0);
 }
 
-// Workload: a0 uniform 0..999 and a1 red/blue alternating (statistically
-//           independent), conjunctive query a0 <= 499 AND a1 = "red".
-// Threat: the independence-product combine must land near truth (250) for
-//         uncorrelated attrs.
+// a0 and a1 are independent, so the product should land near 250.
 TEST_F(BitLSMTestBase, EstimateConjunctionIndependenceProduct) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 1000; ++i) {
@@ -343,12 +301,7 @@ TEST_F(BitLSMTestBase, EstimateConjunctionIndependenceProduct) {
   EXPECT_NEAR(EstimatedRows(r), 250.0, 40.0);
 }
 
-// Workload: red x150 / blue x30 across two SSTs; equality on a tracked value
-//           and on a value absent from the (exact, untruncated) dictionary.
-// Threat: a tracked value must reproduce its merged count; an absent value
-//         must floor at one matching row (never exactly 0 — stats have blind
-//         spots and 0 is absorbing in cost arithmetic) without falling back
-//         to the magic constants.
+// An absent value floors at one row instead of falling back.
 TEST_F(BitLSMTestBase, EstimateUnorderedEqualityAndAbsentValue) {
   BitLSM& db = OpenDB(EstOptions());
   int64_t key = 0;
@@ -378,10 +331,7 @@ TEST_F(BitLSMTestBase, EstimateUnorderedEqualityAndAbsentValue) {
   EXPECT_DOUBLE_EQ(EstimatedRows(g), 1.0);
 }
 
-// Workload: one OR clause spanning both unordered values (red OR blue) over
-//           the red x150 / blue x30 data.
-// Threat: an OR clause folded like an AND (product) collapses the estimate
-//         to ~14% instead of 100%; the union bound must cap at full mass.
+// red OR blue covers everything; an OR must not multiply like an AND.
 TEST_F(BitLSMTestBase, EstimateOrClauseUnionBound) {
   BitLSM& db = OpenDB(EstOptions());
   int64_t key = 0;
@@ -401,12 +351,6 @@ TEST_F(BitLSMTestBase, EstimateOrClauseUnionBound) {
   EXPECT_NEAR(EstimatedRows(r), 180.0, 1e-6);
 }
 
-// Workload: rows only in the memtable (no flush yet), then a query touching
-//           both attrs.
-// Threat: the memtable is excluded from stats, so the pre-first-flush estimate
-// is
-//         meaningless; the caller must get an explicit per-attr fallback
-//         flag, not a silent selectivity over zero rows.
 TEST_F(BitLSMTestBase, EstimateEmptyLiveSetFlagsFallback) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 100; ++i)
@@ -421,10 +365,7 @@ TEST_F(BitLSMTestBase, EstimateEmptyLiveSetFlagsFallback) {
   EXPECT_EQ(r.fallback_attrs, (std::vector<uint32_t>{0, 1}));
 }
 
-// Workload: equality on an kRange attr whose live span is the single value
-//           42 (EQUAL folds into a degenerate [42,42] window).
-// Threat: EQUAL handled as an unbounded window (or the point mass smeared
-//         away) breaks equality estimates on ordered attrs.
+// EQUAL on a kRange attr folds into a [42, 42] window.
 TEST_F(BitLSMTestBase, EstimateOrderedEqualityPointMass) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 200; ++i)
@@ -442,11 +383,7 @@ TEST_F(BitLSMTestBase, EstimateOrderedEqualityPointMass) {
   EXPECT_DOUBLE_EQ(EstimatedRows(db.EstimateSelectivity(q43)), 1.0);
 }
 
-// Workload: zipf-like skew (value v in 1..100 appears floor(1000/v) times,
-//           ~5187 rows) over two SSTs; wide range query a0 <= 10 with true
-//           selectivity ~56%.
-// Threat: under skew, uniform-within-bin projection
-//         plus grid interpolation must keep wide-range q-error <= 1.5.
+// Skewed data; a wide range must keep q-error <= 1.5.
 TEST_F(BitLSMTestBase, EstimateZipfWideRangeQError) {
   BitLSM& db = OpenDB(EstOptions());
   std::vector<int64_t> vals;
@@ -470,11 +407,7 @@ TEST_F(BitLSMTestBase, EstimateZipfWideRangeQError) {
   EXPECT_LE(q_error, 1.5) << "est " << est << " vs truth " << truth;
 }
 
-// Workload: a writer thread doing put+flush churn while the main thread
-//           hammers EstimateSelectivity.
-// Threat: rebuild walks the version storage and table cache while flushes
-//         install new SuperVersions; a lifetime race there corrupts stats or
-//         crashes planning mid-flight.
+// A writer thread flushes while the main thread estimates.
 TEST_F(BitLSMTestBase, EstimateSafeDuringFlushChurn) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 500; ++i)
@@ -517,12 +450,7 @@ TEST_F(BitLSMTestBase, EstimateSafeDuringFlushChurn) {
   EXPECT_LE(final_r.physical_rows, 4500u);
 }
 
-// Workload: a 10000-row base SST, then one 500-row flush (5% of the built
-//           rows).
-// Threat: rebuilding on every SuperVersion change ties rebuild frequency to
-//         the LSM event rate instead of the data change rate; sub-threshold
-//         churn must keep serving the existing snapshot (bounded staleness
-//         is the contract).
+// A 5% flush stays under kStaleRowFraction, so the old snapshot is served.
 TEST_F(BitLSMTestBase, BelowThresholdFlushServesExistingStats) {
   rocksdb_options_.disable_auto_compactions = true;
   BitLSM& db = OpenDB(EstOptions());
@@ -545,12 +473,8 @@ TEST_F(BitLSMTestBase, BelowThresholdFlushServesExistingStats) {
   EXPECT_EQ(s2->physical_rows, 10000u);
 }
 
-// Workload: a 10000-row base SST, then three 400-row flushes — cumulative
-//           drift 4% / 8% / 12% relative to the last rebuild.
-// Threat: measuring drift against the last *check* instead of the last
-//         *rebuild* resets the counter every flush, so small flushes would
-//         never accumulate past the threshold and stats would go stale
-//         forever.
+// Three 4% flushes; drift accumulates against the last rebuild, not the
+// last check.
 TEST_F(BitLSMTestBase, CumulativeDriftTriggersRebuild) {
   rocksdb_options_.disable_auto_compactions = true;
   BitLSM& db = OpenDB(EstOptions());
@@ -582,12 +506,8 @@ TEST_F(BitLSMTestBase, CumulativeDriftTriggersRebuild) {
   EXPECT_EQ(s2->physical_rows, 11200u);
 }
 
-// Workload: seeded-random multi-SST input — 15 distinct values, 10 flushes,
-//           random per-flush row counts; NDV stays under the per-SST bin
-//           budget so per-SST counts are exact.
-// Threat: the global value merge must equal a plain reference merge of the
-//         written rows; any dedup, summing, or ordering bug in the merge
-//         shows up as a per-value count mismatch.
+// Seeded random input; the merged value counts must equal a reference
+// merge of the written rows.
 TEST_F(BitLSMTestBase, UnorderedMergeMatchesReferenceOnRandomInput) {
   rocksdb_options_.disable_auto_compactions = true;
   BitLSM& db = OpenDB(EstOptions());
@@ -627,10 +547,6 @@ TEST_F(BitLSMTestBase, UnorderedMergeMatchesReferenceOnRandomInput) {
   EXPECT_NEAR(uno.total, expected_total, 1e-9);
 }
 
-// Workload: options that never enable the estimator (the default), then an
-//           estimate call against flushed data.
-// Threat: standalone users must pay nothing for the estimator and get a
-//         graceful all-fallback answer, not a crash on a missing component.
 TEST_F(BitLSMTestBase, EstimatorDisabledByDefault) {
   BitLSMOptions opt = EstOptions();
   opt.enable_estimator = false;
@@ -649,9 +565,6 @@ TEST_F(BitLSMTestBase, EstimatorDisabledByDefault) {
   EXPECT_EQ(r.fallback_attrs, (std::vector<uint32_t>{0, 1}));
 }
 
-// Workload: estimator enabled with a non-default 64-cell grid.
-// Threat: the option must actually reach the aggregation (a silently ignored
-//         knob would invalidate every grid-resolution experiment).
 TEST_F(BitLSMTestBase, GridCellsOptionControlsResolution) {
   BitLSMOptions opt = EstOptions();
   opt.estimator_grid_cells = 64;
@@ -667,11 +580,8 @@ TEST_F(BitLSMTestBase, GridCellsOptionControlsResolution) {
   EXPECT_NEAR(stats->range[0]->total, 500.0, 1e-6);
 }
 
-// Workload: 100 rows flushed with a raw Flush (no test-side refresh), then
-//           the stats are polled without a single estimate call.
-// Threat: the push design's whole point is that stats refresh without
-//         queries; a dead listener wiring would be masked everywhere else by
-//         the tests' explicit TEST_Refresh calls.
+// Every other test refreshes through TEST_Refresh; this one relies on the
+// flush listener alone.
 TEST_F(BitLSMTestBase, ListenerRefreshesWithoutQueries) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 100; ++i)
@@ -687,11 +597,8 @@ TEST_F(BitLSMTestBase, ListenerRefreshesWithoutQueries) {
   EXPECT_EQ(physical, 100u);
 }
 
-// Workload: write and flush 100 rows, close the DB, reopen it, and read the
-//           stats without any write or estimate activity.
-// Threat: after a reopen no flush event ever fires, so without an open-time
-//         initial build the stats would stay empty (all-fallback) until the
-//         first churn.
+// No flush event fires after a reopen, so the open-time build has to
+// populate the stats.
 TEST_F(BitLSMTestBase, InitialBuildRunsAtReopen) {
   BitLSMOptions opt = EstOptions();
   {
@@ -706,13 +613,8 @@ TEST_F(BitLSMTestBase, InitialBuildRunsAtReopen) {
   EXPECT_EQ(db2.Estimator()->Stats()->physical_rows, 100u);
 }
 
-// ---------------------------------------------------------------------------
-// Candidate (FPR) slot + memtable term: the cost consumer prices FETCHES, and
-// the read path fetches bin-rounded candidates plus every unflushed entry,
-// not matching rows. candidate_selectivity models the former,
-// memtable_entries the latter. (MTR-scale validation: 21-point residual
-// table, 2026-07-22.)
-// ---------------------------------------------------------------------------
+// ---- Candidate slot and memtable term: the read path fetches bin-rounded
+// candidates plus every unflushed entry, not matching rows ----
 
 namespace {
 
@@ -733,11 +635,7 @@ void FillBinShared2000(BitLSM& db) {
 
 }  // namespace
 
-// Workload: equality on a high-NDV ordered attr (NDV 2000 >> 10 bins), one
-//           matching row.
-// Threat: pricing fetches by MATCHING mass understates the whole-bin
-//         candidate cost by ~bin_mass/match (the SF2 444x misselection); an
-//         equality must cost one full equi-depth bin, ~total/B.
+// One matching row still fetches a whole bin, ~total/B.
 TEST_F(BitLSMTestBase, CandidateEqualityCostsWholeBin) {
   BitLSM& db = OpenDB(EstOptions());
   FillBinShared2000(db);
@@ -751,11 +649,8 @@ TEST_F(BitLSMTestBase, CandidateEqualityCostsWholeBin) {
   EXPECT_GE(r.candidate_selectivity, r.selectivity);
 }
 
-// Workload: interior 400-row range on the same high-NDV attr (both window
-//           edges free, i.e. strictly inside the SST span).
-// Threat: bin-boundary overshoot beyond the matching mass must be priced --
-//         one half-bin per free edge in expectation -- without ballooning a
-//         range whose mass already dwarfs the smear.
+// A range with both edges inside the SST overshoots by half a bin per
+// edge.
 TEST_F(BitLSMTestBase, CandidateRangeAddsEdgeSmear) {
   BitLSM& db = OpenDB(EstOptions());
   FillBinShared2000(db);
@@ -769,13 +664,8 @@ TEST_F(BitLSMTestBase, CandidateRangeAddsEdgeSmear) {
       << "match 400 + 2 free edges x half a 200-row bin";
 }
 
-// Workload: two SSTs with disjoint okey spans and 3x different sizes (1500
-//           rows over 0..1499, 500 rows over 1500..1999), point queries into
-//           each span.
-// Threat: one global bin-mass scalar prices both points identically (200);
-//         the real fetch cost is the covering SST's own bin mass (150 vs
-//         50) -- per-SST span awareness is load-bearing (time-ordered ingest
-//         makes disjoint spans the common LSM shape).
+// Two SSTs with disjoint spans and different sizes; a point query must be
+// priced by the covering SST's bin mass, not a global average.
 TEST_F(BitLSMTestBase, CandidateFollowsSpanAcrossSSTs) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 1500; ++i)
@@ -792,19 +682,16 @@ TEST_F(BitLSMTestBase, CandidateFollowsSpanAcrossSSTs) {
   SABIQuery q_big;
   q_big.clause_groups = {{Ord(0, CompareOp::EQUAL, 700)}};
   EXPECT_NEAR(CandidateRows(db.EstimateSelectivity(q_big)), 150.0, 1.0)
-      << "point in the 1500-row SST pays that SST's bin (1500/10)";
+      << "point in the 1500-row SST costs that SST's bin (1500/10)";
 
   SABIQuery q_small;
   q_small.clause_groups = {{Ord(0, CompareOp::EQUAL, 1700)}};
   EXPECT_NEAR(CandidateRows(db.EstimateSelectivity(q_small)), 50.0, 1.0)
-      << "point in the 500-row SST pays only 500/10";
+      << "point in the 500-row SST costs only 500/10";
 }
 
-// Workload: equality on an unordered value sharing its bin with 9 others
-//           (100 distinct values, 10 bins, balanced packing).
-// Threat: the dictionary answers the MATCH exactly (20), but the read path
-//         candidates the whole shared bin (~200); the cost slot must pay the
-//         bin, not the dictionary count.
+// The dictionary knows the exact match (20), but the read path fetches
+// the whole shared bin (~200).
 TEST_F(BitLSMTestBase, CandidateUnorderedSharedBinMass) {
   BitLSM& db = OpenDB(EstOptions());
   FillBinShared2000(db);
@@ -816,11 +703,6 @@ TEST_F(BitLSMTestBase, CandidateUnorderedSharedBinMass) {
   EXPECT_NEAR(CandidateRows(r), 200.0, 1.0);
 }
 
-// Workload: conjunction of the 400-row range and the shared-bin unordered
-//           equality (independent by construction).
-// Threat: candidate fractions must compose as an independence product like
-//         match fractions do -- the bitmap AND intersects candidates, which
-//         is exactly why conjunctive queries cancel FPR and stay bi-friendly.
 TEST_F(BitLSMTestBase, CandidateConjunctionMultipliesFractions) {
   BitLSM& db = OpenDB(EstOptions());
   FillBinShared2000(db);
@@ -834,12 +716,7 @@ TEST_F(BitLSMTestBase, CandidateConjunctionMultipliesFractions) {
   EXPECT_NEAR(CandidateRows(r), 60.0, 8.0) << "0.3 x 0.1 x 2000";
 }
 
-// Workload: one unordered value carrying 95% of the rows (alone in its bin
-//           under balanced packing), equality on it.
-// Threat: candidates are a superset of matches, so candidate_selectivity <
-//         selectivity is a contradiction the consumer would turn into
-//         fetch_count < output_rows; the invariant must hold under skew
-//         where the avg bin mass (200) sits far below the match (1900).
+// One value holds 95% of the rows, far above the average bin mass.
 TEST_F(BitLSMTestBase, CandidateNeverBelowMatch) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 1900; ++i)
@@ -860,11 +737,7 @@ TEST_F(BitLSMTestBase, CandidateNeverBelowMatch) {
       << "matches floor the candidates when they exceed the avg bin";
 }
 
-// Workload: an IN-shaped OR clause of three ordered points in three distinct
-//           bins.
-// Threat: each point candidates its own whole bin; summing member matches
-//         (~3) instead of member bins (~600) reintroduces the equality
-//         underpricing through the OR door.
+// Three points in three bins; the OR must sum bins, not matches.
 TEST_F(BitLSMTestBase, CandidateOrClauseSumsMemberBins) {
   BitLSM& db = OpenDB(EstOptions());
   FillBinShared2000(db);
@@ -878,13 +751,7 @@ TEST_F(BitLSMTestBase, CandidateOrClauseSumsMemberBins) {
   EXPECT_NEAR(CandidateRows(r), 600.0, 5.0);
 }
 
-// Workload: unflushed rows only, then a flush, then more unflushed rows --
-//           estimates taken at each stage.
-// Threat: unflushed entries have no SABI, so the read path candidates every
-//         one of them regardless of the predicate (MTR phase C: a predicate
-//         missing the SST span entirely still fetched exactly the memtable
-//         count). A consumer without this term underprices every fresh
-//         table; a stale count would misprice right after a flush.
+// Unflushed entries have no SABI, so the read path fetches all of them.
 TEST_F(BitLSMTestBase, MemtableEntriesSurfaceInEstimate) {
   BitLSM& db = OpenDB(EstOptions());
   for (int64_t i = 0; i < 100; ++i)
@@ -895,7 +762,7 @@ TEST_F(BitLSMTestBase, MemtableEntriesSurfaceInEstimate) {
   q.clause_groups = {{Ord(0, CompareOp::EQUAL, 5)}};
   EstimateResult r = db.EstimateSelectivity(q);
   EXPECT_EQ(r.memtable_entries, 100u)
-      << "pre-first-flush: the memtable count must ride the fallback answer";
+      << "memtable count missing from the pre-first-flush answer";
   EXPECT_EQ(r.physical_rows, 0u);
 
   FlushDB(db);
@@ -910,10 +777,6 @@ TEST_F(BitLSMTestBase, MemtableEntriesSurfaceInEstimate) {
   EXPECT_EQ(r.memtable_entries, 50u) << "live count, not rebuild-time stale";
 }
 
-// Workload: estimator disabled (standalone default), estimate after a flush.
-// Threat: the new fields must keep neutral defaults on the no-estimator
-//         path -- candidate factor 1 and no memtable term -- so existing
-//         fallback consumers see no behavior change.
 TEST_F(BitLSMTestBase, CandidateFieldsNeutralWhenDisabled) {
   BitLSMOptions opt = EstOptions();
   opt.enable_estimator = false;
@@ -930,14 +793,9 @@ TEST_F(BitLSMTestBase, CandidateFieldsNeutralWhenDisabled) {
   EXPECT_EQ(r.memtable_entries, 0u);
 }
 
-// Workload: yyyymm-shaped sparse integers -- 84 real values (7 years x 12
-//           months) over a 611-wide okey span with 89-value holes at every
-//           year boundary; 10 rows per value.
-// Threat: the continuous-density grid smears point mass into the holes, so
-//         an equality reads ~total/span instead of ~total/ndv (the SF2 q1_2
-//         11x underestimate). The NDV floor must pull it back to the
-//         per-value truth; RANGE estimates integrate over the holes and must
-//         stay uncorrected.
+// yyyymm-shaped integers: 84 values over a 611-wide span. The grid smears
+// point mass into the holes; the NDV floor must pull an equality back to
+// total/ndv, while ranges stay uncorrected.
 TEST_F(BitLSMTestBase, SparseDomainEqualityNdvFloor) {
   BitLSM& db = OpenDB(EstOptions());
   int rows = 0;
@@ -983,11 +841,8 @@ std::string Padded(const char* prefix, int i, int digits) {
 }
 }  // namespace
 
-// Workload: an axis over min "user-00", max "user-99" (5-byte common
-//           prefix), probed with in-span, below-span and above-span strings.
-// Threat: a window that does not strip the common prefix wastes the 8-byte
-//         budget on "user-" and collapses every value onto one coordinate;
-//         out-of-prefix strings must saturate to the ends, never wrap.
+// Axis over "user-00".."user-99": the common prefix must be skipped and
+// out-of-span strings must saturate to the ends.
 TEST(ByteAxis, StripsCommonPrefixAndSaturates) {
   ByteAxis axis = ByteAxis::Fit("user-00", "user-99", '0', '9', 7);
   EXPECT_EQ(axis.prefix, "user-");
@@ -1007,10 +862,6 @@ TEST(ByteAxis, StripsCommonPrefixAndSaturates) {
   EXPECT_EQ(axis.Rel("user-01") - axis.Rel("user-00"), axis.unit);
 }
 
-// Workload: an axis fitted over 8-byte okey boundaries whose bytes cover the
-//           full 0..255 range (int64 0..999 as okeys).
-// Threat: numerics must keep the base-256 window -- the guarantee that the
-//         grid's ratios equal okey arithmetic bit for bit.
 TEST(ByteAxis, OkeysKeepBase256) {
   ByteAxis axis = ByteAxis::Fit(OkeyToBytes(I64ToOkey(0)),
                                 OkeyToBytes(I64ToOkey(999)), 0, 255, 8);
@@ -1022,11 +873,8 @@ TEST(ByteAxis, OkeysKeepBase256) {
   EXPECT_EQ(axis.Rel(OkeyToBytes(I64ToOkey(500))), 500ull << 48);
 }
 
-// Workload: 1000 rows "prefix-0000".."prefix-0999" over two SSTs; range
-//           predicates in every shape (BETWEEN as two clauses, open-ended
-//           both ways, strict bounds) on the kRange kVarBinary attr.
-// Threat: string predicates used to fall back (factor 1); on the axis they
-//         must estimate within histogram tolerance and never be flagged.
+// Range predicates in every shape on a kRange kVarBinary attr must
+// estimate within histogram tolerance and never fall back.
 TEST_F(BitLSMTestBase, EstimateVarBinaryRangesOnCommonPrefixData) {
   BitLSM& db = OpenDB(StrOptions());
   for (int i = 0; i < 1000; ++i) {
@@ -1054,12 +902,8 @@ TEST_F(BitLSMTestBase, EstimateVarBinaryRangesOnCommonPrefixData) {
   EXPECT_NEAR(rows({{Str(0, CompareOp::GREATER_EQUAL, "")}}), 1000.0, 1e-6);
 }
 
-// Workload: the same data; a point predicate, and bounds entirely outside
-//           the live span (below "prefix-", above it, and past the maximum).
-// Threat: a point's own mass on a continuous axis is ~0, so the NDV floor
-//         must answer it (1000 rows / 500 distinct per SST = 2); bounds
-//         outside the span must estimate the 1-row floor, not wrap into the
-//         span through saturation.
+// A point on a continuous axis has ~0 mass, so the NDV floor answers it;
+// bounds outside the span estimate the 1-row floor.
 TEST_F(BitLSMTestBase, EstimateVarBinaryPointAndOutOfSpan) {
   BitLSM& db = OpenDB(StrOptions());
   for (int i = 0; i < 1000; ++i) {
@@ -1085,13 +929,6 @@ TEST_F(BitLSMTestBase, EstimateVarBinaryPointAndOutOfSpan) {
   EXPECT_NEAR(rows(Str(0, CompareOp::LESS_EQUAL, "prefix-0999")), 1000.0, 1e-6);
 }
 
-// Workload: values of wildly different lengths ("a", "ab", ..., 40-byte
-//           strings) in one SST, then every operator against short and long
-//           comparands.
-// Threat: the axis must cope with boundaries shorter than the window (unit
-//         from the shortest), and with strings longer than prefix+8 that
-//         collapse onto one coordinate -- estimates stay finite, bounded by
-//         the total, and never flagged.
 TEST_F(BitLSMTestBase, EstimateVarBinaryMixedLengthsStaysBounded) {
   BitLSM& db = OpenDB(StrOptions());
   for (int i = 0; i < 300; ++i) {

@@ -62,8 +62,7 @@ using OrClause = std::vector<QueryCondition>;
 struct BitLSMQuery {
   std::vector<OrClause> clause_groups;
 
-  // Legacy: flat conditions constructor (all AND, each condition becomes its
-  // own clause)
+  // Flat conditions: all AND, each condition becomes its own clause.
   explicit BitLSMQuery() = default;
   explicit BitLSMQuery(std::vector<QueryCondition> conditions) {
     clause_groups.reserve(conditions.size());
@@ -129,12 +128,11 @@ struct BitLSMQuery {
   }
 };
 
-// Interval on the SABI byte domain (memcmp order). "" is the domain minimum,
-// so lo == "" closed means unbounded below; the domain has no maximum, so hi
-// carries an explicit unbounded flag. Both ends carry an open flag (bytes
-// have no predecessor and a successor -- s + '\0' -- with no room between,
-// so strict bounds stay on the comparand instead of stepping). Empty is
-// absorbing under Intersect.
+// Interval on the SABI byte domain. "" is the domain minimum, so a closed
+// lo == "" is unbounded below; the domain has no maximum, so hi carries an
+// explicit unbounded flag. Both ends carry an open flag, since strict bounds
+// cannot step to a neighbouring byte string. Empty is absorbing under
+// Intersect.
 struct ByteInterval {
   std::string lo;
   bool lo_open = false;
@@ -200,11 +198,10 @@ struct ByteInterval {
 };
 
 // A query with comparands pre-encoded into the SABI byte domain: a
-// ByteInterval for kRange attrs (numeric comparands become 8-byte okeys, so
-// one interval type serves ints, floats and strings alike), opaque bytes for
-// kEquality equality. Built once per query; EncodeQuery folds the operator
-// into `win` and merges same-attr single-condition clauses by intersection,
-// so a BETWEEN-shaped CNF reaches every consumer as one interval.
+// ByteInterval per kRange condition, opaque bytes per kEquality condition.
+// EncodeQuery folds the operator into `win` and intersects same-attr
+// single-condition clauses, so a BETWEEN reaches every consumer as one
+// interval.
 struct SABICondition {
   uint32_t attr_idx;
   ByteInterval win;   // active when the attr is kRange
@@ -223,17 +220,16 @@ struct SABIQuery {
 // must pass Validate(options) first.
 SABIQuery EncodeQuery(const BitLSMQuery& q, const BitLSMOptions& options);
 
-// A query pre-resolved against a schema: flat predicates with v2 value-format
-// slots baked in, so per-row evaluation does no schema lookup, no variant,
-// and no offset-table walk. Snapshots the query: the source query/options
-// are not referenced after construction. The query must pass Validate()
-// against the same options first.
+// A query pre-resolved against a schema: flat predicates with value slots
+// baked in, so per-row evaluation does no schema lookup. The source query and
+// options are not referenced after construction. The query must pass
+// Validate() against the same options first.
 class CompiledQuery {
  public:
   CompiledQuery() = default;
   CompiledQuery(const BitLSMQuery& query, const BitLSMOptions& options);
 
-  // CNF evaluation (AND of OR clauses) of a v2-encoded value.
+  // CNF evaluation (AND of OR clauses) of an encoded value.
   // Semantically identical to BitLSMQuery::CheckCondition.
   bool Eval(rocksdb::Slice value) const;
 

@@ -95,11 +95,9 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
     is_value = false;
   }
 
-  // 2. Buffer original attr data. Buffers are dense (data rows only): NULL
-  // and tombstone rows are recorded in their bitmaps and push nothing, so
-  // every downstream statistic can scan a buffer front to back with no
-  // exclusion logic. Row-id alignment is reconstructed once, in
-  // CalculateBitmapIndex.
+  // 2. Buffer attr data. Buffers hold data rows only: NULL and tombstone
+  // rows are recorded in their bitmaps and push nothing. Row-id alignment is
+  // reconstructed in CalculateBitmapIndex.
   if (is_value) {
     std::string_view buffer(value.data(), value.size());
     extractor_->ExtractAll(std::string_view(key.data(), key.size()), buffer,
@@ -126,7 +124,6 @@ void SABIBuilder::OnKeyAdded(const Slice& key, ValueType type,
 
 void SABIBuilder::SetBinningPolicy() {
   // 1. Set target total bitmap index number
-  // total_bitmaps_cnt = attr_num / fpr
   // rho: expected bin selectivity per point query (0, 1]
   // e.g. rho=0.1 means 10 bins per attr on avg.
   uint32_t target_total_bitmaps_cnt =
@@ -145,9 +142,7 @@ void SABIBuilder::SetBinningPolicy() {
     }
   }
 
-  // Weight (importance) vector of attrs.
-  // TODO: aggregate read queries to compute weights (currently assumes uniform
-  // weights).
+  // Attr weights, uniform.
   vector<double> query_weight_vector(attr_buf_.size(), 1.0);
   int32_t remaining_budget = target_total_bitmaps_cnt;
   priority_queue<pair<double, uint32_t>> pq;  // {diminishing returns, attr idx}
@@ -236,8 +231,8 @@ void SABIBuilder::RangeAttrBuf::Sort() {
   sorted.resize(n);
   run_start.clear();
   if (uniform_len == static_cast<int32_t>(kOkeyBytes)) {
-    // Every value is an okey: sort (okey, row) records contiguously -- the
-    // cost of the plain integer sort -- and cut runs on the way out.
+    // Every value is an okey: sort (okey, row) records and cut runs on the
+    // way out.
     struct Rec {
       uint64_t key;
       uint32_t row;
@@ -263,21 +258,13 @@ void SABIBuilder::RangeAttrBuf::Sort() {
 }
 
 // Bin thresholds for one kRange attribute: cut the sorted values into
-// `bitmap_nums[i]` runs of as near equal row mass as the values allow.
+// `bitmap_nums[i]` runs of as near equal row mass as the values allow. Equal
+// mass minimises expected candidate waste, since only a range query's two end
+// bins can contribute rejected rows.
 //
-// Equal mass is what minimises expected candidate waste. A range query reads a
-// contiguous run of bins, and only the two end bins can contribute rows the
-// predicate rejects -- everything between them is fully inside the range. If
-// query endpoints follow the data, the endpoint lands in bin j with probability
-// proportional to its mass and wastes about half of it, so expected waste goes
-// as sum(mass^2), minimised when the masses are level.
-//
-// The cut points are values that occur, never interpolated positions between
-// them. A threshold beside a value would put a strict `< value` comparand
-// inside the bin holding every row with that value instead of on its edge, so
-// the bin could not be skipped; a repeated threshold would spend budget on a
-// bin that can never hold anything. Cutting on run starts makes both
-// impossible by construction, in one linear pass over the sorted buffer.
+// Cut points are values that occur, never positions between them: a threshold
+// beside a value would keep a strict `< value` comparand inside the bin
+// holding that value, and a repeated threshold would waste a bin.
 void SABIBuilder::SetRangeBinningPolicy(uint32_t i) {
   const uint32_t bins = bitmap_index_.bitmap_nums[i];
   RangeAttrBuf& buf = get<RangeAttrBuf>(attr_buf_[i]);
@@ -329,23 +316,18 @@ void SABIBuilder::SetRangeBinningPolicy(uint32_t i) {
     cur += run;
   }
 
-  // The sweep closes at most bins-1 times, so at least one threshold is
-  // always left over. Repeat the maximum: rows past the last threshold land
-  // in the final bin (below) and SelectBins resolves a lookup there the same
-  // way, so spare bins sit empty between them rather than swallowing the
-  // maximum, and the ends stay pinned to the exact data bounds for min/max
-  // pruning.
+  // The sweep closes at most bins-1 times, so at least one threshold is left
+  // over. Repeat the maximum so spare bins sit empty and the ends stay pinned
+  // to the exact data bounds for min/max pruning.
   const string max_value(v[sorted.back()]);
   while (boundaries.size() < static_cast<size_t>(bins) + 1) {
     boundaries.push_back(max_value);
     boundary_run.push_back(static_cast<uint32_t>(run_cnt - 1));
   }
 
-  // Bin of each row = (number of boundaries <= value) - 1, clamped -- the
-  // same rule SelectBins applies through BytesList::UpperBound. Runs ascend
-  // and each threshold is a run's value, so "threshold <= value" is
-  // "threshold's run <= this run": one forward cursor over run indices
-  // settles every row in O(n) without touching a byte.
+  // Bin of each row = (number of boundaries <= value) - 1, clamped, the same
+  // rule SelectBins applies. Each threshold is a run's value, so one forward
+  // cursor over run indices settles every row in O(n).
   buf.bin_of_row.resize(sorted.size());
   uint32_t passed = 0;  // thresholds at or below the current run
   for (uint32_t r = 0; r < run_cnt; ++r) {
@@ -362,10 +344,8 @@ void SABIBuilder::SetRangeBinningPolicy(uint32_t i) {
 void SABIBuilder::CalculateBitmapIndex() {
   uint32_t bin_idx_offset = 0;
   for (uint32_t i = 0; i < schema_.attr_num(); ++i) {
-    // The attr buffer is dense (data rows only), so this is the one place
-    // that re-aligns buffer entries with row ids: rows in NULL/tombstone
-    // bitmaps pushed nothing, and skipping exactly those ids while walking
-    // j keeps the dense cursor k in lockstep with the row id.
+    // The attr buffer holds data rows only: skipping NULL/tombstone row ids
+    // keeps the dense cursor k in lockstep with the row id j.
     roaring::Roaring excluded =
         attr_null_rows_[i] | bitmap_index_.tombstone_bitmap;
     vector<uint32_t> skip_ids(excluded.cardinality());
@@ -414,10 +394,9 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   // 2. Calculate bitmap index by buffered attr data & binning policy
   CalculateBitmapIndex();
 
-  // 3. Make final index blob (v8 layout; see sabi.h)
-  // 3-1. Add frozen bitmaps, tombstone bitmap last. Pad every start to a
-  // 32-byte boundary (resize() zero-fills the gaps) and record exact sizes
-  // and cardinalities for the directory.
+  // 3. Make the index blob (layout in sabi.h)
+  // 3-1. Frozen bitmaps, tombstone last, each start padded to 32 bytes;
+  // record exact sizes and cardinalities for the directory.
   bitmap_index_.bitmaps.push_back(bitmap_index_.tombstone_bitmap);
   const auto align32 = [](uint32_t off) { return (off + 31u) & ~31u; };
   vector<uint32_t> bitmap_offsets;
@@ -431,7 +410,7 @@ Status SABIBuilder::Finish(Slice* index_contents) {
     bin_cardinalities[i] = static_cast<uint32_t>(r.cardinality());
     bitmap_offsets.push_back(align32(bitmap_offsets.back() + bitmap_sizes[i]));
   }
-  last_finish_bitmap_sizes_ = bitmap_sizes;  // test-only ground truth
+  last_finish_bitmap_sizes_ = bitmap_sizes;  // test-only
   index_blob_.resize(bitmap_offsets.back());
   for (uint32_t i = 0; i < bitmap_index_.bitmaps.size(); ++i) {
     Roaring& r = bitmap_index_.bitmaps[i];
@@ -462,9 +441,7 @@ Status SABIBuilder::Finish(Slice* index_contents) {
     policy_offsets.push_back(index_blob_.size());
   }
 
-  // 3-3. Add directory: everything a reader must know before touching the
-  // body, parsed forward from attr_num. Persisted index_types make the blob
-  // self-describing, so opening an SST needs no schema binding.
+  // 3-3. Directory: everything a reader must know before touching the body.
   uint32_t directory_off = index_blob_.size();
   PutFixed32(&index_blob_, schema_.attr_num());
   for (IndexType index_type : schema_.index_types)
@@ -474,8 +451,7 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   PutFixed32(&index_blob_, index_entries_cnt_);
   // Per-attr exact distinct counts.
   for (uint64_t d : distinct_cnts_) PutFixed64(&index_blob_, d);
-  // Per-bin cardinalities (tombstone last) and exact frozen sizes (the
-  // padded offsets below do not encode sizes by difference).
+  // Per-bin cardinalities (tombstone last) and exact frozen sizes.
   for (uint32_t c : bin_cardinalities) PutFixed32(&index_blob_, c);
   for (uint32_t sz : bitmap_sizes) PutFixed32(&index_blob_, sz);
   for (uint32_t& oi : policy_offsets) PutFixed32(&index_blob_, oi);
@@ -487,7 +463,6 @@ Status SABIBuilder::Finish(Slice* index_contents) {
   PutFixed32(&index_blob_, kSABIFooterMagic);
 
   *index_contents = Slice(index_blob_);
-  // Dump(); // for test only.
   return Status::OK();
 }
 

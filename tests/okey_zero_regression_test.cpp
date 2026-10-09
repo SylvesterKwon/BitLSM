@@ -11,12 +11,8 @@
 using namespace bit_lsm;
 using UDIB = rocksdb::UserDefinedIndexBuilder;
 
-// Workload: store -0.0 in an SST, query EQ +0.0 through QueryCanMatch (and
-//           the symmetric +0.0 / EQ -0.0 pair).
-// Threat: native == treats ±0.0 as equal, so the row re-check would match —
-//         if the bitmap phase prunes on distinct okeys, the row is silently
-//         lost (false negative). F64ToOkey's -0.0 canonicalization guards
-//         this.
+// -0.0 stored, EQ +0.0 queried (and the reverse). The re-check treats
+// them as equal, so the bitmap phase must not prune on distinct okeys.
 TEST(OkeyZeroRegression, NegZeroRowSurvivesEqPosZeroPruning) {
   BitLSMOptions o;
   o.attr_num = 1;
@@ -42,7 +38,7 @@ TEST(OkeyZeroRegression, NegZeroRowSurvivesEqPosZeroPruning) {
 
   BitLSMQuery q(std::vector<QueryCondition>{{0, CompareOp::EQUAL, 0.0}});
   SABIQuery sq = EncodeQuery(q, o);
-  EXPECT_TRUE(reader.QueryCanMatch(sq));  // must NOT be pruned
+  EXPECT_TRUE(reader.QueryCanMatch(sq));  // must not be pruned
 
   // Symmetric case: store +0.0, query EQ -0.0
   SABIBuilder builder2(SABISchema::FromOptions(o),
@@ -58,12 +54,8 @@ TEST(OkeyZeroRegression, NegZeroRowSurvivesEqPosZeroPruning) {
   EXPECT_TRUE(reader2.QueryCanMatch(EncodeQuery(q2, o)));
 }
 
-// Workload: i64 values 600/1000/1400 (okeys near 2^63 where a double ulp is
-//           ~1024), then EQ queries on the exact min and max stored values.
-// Threat: the okey->double->okey round trip in boundary estimation can round
-//         PAST the true data bounds; without min/max pinning the SST-level
-//         pruning (ConditionImpossible) drops the whole SST on EQ(min)/EQ(max)
-//         (false negative).
+// okeys near 2^63, where a double ulp is ~1024: boundary estimation must
+// not round past the true min and max, or EQ(min)/EQ(max) prunes the SST.
 TEST(OkeyZeroRegression, EqOnExactMinMaxIsNotPruned) {
   BitLSMOptions o;
   o.attr_num = 1;

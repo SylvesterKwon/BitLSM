@@ -1,8 +1,8 @@
 #pragma once
 
-// Order-preserving uint64 ("okey") domain: the adapter encodes each numeric
-// scalar through a monotone injection, then hands SABI its 8-byte big-endian
-// form so every attribute -- numeric or binary -- is ordered by one memcmp.
+// Order-preserving uint64 ("okey") domain: each numeric scalar is mapped
+// through a monotone injection and handed to SABI as 8 big-endian bytes, so
+// numeric and binary attributes alike are ordered by memcmp.
 
 #include <cmath>
 #include <cstdint>
@@ -98,13 +98,9 @@ inline uint64_t NumericToOkey(
   return F64ToOkey(std::get<double>(v));
 }
 
-// ---- t-digest bridge ----
-
-// okey -> t-digest double domain, shifted by the per-SST minimum so the
-// 52-bit mantissa covers the okey span instead of the absolute magnitude.
-// ---- The complete schema residue visible to SABI ----
-// Width/signedness/collation are absorbed by the adapter; NULL arrives as a
-// per-row monostate from the extractor, never as a static flag.
+// ---- The schema visible to SABI ----
+// Width, signedness and collation are absorbed by the adapter; NULL arrives
+// as a per-row monostate from the extractor.
 struct SABISchema {
   std::vector<IndexType> index_types;
   double rho = 0.001;  // bitmap budget knob; only the builder consumes it
@@ -124,22 +120,16 @@ struct SABISchema {
 
 // ---- Row -> encoded attrs bridge ----
 
-// Per-attr extraction result handed to SABI: SQL NULL, or the attr's bytes
-// in SABI's memcmp domain -- an kRange numeric's okey in 8-byte big-endian
-// form, an kEquality attr's raw bytes. Views are valid only during the
-// ExtractAll call that produced them.
+// Per-attr extraction result: NULL, or the attr's bytes in SABI's memcmp
+// domain (a numeric's big-endian okey, a kEquality attr's raw bytes). Views
+// are valid only during the ExtractAll call.
 using EncodedAttr = std::variant<std::monostate, std::string_view>;
 
-// SABI's only path from a row to attrs: one virtual ExtractAll call per row;
-// the implementation owns all remaining schema knowledge (layout, widths,
-// collation).
-//
-// Each builder owns its extractor exclusively (SABIFactory creates one per
-// NewBuilder), so implementations may keep plain member scratch.
-//
-// `key` lets an implementation recognize rows of a foreign table/index
-// sharing the CF; convention for those: fill `out` with all-monostate so the
-// row lands in no value bin.
+// SABI's only path from a row to attrs: one ExtractAll call per row; the
+// implementation owns the layout. Each builder owns its extractor
+// exclusively, so implementations may keep member scratch. Rows of a foreign
+// table sharing the CF (recognized by `key`) fill `out` with all-monostate so
+// they land in no bin.
 class AttrExtractor {
  public:
   virtual ~AttrExtractor() = default;
@@ -148,9 +138,9 @@ class AttrExtractor {
                           EncodedAttr* out) = 0;
 };
 
-// Default extractor over the BitLSM v3 row value format. Numeric attrs are
-// re-encoded into member scratch (8 bytes per attr), so the views handed out
-// stay valid for the whole ExtractAll call.
+// Default extractor over the BitLSM row value format. Numeric attrs are
+// re-encoded into member scratch, so the views stay valid for the whole
+// ExtractAll call.
 class ValueLayoutExtractor : public AttrExtractor {
  public:
   explicit ValueLayoutExtractor(const BitLSMOptions& options)

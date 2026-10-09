@@ -16,15 +16,8 @@ class OnDemandIndexDiffTest
 
 }  // namespace
 
-// Workload: the randomized differential stream (Put/Delete/PutBatch/Flush/
-//           Compact plus periodic CNF query batteries against the oracle),
-//           run with BitLSMOptions::ondemand_index on.
-// Threat: the on-demand read path decodes the blob a second way -- extents
-//         and counts from the directory, bitmaps read per bin and
-//         frozen-viewed over cache-owned aligned buffers -- so any drift
-//         from the resident reader shows up as missing or extra rows.
-//         Compaction churn exercises reader teardown: a stale pin would
-//         dereference a freed cache entry.
+// The randomized differential run with ondemand_index on. Compaction
+// churn also exercises reader teardown.
 TEST_P(OnDemandIndexDiffTest, EngineMatchesOracle) {
   std::uint64_t seed = EffectiveSeed(GetParam());
   std::cerr << "BITLSM_TEST_SEED=" << seed << "\n";

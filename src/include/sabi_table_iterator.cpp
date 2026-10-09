@@ -36,8 +36,8 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
     const BlockHandle& bh, vector<uint32_t>& indexes,
     vector<PinnableSlice>& out_keys, vector<Slice>& out_values) {
   Status s;
-  // Grow-only: PinSelf below assigns into each slot's retained buffer, and
-  // buffer_count_ -- never size() -- is the valid-entry count.
+  // Grow-only: PinSelf below assigns into each slot's retained buffer;
+  // buffer_count_, not size(), is the valid-entry count.
   if (out_keys.size() < indexes.size()) {
     out_keys.resize(indexes.size());
     out_values.resize(indexes.size());
@@ -67,8 +67,7 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
       prefetch_buffer, false, false, s, true);
   biter_.reset(new_biter);
   if (!s.ok()) {
-    // The block the bitmap pointed at is unreadable. Its rows cannot be
-    // skipped silently, so stop the scan here and let the status propagate.
+    // The block is unreadable; stop the scan.
     status_ = s;
     return;  // buffer_count_ stays 0
   }
@@ -101,16 +100,13 @@ void SABITableIterator::GetAllByIndexesFromDataBlock(
       cur_offset++;
     }
     if (biter_->Valid()) {
-      // since key use delta-encoding and bufffer will be overwritten, we can't
-      // zero-copy it
+      // Keys are delta-decoded in place, so no zero-copy.
       out_keys[i].PinSelf(biter_->key());
       out_values[i] = biter_->value();
       if (track_source_versions_) {
-        // Internal keys sort by user key ascending and seqno descending, so
-        // one key's entries are contiguous with the newest first: a
+        // Internal keys sort by user key ascending and seqno descending, so a
         // preceding entry with the same user key means this row is an older
-        // in-file version. Unknown counts as shadowed, which only costs a
-        // re-fetch.
+        // in-file version. Unknown counts as shadowed.
         shadowed_buffer_[i] =
             (!prev_known ||
              ExtractUserKey(Slice(out_keys[i])) == Slice(prev_user_key_))
@@ -142,17 +138,12 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
       query_bitmap_(&EmptyBitmap()),
       bitmap_iter_(query_bitmap_->begin()),
       bitmap_end_(query_bitmap_->end()) {
-  // 0. Holds the SABI entry for this iterator's lifetime: a block cache pin
-  // when cache_index_and_filter_blocks is on (evictable after release), or
-  // an unowned reference to the table-lifetime pin in Rep when off. Either
-  // way valid only while the table reader stays alive, which covers every
-  // bitmap borrowed from the reader below.
+  // 0. Pin the SABI entry for this iterator's lifetime; every bitmap
+  // borrowed from the reader below depends on it.
   Status s = bbt_->GetUserDefinedIndexReader(ReadOptions(), &udi_entry_);
   if (!s.ok()) {
-    // Every failure here is fatal for the scan, NotFound (an SST carrying no
-    // SABI block) included: the query path has no fallback scan, so skipping
-    // this file would silently drop every row it holds. Record the status so
-    // the parent iterators stop instead of reading it as "no matching rows".
+    // Every failure here is fatal for the scan, NotFound included: there is
+    // no fallback scan, so skipping this file would drop its rows.
     cerr << "Failed to load SABI: " << s.ToString() << "\n";
     status_ = s;
     return;  // stays !Valid(); SeekToFirst is a no-op
@@ -162,16 +153,13 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
   block_restart_interval_ =
       bbt->get_rep()->table_options.block_restart_interval;
 
-  // Early exit: skip all bitmap work and block fetches if the query is
-  // provably unsatisfiable -- by interval algebra alone (EncodeQuery set
-  // unsat on a contradiction), or against this SSTable's min/max boundaries.
+  // Early exit when the query is provably unsatisfiable, by interval algebra
+  // or against this SST's min/max boundaries.
   if (query_.unsat) return;
   if (!sabi_reader_->QueryCanMatch(query_)) return;
 
-  // Metadata mode: plan the query's cache-missing bin runs and submit them
-  // as overlapped async reads before BuildQueryBitmap's loads consume them
-  // (SABISpanPrefetch). Resident mode has nothing to read; a build that
-  // cannot read asynchronously skips even the planning.
+  // Metadata mode: submit the query's cache-missing bin runs as async reads
+  // before BuildQueryBitmap consumes them.
   if (!sabi_reader_->RetainsIndexContents() && !AsyncReadUnavailable()) {
     std::vector<BinSelection> selections;
     for (const auto& clause : query_.clause_groups) {
@@ -198,9 +186,8 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
   auto psum_begin = sabi_reader_->data_entries_cnt_psum.begin();
   auto psum_end = sabi_reader_->data_entries_cnt_psum.end();
   for (uint32_t target_idx : *query_bitmap_) {
-    // cout << "target_idx: " << target_idx << "\n";
-    // target_idx is 0-based index, psum array is 1-based count array
-    // so upper_bound is always right
+    // target_idx is 0-based and psum is a 1-based count array, so
+    // upper_bound finds the block.
     auto it = std::upper_bound(psum_begin, psum_end, target_idx);
     if (it != psum_end) {
       int64_t block_idx =
@@ -218,17 +205,6 @@ SABITableIterator::SABITableIterator(BlockBasedTable* bbt,
 
   // 3. The whole target list is known now, so start reading ahead.
   prefetch_queue_.Prepare(&target_blocks_);
-
-  // Debug block hit ratio
-  // sabi_reader_->Dump();
-  // cout << "\n";
-  // cout << "total_bhs_size: " << sabi_reader_->data_entries_cnt_psum.size()
-  //      << "\n";
-  // cout << "target_blocks_size: " << target_blocks_.size() << "\n";
-  // cout << "("
-  //      << (double)target_blocks_.size() /
-  //             sabi_reader_->data_entries_cnt_psum.size()
-  //      << ")\n";
 }
 
 const roaring::Roaring* SABITableIterator::Bin(uint32_t flat_idx) {
@@ -247,17 +223,16 @@ const roaring::Roaring& SABITableIterator::Tombstone() {
   return *Bin(sabi_reader_->TotalBins());
 }
 
-// Build bitmap for a single SABICondition (leaf node in CNF). The bin
-// arithmetic lives in SABIReader::SelectBins -- the same selection the
-// span-prefetch plan submitted -- so this only materializes what was chosen.
+// Bitmap for a single SABICondition. Bin selection lives in
+// SABIReader::SelectBins; this only materializes it.
 SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
     const SABICondition& cond, vector<const roaring::Roaring*>& buf) {
   BinSelection sel;
   if (!sabi_reader_->SelectBins(cond, &sel)) return {&EmptyBitmap(), nullptr};
   if (sel.first == sel.last) return {Bin(sel.first), nullptr};
 
-  // Merge bitmap (OR): one span load, so a cold range costs one coalesced
-  // read per miss run instead of one tiny pread per bin.
+  // Merge bitmap (OR): one span load, so a cold range costs one read per
+  // miss run.
   buf.clear();
   buf.reserve(sel.last - sel.first + 1);
   if (!sabi_reader_->BinRange(sel.first, sel.last, &buf, &pinned_bins_,
@@ -274,8 +249,8 @@ SABITableIterator::BitmapRef SABITableIterator::GetBitmapForSingleCondition(
 // reader-owned bitmaps where possible and materializing into bitmap_pool_
 // only when a union/intersection/tombstone-filter result must be computed.
 void SABITableIterator::BuildQueryBitmap(const SABIQuery& query) {
-  // A metadata-proven empty tombstone (cardinality directory) skips the
-  // bin load entirely -- one fewer cold read per SST on delete-free tables.
+  // An empty tombstone, proven by the cardinality directory, skips the bin
+  // load.
   const roaring::Roaring& tombstone =
       sabi_reader_->TombstoneCardinality() == 0 ? EmptyBitmap() : Tombstone();
 
@@ -439,8 +414,7 @@ void SABITableIterator::GetReadaheadState(
 void SABITableIterator::SetReadaheadState(
     ReadaheadFileInfo* readahead_file_info) {
   // A zero readahead_size means no prior file built a prefetch buffer;
-  // applying it would set this file's initial size to 0 and disable
-  // auto-readahead entirely, so keep the fresh-start defaults instead.
+  // applying it would disable auto-readahead, so keep the defaults.
   if (readahead_file_info->data_block_readahead_info.readahead_size > 0) {
     block_prefetcher_.SetReadaheadState(
         &(readahead_file_info->data_block_readahead_info));

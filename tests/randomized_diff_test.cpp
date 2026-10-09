@@ -16,13 +16,9 @@ class RandomizedDiffTest : public BitLSMTestBase,
 
 }  // namespace
 
-// Workload: seeded random op stream (Put/Delete/PutBatch/Flush/Compact) on a
-//           random schema and a seed-varied key pool (50-200), with periodic
-//           random full-CNF query batteries differentially checked against
-//           the oracle.
-// Threat: any engine/oracle divergence in write semantics, binning, CNF
-//         evaluation, tombstones, or compaction that the hand-written
-//         scenarios did not anticipate.
+// A seeded random op stream (Put/Delete/PutBatch/Flush/Compact) on a
+// random schema, with periodic random CNF query batteries checked
+// against the oracle.
 TEST_P(RandomizedDiffTest, EngineMatchesOracle) {
   std::uint64_t seed = EffectiveSeed(GetParam());
   // Echo the seed up front so even exception/crash failures (which bypass

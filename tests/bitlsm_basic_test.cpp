@@ -11,8 +11,8 @@
 
 using namespace bit_lsm;
 
-// Put 한 값이 실제 RocksDB 에 들어가고, raw Get 으로 꺼낸 인코딩 값이
-// 우리가 넣은 속성으로 정확히 디코딩되는지. (fixture 의 디스크 격리도 검증)
+// A Put lands in RocksDB and the raw Get result decodes back to the attrs
+// that were written. Also exercises the fixture's on-disk isolation.
 TEST_F(BitLSMTestBase, PutThenRawGetRoundTrip) {
   BitLSMOptions opt = DefaultOptions();
   auto& db = OpenDB(opt);
@@ -28,13 +28,13 @@ TEST_F(BitLSMTestBase, PutThenRawGetRoundTrip) {
   EXPECT_EQ(std::get<std::string_view>(DecodeAttr(layout, buf, 1)), "apple");
 }
 
-// 빈 쿼리로 스캔하면 넣은 모든 행이 나오는지. (iterator 배관 검증)
+// An empty query scans every row.
 TEST_F(BitLSMTestBase, EmptyQueryScanReturnsAllRows) {
   auto& db = OpenDB(DefaultOptions());
   BITLSM_ASSERT_OK(db.Put("pk1", {15.0, std::string("apple")}, "p1"));
   BITLSM_ASSERT_OK(db.Put("pk2", {5.0, std::string("banana")}, "p2"));
 
-  BitLSMQuery query;  // 빈 쿼리 → 전체 매칭
+  BitLSMQuery query;  // empty query matches everything
   auto it = db.NewIterator(query);
   std::set<std::string> keys;
   for (it->SeekToFirst(); it->Valid(); it->Next())
