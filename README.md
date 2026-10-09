@@ -1,16 +1,12 @@
-## BitLSM
+# BitLSM
 
 BitLSM is an LSM-tree storage engine that efficiently supports multi-attribute conjunctive queries.
 
 Built on top of RocksDB v10.10.0.
 
-## Prerequisites
-
-- **Compiler**: GCC 11+
-- **CMake**: 3.14+
-
-
 ## Installation
+
+Requires GCC 11+ (C++20) and CMake 3.14+.
 
 ### 1. Initialize Git Submodules
 
@@ -29,25 +25,16 @@ sudo apt-get update && sudo apt-get install -y \
     liburing-dev
 ```
 
-`liburing-dev` enables RocksDB's async read path, which
-`BitLSMOptions::scan_prefetch_depth` requires. Without it the option is accepted
-but has no effect. Needs Linux 5.1 or newer.
-
-If your distribution has no such package, build it:
-
-```bash
-git clone --depth 1 --branch liburing-2.5 https://github.com/axboe/liburing
-cd liburing && ./configure --prefix="$HOME/.local" && make && make install
-```
-
 ### 3. Build the Project
 
 ```bash
-cmake -B build -DCMAKE_PREFIX_PATH="$HOME/.local"   # prefix only if liburing was built by hand
-ninja -C build -j$(nproc)
+cmake -B build
+cmake --build build -j$(nproc)
 ```
 
-## Example
+## Quick Start
+
+### Example
 
 ```cpp
 #include <rocksdb/options.h>
@@ -79,9 +66,9 @@ int main() {
   // 2. Open
   BitLSM db("/tmp/example", opts, ropts, topts);
 
-  // 3. Write, then flush so the row reaches an SST that carries a SABI index
+  // 3. Write
   db.Put("pk-0001", {int64_t(42), 3.14, std::string("foo")}, "payload bytes");
-  db.Flush();
+  db.Flush();  // explicit flush
 
   // 4. Query in CNF: (a0 = 42 OR a0 = 77) AND (a1 >= 3.0)
   BitLSMQuery q({
@@ -103,8 +90,6 @@ int main() {
 }
 ```
 
-## Quick Start
-
 ### Core Concepts
 
 - **Schema.** A row is a primary key, a fixed set of indexed attributes, and an
@@ -116,8 +101,9 @@ the value is stored and compared: `kInt`/`kUint`/`kFloat` in fixed slots,
 is valid, so a `kRange kVarBinary` attribute serves string range predicates.
 Bytes compare in memcmp order; collation is the caller's concern.
 
-- **Rho** sets the granularity of the bitmap bins: `rho = 0.1` gives roughly ten
-bins per attribute.
+- **Rho** is the expected fraction of records in an SSTable that a single bin
+covers, so each attribute gets at most about `1/rho` bins: `rho = 0.001` allows
+up to 1,000 bins per attribute. Attributes with fewer distinct values use fewer.
 
 - **Queries** are in conjunctive normal form: `BitLSMQuery({{a, b}, {c}})` is
 `(a OR b) AND c`.
@@ -134,7 +120,11 @@ bins per attribute.
 - `DecodePayload(layout, value)` — decode the payload out of a given value (row)
 - `GetInternalDB()` — the underlying RocksDB instance
 
-## Testing
+## Development
+
+Bug reports and feature requests go to [issues](https://github.com/SylvesterKwon/BitLSM/issues). The rest of this section is for those who want to make the change themselves and open a pull request.
+
+### Testing
 
 Tests use GoogleTest (fetched automatically via CMake `FetchContent`) and are run with CTest.
 
@@ -148,6 +138,9 @@ ctest --test-dir build --output-on-failure
 
 # Run a subset (regex on test name)
 ctest --test-dir build -R QueryEval -V
+
+# Stress tests are labeled `stress`; CI skips them with -LE stress
+ctest --test-dir build -L stress
 ```
 
 Environment knobs for the end-to-end DB tests:
@@ -156,9 +149,7 @@ Environment knobs for the end-to-end DB tests:
 - `TEST_TMPDIR=/path` — redirect the temp DB root (e.g. a tmpfs)
 - `KEEP_DB=1` — keep the test DB directory on disk for debugging (prints the path)
 
-Each end-to-end test gets a unique DB directory (`<tmp>/bitlsm_<test>_<pid>`) created and destroyed automatically by the `BitLSMTestBase` fixture, so tests never share on-disk state.
-
-## Code Style
+### Code Style
 
 This project uses [clang-format](https://clang.llvm.org/docs/ClangFormat.html) enforced via [pre-commit](https://pre-commit.com/).
 
@@ -174,3 +165,17 @@ Now every commit auto-formats changed C++ files. To format the whole tree manual
 ```bash
 pre-commit run --all-files
 ```
+
+### Patching RocksDB
+
+BitLSM's changes to RocksDB are kept in `patches/rocksdb-bitlsm.patch`. CMake applies it to the submodule at configure time.
+
+To change RocksDB, edit `third_party/rocksdb` directly and regenerate the patch:
+
+```bash
+scripts/regen-rocksdb-patch.sh
+```
+
+## License
+
+MIT License, see [LICENSE](LICENSE).
