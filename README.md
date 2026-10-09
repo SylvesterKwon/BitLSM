@@ -92,22 +92,13 @@ int main() {
 
 ### Core Concepts
 
-- **Schema.** A row is a primary key, a fixed set of indexed attributes, and an
-opaque payload. Each attribute has an index type and a physical type. The index
-type says which predicates the index serves: `kRange` (=, <, <=, >, >=; equal-mass
-bins) or `kEquality` (= only; value-dictionary bins). The physical type says how
-the value is stored and compared: `kInt`/`kUint`/`kFloat` in fixed slots,
-`kBinary` (fixed `width` bytes), `kVarBinary` (variable bytes). Any combination
-is valid, so a `kRange kVarBinary` attribute serves string range predicates.
-Bytes compare in memcmp order; collation is the caller's concern.
+- **SABI** (SSTable-Attached Bitmap Index) is the bitmap index BitLSM attaches to every SSTable. For each indexed attribute it keeps one bitmap per value bin over the rows of that SSTable, and a query combines the bins to skip rows before reading them.
 
-- **Rho** is the expected fraction of records in an SSTable that a single bin
-covers, so each attribute gets at most about `1/rho` bins: `rho = 0.001` allows
-up to 1,000 bins per attribute. Attributes with fewer distinct values use fewer.
+- **Schema.** A row consists of a primary key, indexed attributes, and a payload. Each indexed attribute has an index type and a physical type. Use `kRange` for attributes that need range predicates and `kEquality` for those that only need point predicates. The physical type is one of `kInt`, `kUint`, `kFloat`, `kBinary` (fixed width), `kVarBinary`. Any combination works.
 
-- **Queries** are in conjunctive normal form: `BitLSMQuery({{a, b}, {c}})` is
-`(a OR b) AND c`.
+- **Rho** is the expected fraction of records in an SSTable that a single bin covers, so each attribute gets at most about `1/rho` bins: `rho = 0.001` allows up to 1,000 bins per attribute. Attributes with fewer distinct values use fewer.
 
+- **Queries** are in conjunctive normal form: `BitLSMQuery({{a, b}, {c}})` is `(a OR b) AND c`.
 
 ### API
 - `BitLSM(path, opts, rocksdb_opts, table_opts)` — open a database
