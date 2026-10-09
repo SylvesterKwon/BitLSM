@@ -1,5 +1,7 @@
 # BitLSM
 
+[![CI](https://github.com/SylvesterKwon/BitLSM/actions/workflows/ci.yml/badge.svg)](https://github.com/SylvesterKwon/BitLSM/actions/workflows/ci.yml) [![License](https://img.shields.io/github/license/SylvesterKwon/BitLSM)](LICENSE)
+
 BitLSM is an LSM-tree storage engine that efficiently supports multi-attribute conjunctive queries.
 
 Built on top of RocksDB v10.10.0.
@@ -166,7 +168,3 @@ To change RocksDB, edit `third_party/rocksdb` directly and regenerate the patch:
 ```bash
 scripts/regen-rocksdb-patch.sh
 ```
-
-## License
-
-MIT License, see [LICENSE](LICENSE).
